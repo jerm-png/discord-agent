@@ -44,6 +44,9 @@ load_dotenv(os.path.join(
 
 client = Anthropic()
 
+MAIN_MODEL = "claude-sonnet-4-6"
+BACKGROUND_MODEL = "claude-haiku-4-5-20251001"
+
 COMMAND_CHANNEL = "bot-commands"
 STATUS_CHANNEL = "bot-status"
 LOG_CHANNEL = "bot-logs"
@@ -282,7 +285,7 @@ async def run_reflection_loop(guild, experiences):
         ])
 
         response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=BACKGROUND_MODEL,
             max_tokens=1500,
             messages=[{
                 "role": "user",
@@ -384,7 +387,7 @@ Only include items genuinely worth remembering long term.
 Return empty arrays if nothing meaningful to store."""
 
         response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=BACKGROUND_MODEL,
             max_tokens=500,
             messages=[{
                 "role": "user",
@@ -518,7 +521,7 @@ async def on_message(message):
             while True:
 
                 response = client.messages.create(
-                    model="claude-sonnet-4-6",
+                    model=MAIN_MODEL,
                     max_tokens=1024,
                     system=SYSTEM_PROMPT,
                     tools=TOOL_DEFINITIONS,
