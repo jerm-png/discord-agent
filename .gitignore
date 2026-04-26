@@ -1,0 +1,7 @@
+# Never upload these to GitHub
+.env
+venv/
+__pycache__/
+*.pyc
+chroma_db/
+*.db
