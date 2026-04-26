@@ -28,6 +28,11 @@ from memory.memory_manager import (
     check_stale_memories
 )
 
+from tools.tool_definitions import (
+    TOOL_DEFINITIONS,
+    execute_tool
+)
+
 # ============================================================
 # CONFIGURATION
 # ============================================================
@@ -42,6 +47,9 @@ client = Anthropic()
 COMMAND_CHANNEL = "bot-commands"
 STATUS_CHANNEL = "bot-status"
 LOG_CHANNEL = "bot-logs"
+
+# Maximum tool calls per response to prevent runaway loops
+MAX_TOOL_CALLS = 5
 
 conversation_history = {}
 
@@ -86,16 +94,17 @@ If you cannot complete a task due to missing tools or access, say so directly an
 
 Be helpful, but not deferential. Be honest, but not abrasive. Function like a highly competent chief of staff, strategist, and operator who is comfortable telling me when I am wrong — and smart enough to show me the move I did not think to ask for.
 
-MEMORY INSTRUCTIONS:
-You have access to a three layer memory system. At the start of each response you will receive relevant memories under MEMORY CONTEXT. Use this to:
-- Reference past decisions and check if they are still current
-- Apply patterns and insights from previous interactions
-- Stay aware of active projects and their status
-- Flag stale memories that need validation by asking the user directly before using them
+MEMORY AND TOOL INSTRUCTIONS:
+You have access to six tools. Use them proactively and intelligently:
 
-When you see MEMORIES NEEDING VALIDATION — always ask the user to confirm before using that information. Never silently assume stale memories are still accurate.
+- query_memory: Search long term memory before saying you don't know something about the user or their work. Always check memory first.
+- save_skill: When you notice a pattern that has worked well multiple times, crystallise it into a named skill. Only save skills with confidence above 0.7.
+- update_user_model: When the user shares something important about themselves, save it deliberately. Proactively fill gaps in what you know about them.
+- flag_for_review: When something needs deeper processing or follow up, flag it. This is your self-nudging mechanism — use it.
+- web_search: When current information is needed, search. Tell the user what you are searching for and why. Summarise results and cite sources. Maximum 3 searches per response.
+- calculate_confidence: When new evidence confirms or contradicts an existing memory, update its confidence score.
 
-When a task feels complete based on the user's response, acknowledge it naturally. The system will handle reflection automatically."""
+At the start of responses where you need context, query memory first. After interactions where you learn something important, save it. When you complete tasks, look for skills worth crystallising."""
 
 REFLECTION_PROMPT = """Review these completed task experiences and extract structured analytical insights.
 
@@ -158,25 +167,79 @@ async def send_long_message(channel, message):
             await channel.send(message[i:i+2000])
 
 
+async def process_tool_calls(response, guild, tool_call_count):
+    """
+    Handles tool calls from Claude.
+    Executes the requested tool and returns the result.
+    Enforces the maximum tool call limit.
+    """
+    tool_results = []
+
+    for block in response.content:
+        if block.type == "tool_use":
+
+            # Enforce max tool calls limit
+            if tool_call_count >= MAX_TOOL_CALLS:
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": (
+                        "Tool call limit reached. "
+                        "Please summarise findings so far."
+                    )
+                })
+                continue
+
+            tool_name = block.name
+            tool_inputs = block.input
+
+            # Log the tool call
+            await send_to_channel(
+                guild,
+                LOG_CHANNEL,
+                f"Tool called: {tool_name} | "
+                f"Inputs: {json.dumps(tool_inputs)[:200]}"
+            )
+
+            # Execute the tool
+            result = execute_tool(tool_name, tool_inputs)
+
+            # Show tool activity in status channel
+            await send_to_channel(
+                guild,
+                STATUS_CHANNEL,
+                f"Tool used: {tool_name}"
+            )
+
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": str(result)
+            })
+
+            tool_call_count += 1
+
+    return tool_results, tool_call_count
+
+
 async def run_reflection_loop(guild, experiences):
     """
     Runs when a task completion is detected.
-    Reviews completed task experiences and extracts
-    structured six part analytical insights.
+    Extracts structured six part analytical insights
+    from completed task experiences.
     """
     try:
         await send_to_channel(
             guild,
             STATUS_CHANNEL,
-            "🔄 Task complete — running reflection loop..."
+            "Running reflection loop..."
         )
 
         if not experiences:
             await send_to_channel(
                 guild,
                 STATUS_CHANNEL,
-                "💭 Reflection skipped — "
-                "no completed experiences yet."
+                "Reflection skipped — no completed experiences yet."
             )
             return
 
@@ -212,9 +275,7 @@ async def run_reflection_loop(guild, experiences):
             if insight.get("pattern"):
                 save_analytical_memory(
                     pattern=insight.get("pattern", ""),
-                    observation=insight.get(
-                        "observation", ""
-                    ),
+                    observation=insight.get("observation", ""),
                     reasoning=insight.get("reasoning", ""),
                     outcome=insight.get("outcome", ""),
                     confidence=float(
@@ -227,9 +288,7 @@ async def run_reflection_loop(guild, experiences):
                 )
                 stored_analytical += 1
 
-        for insight in reflection.get(
-            "strategic_insights", []
-        ):
+        for insight in reflection.get("strategic_insights", []):
             if insight:
                 save_strategic_memory(
                     content=insight,
@@ -244,15 +303,15 @@ async def run_reflection_loop(guild, experiences):
         await send_to_channel(
             guild,
             STATUS_CHANNEL,
-            f"✅ Reflection complete — "
-            f"{stored_analytical} analytical insights and "
+            f"Reflection complete — "
+            f"{stored_analytical} analytical and "
             f"{stored_strategic} strategic insights stored."
         )
 
         await send_to_channel(
             guild,
             LOG_CHANNEL,
-            f"🔄 Reflection loop | "
+            f"Reflection loop | "
             f"Summary: {reflection.get('summary', 'None')}"
         )
 
@@ -261,7 +320,7 @@ async def run_reflection_loop(guild, experiences):
         await send_to_channel(
             guild,
             LOG_CHANNEL,
-            f"❌ Reflection loop error: {str(e)}"
+            f"Reflection loop error: {str(e)}"
         )
 
 
@@ -270,7 +329,7 @@ async def extract_and_store_memories(
 ):
     """
     Extracts anything worth storing in long term memory
-    and saves it to the appropriate layer automatically.
+    after each interaction.
     """
     try:
         extraction_prompt = f"""Review this exchange and identify anything worth storing in long term memory.
@@ -330,9 +389,7 @@ Return empty arrays if nothing meaningful to store."""
                 request_summary=exp.get(
                     "request_summary", ""
                 ),
-                approach_used=exp.get(
-                    "approach_used", ""
-                ),
+                approach_used=exp.get("approach_used", ""),
                 outcome=exp.get("outcome", "neutral"),
                 lesson=exp.get("lesson", ""),
                 layers_used=list(extracted.keys()),
@@ -343,7 +400,7 @@ Return empty arrays if nothing meaningful to store."""
         await send_to_channel(
             guild,
             LOG_CHANNEL,
-            f"⚠️ Memory extraction note: {str(e)}"
+            f"Memory extraction note: {str(e)}"
         )
 
 
@@ -354,14 +411,14 @@ Return empty arrays if nothing meaningful to store."""
 @bot.event
 async def on_ready():
     """Runs once when the bot connects to Discord."""
-    print(f"✅ PerMyLastBot is online as {bot.user}")
+    print(f"PerMyLastBot is online as {bot.user}")
 
     for guild in bot.guilds:
         await send_to_channel(
             guild,
             STATUS_CHANNEL,
-            "✅ PerMyLastBot is online — "
-            "memory system active, reflection loops ready."
+            "PerMyLastBot is online — "
+            "memory system and tools active."
         )
 
 
@@ -416,32 +473,87 @@ async def on_message(message):
     await send_to_channel(
         message.guild,
         STATUS_CHANNEL,
-        f"⚙️ Processing request from "
+        f"Processing request from "
         f"{message.author.display_name}..."
     )
 
     async with message.channel.typing():
         try:
-            response = client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=1024,
-                system=SYSTEM_PROMPT,
-                messages=conversation_history[user_id]
-            )
+            tool_call_count = 0
+            final_response_text = ""
 
-            bot_reply = response.content[0].text
+            # ── AGENTIC TOOL LOOP ─────────────────────────
+            # Keep sending to Claude until it stops
+            # calling tools and gives a final response
+            while True:
 
-            conversation_history[user_id].append({
-                "role": "assistant",
-                "content": bot_reply
-            })
+                response = client.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=1024,
+                    system=SYSTEM_PROMPT,
+                    tools=TOOL_DEFINITIONS,
+                    messages=conversation_history[user_id]
+                )
 
-            await send_long_message(message.channel, bot_reply)
+                # Check if Claude wants to use a tool
+                if response.stop_reason == "tool_use":
+
+                    # Add Claude's response to history
+                    conversation_history[user_id].append({
+                        "role": "assistant",
+                        "content": response.content
+                    })
+
+                    # Process all tool calls in this response
+                    tool_results, tool_call_count = \
+                        await process_tool_calls(
+                            response,
+                            message.guild,
+                            tool_call_count
+                        )
+
+                    # Add tool results to history so
+                    # Claude can use them in next response
+                    conversation_history[user_id].append({
+                        "role": "user",
+                        "content": tool_results
+                    })
+
+                    # Continue the loop — Claude will
+                    # either use another tool or respond
+                    continue
+
+                # Claude is done with tools — get final text
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        final_response_text += block.text
+
+                # Add final response to history
+                conversation_history[user_id].append({
+                    "role": "assistant",
+                    "content": final_response_text
+                })
+
+                # Exit the tool loop
+                break
+
+            # Send final response to Discord
+            if final_response_text:
+                await send_long_message(
+                    message.channel,
+                    final_response_text
+                )
+            else:
+                await message.channel.send(
+                    "I processed your request but had "
+                    "trouble forming a response. "
+                    "Check bot-logs for details."
+                )
 
             # ── MEMORY STORAGE ────────────────────────────
             await extract_and_store_memories(
                 user_message,
-                bot_reply,
+                final_response_text,
                 message.guild,
                 task_completed
             )
@@ -464,11 +576,12 @@ async def on_message(message):
             await send_to_channel(
                 message.guild,
                 LOG_CHANNEL,
-                f"✅ Responded to "
+                f"Responded to "
                 f"{message.author.display_name} | "
                 f"Model: {response.model} | "
                 f"Tokens: {response.usage.input_tokens} in / "
                 f"{response.usage.output_tokens} out | "
+                f"Tools used: {tool_call_count} | "
                 f"Task complete: {task_completed} | "
                 f"Stale flags: {stale_count}"
             )
@@ -476,7 +589,7 @@ async def on_message(message):
             await send_to_channel(
                 message.guild,
                 STATUS_CHANNEL,
-                f"✅ Response delivered to "
+                f"Response delivered to "
                 f"{message.author.display_name}. Ready."
             )
 
@@ -488,7 +601,7 @@ async def on_message(message):
             await send_to_channel(
                 message.guild,
                 LOG_CHANNEL,
-                f"❌ Error for "
+                f"Error for "
                 f"{message.author.display_name}: {str(e)}"
             )
 
