@@ -284,6 +284,13 @@ TOOL_DEFINITIONS = [
 # Claude decides to call a tool
 # ============================================================
 
+_LAYER_LABELS = {
+    "strategic": "Strategic",
+    "operational": "Operational",
+    "analytical": "Analytical",
+}
+
+
 def handle_query_memory(inputs):
     """
     Searches memory semantically and returns
@@ -295,33 +302,17 @@ def handle_query_memory(inputs):
     memories = get_relevant_memories(query, max_results=5)
 
     if layer != "all":
-        filtered = {layer: memories.get(layer, [])}
-        memories = filtered
-
-    if not any(memories.get(k) for k in [
-        "strategic", "operational", "analytical"
-    ]):
-        return "No relevant memories found for that query."
+        memories = {layer: memories.get(layer, [])}
 
     sections = []
+    for key, label in _LAYER_LABELS.items():
+        items = memories.get(key)
+        if items:
+            formatted = "\n".join(f"- {m}" for m in items)
+            sections.append(f"{label}:\n{formatted}")
 
-    if memories.get("strategic"):
-        items = "\n".join(
-            f"- {m}" for m in memories["strategic"]
-        )
-        sections.append(f"Strategic:\n{items}")
-
-    if memories.get("operational"):
-        items = "\n".join(
-            f"- {m}" for m in memories["operational"]
-        )
-        sections.append(f"Operational:\n{items}")
-
-    if memories.get("analytical"):
-        items = "\n".join(
-            f"- {m}" for m in memories["analytical"]
-        )
-        sections.append(f"Analytical:\n{items}")
+    if not sections:
+        return "No relevant memories found for that query."
 
     return "\n\n".join(sections)
 
