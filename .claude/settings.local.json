@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C c:/Projects/discord-agent add agents/bot.py)",
+      "Bash(git -C c:/Projects/discord-agent commit -m ' *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(pip show *)",
+      "Bash(pip list *)",
+      "Bash(python -c \"import discord; print\\(discord.__version__, discord.__file__\\)\")",
+      "Bash(cat requirements.txt)",
+      "Bash(ls *.txt)",
+      "Bash(ls .venv)",
+      "Bash(ls venv *)",
+      "Bash(.venv/Scripts/pip install *)",
+      "Bash(ls .venv/Scripts/)",
+      "Bash(ls .venv/bin/)"
+    ]
+  }
+}
