@@ -9,7 +9,8 @@ import whisper
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
-CHUNK_SECONDS = 3.0
+CHUNK_SECONDS = 8.0
+OVERLAP_SECONDS = 0.5
 MAX_DURATION = 120.0
 WAKE_WORD = "your move"
 
@@ -19,7 +20,7 @@ _model = None
 def _get_model() -> whisper.Whisper:
     global _model
     if _model is None:
-        _model = whisper.load_model("base")
+        _model = whisper.load_model("small")
     return _model
 
 
@@ -45,9 +46,11 @@ def listen_and_transcribe() -> str:
     Returns all accumulated text with the wake word stripped out.
     """
     chunk_frames = int(SAMPLE_RATE * CHUNK_SECONDS)
+    overlap_frames = int(SAMPLE_RATE * OVERLAP_SECONDS)
     max_chunks = int(MAX_DURATION / CHUNK_SECONDS)
 
     accumulated = []
+    carry = np.empty((0, CHANNELS), dtype="float32")
     print("Recording... say 'your move' when done")
 
     with sd.InputStream(
@@ -55,7 +58,9 @@ def listen_and_transcribe() -> str:
     ) as stream:
         for _ in range(max_chunks):
             chunk, _ = stream.read(chunk_frames)
-            chunk_text = _transcribe_chunk(chunk.copy())
+            audio = np.concatenate([carry, chunk.copy()])
+            carry = chunk[-overlap_frames:].copy()
+            chunk_text = _transcribe_chunk(audio)
 
             if WAKE_WORD in chunk_text.lower():
                 clean = re.sub(
