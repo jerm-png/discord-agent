@@ -414,7 +414,7 @@ def handle_web_search(inputs):
     max_results = min(int(inputs.get("max_results", 3)), 5)
 
     try:
-        with DDGS() as ddgs:
+        with DDGS(timeout=10) as ddgs:
             raw_results = list(ddgs.text(
                 query,
                 max_results=max_results

@@ -1,3 +1,4 @@
+import asyncio
 import discord
 import os
 import sys
@@ -156,8 +157,11 @@ async def process_tool_calls(response, guild, tool_call_count):
                 f"Inputs: {json.dumps(tool_inputs)[:200]}"
             )
 
-            # Execute the tool
-            result = execute_tool(tool_name, tool_inputs)
+            # Execute the tool off the event loop thread
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None, execute_tool, tool_name, tool_inputs
+            )
 
             # Show tool activity in status channel
             await send_to_channel(
