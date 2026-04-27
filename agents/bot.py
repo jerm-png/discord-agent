@@ -406,7 +406,10 @@ async def on_message(message):
     if message.channel.name != COMMAND_CHANNEL:
         return
 
-    if bot.user not in message.mentions:
+    is_mention = bot.user in message.mentions
+    is_prefix = message.content.startswith("!")
+
+    if not is_mention and not is_prefix:
         return
 
     user_id = str(message.author.id)
@@ -414,13 +417,16 @@ async def on_message(message):
     if user_id not in conversation_history:
         conversation_history[user_id] = []
 
-    user_message = message.content.replace(
-        f"<@{bot.user.id}>", ""
-    ).strip()
+    if is_prefix:
+        user_message = message.content[1:].strip()
+    else:
+        user_message = message.content.replace(
+            f"<@{bot.user.id}>", ""
+        ).strip()
 
     if not user_message:
         await message.channel.send(
-            "You mentioned me but didn't say anything. "
+            "I got your message but there was nothing in it. "
             "What do you need?"
         )
         return
