@@ -13,21 +13,29 @@ from anthropic import Anthropic
 
 
 def load_opus():
-    opus_paths = [
-        os.path.join(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__))), 'opus.dll'),
-        'opus.dll',
-        'libopus.dll',
-        'libopus-0.dll'
+    # Use the Opus DLL bundled with discord.py
+    venv_opus = os.path.join(
+        os.path.dirname(sys.executable),
+        '..', 'Lib', 'site-packages', 'discord',
+        'bin', 'libopus-0.x64.dll'
+    )
+    venv_opus = os.path.normpath(venv_opus)
+
+    paths_to_try = [
+        venv_opus,
+        'libopus-0.x64.dll',
+        'libopus-0.dll',
+        'opus.dll'
     ]
-    for path in opus_paths:
+
+    for path in paths_to_try:
         try:
             discord.opus.load_opus(path)
             print(f"Opus loaded from: {path}")
             return True
         except:
             continue
-    print("Warning: Opus not loaded — voice receive may not work")
+    print("Warning: Opus not loaded")
     return False
 
 load_opus()
