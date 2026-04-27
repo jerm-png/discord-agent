@@ -5,6 +5,7 @@ import sys
 import json
 import urllib.request
 import urllib.error
+from discord import app_commands
 from dotenv import load_dotenv
 from anthropic import Anthropic
 
@@ -35,6 +36,8 @@ from tools.tool_definitions import (
     TOOL_DEFINITIONS,
     execute_tool
 )
+
+from voice_input import listen_and_transcribe
 
 # ============================================================
 # CONFIGURATION
@@ -106,6 +109,7 @@ intents.members = True
 intents.presences = True
 
 bot = discord.Client(intents=intents)
+tree = app_commands.CommandTree(bot)
 
 
 # ============================================================
@@ -392,6 +396,141 @@ Return empty arrays if nothing meaningful to store."""
         )
 
 
+async def process_user_message(
+    user_message, user_id, author_display_name, guild, channel
+):
+    """
+    Shared Claude processing pipeline used by on_message and /listen.
+    Handles memory retrieval, the agentic tool loop, memory storage,
+    reflection, and logging.
+    """
+    if user_id not in conversation_history:
+        conversation_history[user_id] = []
+
+    task_completed = is_task_completion(user_message)
+
+    memories = get_relevant_memories(user_message)
+    memory_context = format_memory_for_prompt(memories)
+
+    full_message = user_message
+    if memory_context:
+        full_message = (
+            f"{memory_context}\n\n"
+            f"Current message: {user_message}"
+        )
+
+    conversation_history[user_id].append({
+        "role": "user",
+        "content": full_message
+    })
+
+    await send_to_channel(
+        guild,
+        STATUS_CHANNEL,
+        f"Processing request from {author_display_name}..."
+    )
+
+    async with channel.typing():
+        try:
+            tool_call_count = 0
+            final_response_text = ""
+
+            while True:
+                response = client.messages.create(
+                    model=MAIN_MODEL,
+                    max_tokens=1024,
+                    system=SYSTEM_PROMPT,
+                    tools=TOOL_DEFINITIONS,
+                    messages=conversation_history[user_id]
+                )
+
+                if response.stop_reason == "tool_use":
+                    conversation_history[user_id].append({
+                        "role": "assistant",
+                        "content": response.content
+                    })
+                    tool_results, tool_call_count = \
+                        await process_tool_calls(
+                            response, guild, tool_call_count
+                        )
+                    conversation_history[user_id].append({
+                        "role": "user",
+                        "content": tool_results
+                    })
+                    continue
+
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        final_response_text += block.text
+
+                conversation_history[user_id].append({
+                    "role": "assistant",
+                    "content": final_response_text
+                })
+                break
+
+            if final_response_text:
+                await send_long_message(channel, final_response_text)
+            else:
+                await channel.send(
+                    "I processed your request but had "
+                    "trouble forming a response. "
+                    "Check bot-logs for details."
+                )
+
+            await extract_and_store_memories(
+                user_message,
+                final_response_text,
+                guild,
+                task_completed
+            )
+
+            if task_completed:
+                experiences = get_recent_experiences(
+                    limit=5,
+                    task_completed_only=True
+                )
+                await run_reflection_loop(guild, experiences)
+
+            stale_count = len(memories.get("stale_flags", []))
+            await send_to_channel(
+                guild,
+                LOG_CHANNEL,
+                f"Responded to {author_display_name} | "
+                f"Model: {response.model} | "
+                f"Tokens: {response.usage.input_tokens} in / "
+                f"{response.usage.output_tokens} out | "
+                f"Tools used: {tool_call_count} | "
+                f"Task complete: {task_completed} | "
+                f"Stale flags: {stale_count}"
+            )
+
+            await send_to_channel(
+                guild,
+                STATUS_CHANNEL,
+                f"Response delivered to {author_display_name}. Ready."
+            )
+
+            if stale_count:
+                await send_to_channel(
+                    guild,
+                    STATUS_CHANNEL,
+                    f"{tag_owner()}{stale_count} stale memory "
+                    f"flag(s) detected — review may be needed."
+                )
+
+        except Exception as e:
+            await channel.send(
+                "Something went wrong on my end. "
+                "Check bot-logs for details."
+            )
+            await send_to_channel(
+                guild,
+                LOG_CHANNEL,
+                f"{tag_owner()}Error for {author_display_name}: {str(e)}"
+            )
+
+
 # ============================================================
 # BOT EVENTS
 # ============================================================
@@ -400,6 +539,7 @@ Return empty arrays if nothing meaningful to store."""
 async def on_ready():
     """Runs once when the bot connects to Discord."""
     print(f"PerMyLastBot is online as {bot.user}")
+    await tree.sync()
 
     for guild in bot.guilds:
         await send_to_channel(
@@ -426,11 +566,6 @@ async def on_message(message):
     if not is_mention and not is_prefix:
         return
 
-    user_id = str(message.author.id)
-
-    if user_id not in conversation_history:
-        conversation_history[user_id] = []
-
     if is_prefix:
         user_message = message.content[1:].strip()
     else:
@@ -445,167 +580,83 @@ async def on_message(message):
         )
         return
 
-    # ── TASK COMPLETION DETECTION ─────────────────────────
-    task_completed = is_task_completion(user_message)
-
-    # ── MEMORY RETRIEVAL ──────────────────────────────────
-    memories = get_relevant_memories(user_message)
-    memory_context = format_memory_for_prompt(memories)
-
-    full_message = user_message
-    if memory_context:
-        full_message = (
-            f"{memory_context}\n\n"
-            f"Current message: {user_message}"
-        )
-
-    conversation_history[user_id].append({
-        "role": "user",
-        "content": full_message
-    })
-
-    await send_to_channel(
+    await process_user_message(
+        user_message,
+        str(message.author.id),
+        message.author.display_name,
         message.guild,
-        STATUS_CHANNEL,
-        f"Processing request from "
-        f"{message.author.display_name}..."
+        message.channel
     )
 
-    async with message.channel.typing():
-        try:
-            tool_call_count = 0
-            final_response_text = ""
 
-            # ── AGENTIC TOOL LOOP ─────────────────────────
-            # Keep sending to Claude until it stops
-            # calling tools and gives a final response
-            while True:
+# ============================================================
+# SLASH COMMANDS
+# ============================================================
 
-                response = client.messages.create(
-                    model=MAIN_MODEL,
-                    max_tokens=1024,
-                    system=SYSTEM_PROMPT,
-                    tools=TOOL_DEFINITIONS,
-                    messages=conversation_history[user_id]
-                )
+@tree.command(
+    name="listen",
+    description="Join your voice channel and listen for a voice command"
+)
+async def slash_listen(interaction: discord.Interaction):
+    if not interaction.user.voice or not interaction.user.voice.channel:
+        await interaction.response.send_message(
+            "You need to be in a voice channel first.", ephemeral=True
+        )
+        return
 
-                # Check if Claude wants to use a tool
-                if response.stop_reason == "tool_use":
+    voice_channel = interaction.user.voice.channel
+    guild = interaction.guild
+    cmd_channel = discord.utils.get(guild.channels, name=COMMAND_CHANNEL)
 
-                    # Add Claude's response to history
-                    conversation_history[user_id].append({
-                        "role": "assistant",
-                        "content": response.content
-                    })
+    voice_client = guild.voice_client
+    if voice_client:
+        await voice_client.move_to(voice_channel)
+    else:
+        await voice_channel.connect()
 
-                    # Process all tool calls in this response
-                    tool_results, tool_call_count = \
-                        await process_tool_calls(
-                            response,
-                            message.guild,
-                            tool_call_count
-                        )
+    await interaction.response.send_message(
+        "Listening in voice channel — speak now"
+    )
 
-                    # Add tool results to history so
-                    # Claude can use them in next response
-                    conversation_history[user_id].append({
-                        "role": "user",
-                        "content": tool_results
-                    })
+    loop = asyncio.get_running_loop()
+    try:
+        transcription = await loop.run_in_executor(None, listen_and_transcribe)
+    except Exception as e:
+        await cmd_channel.send(f"Voice transcription failed: {str(e)}")
+        return
 
-                    # Continue the loop — Claude will
-                    # either use another tool or respond
-                    continue
+    if not transcription:
+        await cmd_channel.send(
+            "I didn't catch anything — try /listen again."
+        )
+        return
 
-                # Claude is done with tools — get final text
-                for block in response.content:
-                    if hasattr(block, "text"):
-                        final_response_text += block.text
+    await cmd_channel.send(f"Heard: {transcription}")
 
-                # Add final response to history
-                conversation_history[user_id].append({
-                    "role": "assistant",
-                    "content": final_response_text
-                })
+    await process_user_message(
+        transcription,
+        str(interaction.user.id),
+        interaction.user.display_name,
+        guild,
+        cmd_channel
+    )
 
-                # Exit the tool loop
-                break
 
-            # Send final response to Discord
-            if final_response_text:
-                await send_long_message(
-                    message.channel,
-                    final_response_text
-                )
-            else:
-                await message.channel.send(
-                    "I processed your request but had "
-                    "trouble forming a response. "
-                    "Check bot-logs for details."
-                )
-
-            # ── MEMORY STORAGE ────────────────────────────
-            await extract_and_store_memories(
-                user_message,
-                final_response_text,
-                message.guild,
-                task_completed
-            )
-
-            # ── REFLECTION TRIGGER ────────────────────────
-            if task_completed:
-                experiences = get_recent_experiences(
-                    limit=5,
-                    task_completed_only=True
-                )
-                await run_reflection_loop(
-                    message.guild,
-                    experiences
-                )
-
-            # ── LOGGING ───────────────────────────────────
-            stale_count = len(
-                memories.get("stale_flags", [])
-            )
-            await send_to_channel(
-                message.guild,
-                LOG_CHANNEL,
-                f"Responded to "
-                f"{message.author.display_name} | "
-                f"Model: {response.model} | "
-                f"Tokens: {response.usage.input_tokens} in / "
-                f"{response.usage.output_tokens} out | "
-                f"Tools used: {tool_call_count} | "
-                f"Task complete: {task_completed} | "
-                f"Stale flags: {stale_count}"
-            )
-
-            await send_to_channel(
-                message.guild,
-                STATUS_CHANNEL,
-                f"Response delivered to "
-                f"{message.author.display_name}. Ready."
-            )
-
-            if stale_count:
-                await send_to_channel(
-                    message.guild,
-                    STATUS_CHANNEL,
-                    f"{tag_owner()}{stale_count} stale memory "
-                    f"flag(s) detected — review may be needed."
-                )
-
-        except Exception as e:
-            await message.channel.send(
-                "Something went wrong on my end. "
-                "Check bot-logs for details."
-            )
-            await send_to_channel(
-                message.guild,
-                LOG_CHANNEL,
-                f"{tag_owner()}Error for "
-                f"{message.author.display_name}: {str(e)}"
-            )
+@tree.command(
+    name="leave",
+    description="Disconnect from the voice channel"
+)
+async def slash_leave(interaction: discord.Interaction):
+    voice_client = interaction.guild.voice_client
+    if voice_client and voice_client.is_connected():
+        await voice_client.disconnect()
+        await interaction.response.send_message(
+            "Disconnected from voice channel."
+        )
+    else:
+        await interaction.response.send_message(
+            "Not currently in a voice channel.", ephemeral=True
+        )
 
 
 # ============================================================
