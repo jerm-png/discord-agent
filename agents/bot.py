@@ -53,6 +53,8 @@ BACKGROUND_MODEL = "claude-haiku-4-5-20251001"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "llama3.2"
 
+OWNER_ID = os.getenv("DISCORD_OWNER_ID", "")
+
 COMMAND_CHANNEL = "bot-commands"
 STATUS_CHANNEL = "bot-status"
 LOG_CHANNEL = "bot-logs"
@@ -109,6 +111,11 @@ bot = discord.Client(intents=intents)
 # ============================================================
 # HELPER FUNCTIONS
 # ============================================================
+
+def tag_owner() -> str:
+    """Returns a Discord mention string for the owner, or empty string if unset."""
+    return f"<@{OWNER_ID}> " if OWNER_ID else ""
+
 
 async def call_background_model(prompt: str) -> str:
     """Tries Ollama first, falls back to Anthropic Haiku if unavailable."""
@@ -283,13 +290,20 @@ async def run_reflection_loop(guild, experiences):
 
         set_pending_reflection(False)
 
-        await send_to_channel(
-            guild,
-            STATUS_CHANNEL,
-            f"Reflection complete — "
-            f"{stored_analytical} analytical and "
-            f"{stored_strategic} strategic insights stored."
-        )
+        if stored_analytical or stored_strategic:
+            await send_to_channel(
+                guild,
+                STATUS_CHANNEL,
+                f"{tag_owner()}Reflection complete — "
+                f"{stored_analytical} analytical and "
+                f"{stored_strategic} strategic insights stored."
+            )
+        else:
+            await send_to_channel(
+                guild,
+                STATUS_CHANNEL,
+                "Reflection complete — no new insights stored."
+            )
 
         await send_to_channel(
             guild,
@@ -573,6 +587,14 @@ async def on_message(message):
                 f"{message.author.display_name}. Ready."
             )
 
+            if stale_count:
+                await send_to_channel(
+                    message.guild,
+                    STATUS_CHANNEL,
+                    f"{tag_owner()}{stale_count} stale memory "
+                    f"flag(s) detected — review may be needed."
+                )
+
         except Exception as e:
             await message.channel.send(
                 "Something went wrong on my end. "
@@ -581,7 +603,7 @@ async def on_message(message):
             await send_to_channel(
                 message.guild,
                 LOG_CHANNEL,
-                f"Error for "
+                f"{tag_owner()}Error for "
                 f"{message.author.display_name}: {str(e)}"
             )
 
