@@ -3,6 +3,8 @@ import discord
 import os
 import sys
 import json
+import urllib.request
+import urllib.error
 from dotenv import load_dotenv
 from anthropic import Anthropic
 
@@ -47,6 +49,9 @@ client = Anthropic()
 
 MAIN_MODEL = "claude-sonnet-4-6"
 BACKGROUND_MODEL = "claude-haiku-4-5-20251001"
+
+OLLAMA_URL = "http://localhost:11434/api/generate"
+OLLAMA_MODEL = "llama3.2"
 
 COMMAND_CHANNEL = "bot-commands"
 STATUS_CHANNEL = "bot-status"
@@ -104,6 +109,34 @@ bot = discord.Client(intents=intents)
 # ============================================================
 # HELPER FUNCTIONS
 # ============================================================
+
+async def call_background_model(prompt: str) -> str:
+    """Tries Ollama first, falls back to Anthropic Haiku if unavailable."""
+    def _call_ollama():
+        payload = json.dumps({
+            "model": OLLAMA_MODEL,
+            "prompt": prompt,
+            "stream": False
+        }).encode()
+        req = urllib.request.Request(
+            OLLAMA_URL,
+            data=payload,
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read())["response"]
+
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(None, _call_ollama)
+    except Exception:
+        response = client.messages.create(
+            model=BACKGROUND_MODEL,
+            max_tokens=1500,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return response.content[0].text.strip()
+
 
 async def send_to_channel(guild, channel_name, message):
     """Finds a channel by name and sends a message to it."""
@@ -210,18 +243,9 @@ async def run_reflection_loop(guild, experiences):
             for e in experiences
         ])
 
-        response = client.messages.create(
-            model=BACKGROUND_MODEL,
-            max_tokens=1500,
-            messages=[{
-                "role": "user",
-                "content": REFLECTION_PROMPT.format(
-                    experiences=exp_text
-                )
-            }]
+        raw = await call_background_model(
+            REFLECTION_PROMPT.format(experiences=exp_text)
         )
-
-        raw = response.content[0].text.strip()
         clean = raw.replace(
             "```json", ""
         ).replace("```", "").strip()
@@ -312,16 +336,7 @@ Respond in this exact JSON format with no other text:
 Only include items genuinely worth remembering long term.
 Return empty arrays if nothing meaningful to store."""
 
-        response = client.messages.create(
-            model=BACKGROUND_MODEL,
-            max_tokens=500,
-            messages=[{
-                "role": "user",
-                "content": extraction_prompt
-            }]
-        )
-
-        raw = response.content[0].text.strip()
+        raw = await call_background_model(extraction_prompt)
         clean = raw.replace(
             "```json", ""
         ).replace("```", "").strip()
