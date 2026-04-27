@@ -108,6 +108,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 intents.presences = True
+intents.voice_states = True
 
 bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
@@ -620,6 +621,7 @@ async def on_message(message):
 @bot.event
 async def on_voice_state_update(member, before, after):
     """Auto-joins owner's voice channel and runs a continuous listen loop."""
+    print(f"Voice state update: {member.name} before={before.channel} after={after.channel}")
     global _listen_task
 
     if not OWNER_ID or str(member.id) != OWNER_ID:
@@ -634,7 +636,11 @@ async def on_voice_state_update(member, before, after):
         if voice_client:
             await voice_client.move_to(after.channel)
         else:
-            await after.channel.connect()
+            try:
+                await after.channel.connect()
+            except Exception as e:
+                print(f"Voice connect failed: {type(e).__name__}: {e}")
+                return
 
         await cmd_channel.send("Listening in voice channel — speak now")
 
