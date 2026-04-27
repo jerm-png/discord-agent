@@ -1,5 +1,4 @@
 import json
-import sqlite3
 import os
 import sys
 from datetime import datetime
@@ -17,7 +16,7 @@ from memory.memory_manager import (
     save_analytical_memory,
     save_operational_memory,
     validate_memory,
-    DB_PATH
+    update_memory_confidence,
 )
 
 # ============================================================
@@ -452,49 +451,15 @@ def handle_calculate_confidence(inputs):
     direction = inputs.get("direction", "increase")
     reason = inputs.get("reason", "")
 
-    table_map = {
-        "strategic": "strategic_memory",
-        "operational": "operational_memory",
-        "analytical": "analytical_memory"
-    }
-    table = table_map.get(layer, "strategic_memory")
+    result = update_memory_confidence(layer, memory_id, direction)
 
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-
-    c.execute(f"""
-        SELECT confidence FROM {table} WHERE id = ?
-    """, (memory_id,))
-
-    row = c.fetchone()
-    if not row:
-        conn.close()
+    if result is None:
         return f"Memory ID {memory_id} not found in {layer} layer."
 
-    current_confidence = float(row[0])
-
-    if direction == "increase":
-        new_confidence = min(
-            current_confidence + 0.1, 1.0
-        )
-    else:
-        new_confidence = max(
-            current_confidence - 0.1, 0.1
-        )
-
-    c.execute(f"""
-        UPDATE {table}
-        SET confidence = ?
-        WHERE id = ?
-    """, (new_confidence, memory_id))
-
-    conn.commit()
-    conn.close()
-
+    old, new = result
     return (
         f"Confidence updated — memory {memory_id} in "
-        f"{layer} layer: {current_confidence:.1f} → "
-        f"{new_confidence:.1f} | Reason: {reason}"
+        f"{layer} layer: {old:.1f} → {new:.1f} | Reason: {reason}"
     )
 
 

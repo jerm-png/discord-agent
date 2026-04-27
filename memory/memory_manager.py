@@ -504,6 +504,42 @@ def validate_memory(layer, memory_id):
     conn.close()
 
 
+def update_memory_confidence(layer, memory_id, direction):
+    _VALID_TABLES = {
+        "strategic": "strategic_memory",
+        "operational": "operational_memory",
+        "analytical": "analytical_memory",
+    }
+    table = _VALID_TABLES.get(layer)
+    if not table:
+        return None
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        f"SELECT confidence FROM {table} WHERE id = ?",
+        (memory_id,)
+    )
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return None
+
+    current = float(row[0])
+    updated = (
+        min(current + 0.1, 1.0)
+        if direction == "increase"
+        else max(current - 0.1, 0.1)
+    )
+    c.execute(
+        f"UPDATE {table} SET confidence = ? WHERE id = ?",
+        (updated, memory_id)
+    )
+    conn.commit()
+    conn.close()
+    return (current, updated)
+
+
 def format_memory_for_prompt(memories):
     sections = []
 
