@@ -3,11 +3,13 @@ import discord
 import os
 import sys
 import json
+import tempfile
 import urllib.request
 import urllib.error
 from discord import app_commands
 from dotenv import load_dotenv
 from anthropic import Anthropic
+from elevenlabs import ElevenLabs
 
 # Add project root to path
 project_root = os.path.dirname(os.path.dirname(
@@ -58,6 +60,9 @@ OLLAMA_MODEL = "llama3.2"
 
 OWNER_ID = os.getenv("DISCORD_OWNER_ID", "")
 
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
+ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "")
+
 COMMAND_CHANNEL = "bot-commands"
 STATUS_CHANNEL = "bot-status"
 LOG_CHANNEL = "bot-logs"
@@ -107,6 +112,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 intents.presences = True
+intents.voice_states = True
 
 bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
@@ -396,8 +402,57 @@ Return empty arrays if nothing meaningful to store."""
         )
 
 
+async def speak_response(text: str, guild) -> None:
+    """
+    Converts text to speech via ElevenLabs and plays it in the General
+    voice channel. Disconnects when done. Fails silently so the text
+    response always reaches the user even if TTS breaks.
+    """
+    if not ELEVENLABS_API_KEY or not ELEVENLABS_VOICE_ID:
+        return
+
+    voice_channel = discord.utils.get(guild.voice_channels, name="General")
+    if not voice_channel:
+        return
+
+    tmp_path = None
+    voice_client = None
+    try:
+        el_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
+        audio_iter = el_client.text_to_speech.convert(
+            voice_id=ELEVENLABS_VOICE_ID,
+            text=text,
+            model_id="eleven_monolingual_v1",
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+            for chunk in audio_iter:
+                tmp.write(chunk)
+            tmp_path = tmp.name
+
+        voice_client = discord.utils.get(bot.voice_clients, guild=guild)
+        if voice_client is None:
+            voice_client = await voice_channel.connect()
+        elif voice_client.channel != voice_channel:
+            await voice_client.move_to(voice_channel)
+
+        source = discord.FFmpegPCMAudio(tmp_path)
+        done = asyncio.Event()
+        voice_client.play(source, after=lambda _: done.set())
+        await done.wait()
+
+    except Exception:
+        pass
+    finally:
+        if voice_client and voice_client.is_connected():
+            await voice_client.disconnect()
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
 async def process_user_message(
-    user_message, user_id, author_display_name, guild, channel
+    user_message, user_id, author_display_name, guild, channel,
+    speak: bool = False
 ):
     """
     Shared Claude processing pipeline used by on_message and /listen.
@@ -471,6 +526,8 @@ async def process_user_message(
 
             if final_response_text:
                 await send_long_message(channel, final_response_text)
+                if speak:
+                    await speak_response(final_response_text, guild)
             else:
                 await channel.send(
                     "I processed your request but had "
@@ -596,7 +653,8 @@ async def on_message(message):
             str(message.author.id),
             message.author.display_name,
             message.guild,
-            message.channel
+            message.channel,
+            speak=True
         )
         return
 
@@ -614,6 +672,10 @@ async def on_message(message):
             f"<@{bot.user.id}>", ""
         ).strip()
 
+    speak = user_message.lower().endswith(" speak")
+    if speak:
+        user_message = user_message[:-6].rstrip()
+
     if not user_message:
         await message.channel.send(
             "I got your message but there was nothing in it. "
@@ -626,7 +688,8 @@ async def on_message(message):
         str(message.author.id),
         message.author.display_name,
         message.guild,
-        message.channel
+        message.channel,
+        speak=speak
     )
 
 
