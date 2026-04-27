@@ -1,4 +1,5 @@
 import os
+import re
 import tempfile
 
 import numpy as np
@@ -8,11 +9,9 @@ import whisper
 
 SAMPLE_RATE = 16000
 CHANNELS = 1
-MAX_DURATION = 10.0
-SILENCE_DURATION = 1.5
-SILENCE_THRESHOLD = 0.01  # RMS amplitude — tune up if mic is noisy
-CHUNK_SECONDS = 0.1
-MIN_RECORD_SECONDS = 1.0  # don't trigger silence cutoff before this
+CHUNK_SECONDS = 3.0
+MAX_DURATION = 120.0
+WAKE_WORD = "your move"
 
 _model = None
 
@@ -24,45 +23,13 @@ def _get_model() -> whisper.Whisper:
     return _model
 
 
-def listen_and_transcribe() -> str:
-    """
-    Records from the default microphone and returns Whisper's transcription.
-    Stops early after SILENCE_DURATION seconds of audio below SILENCE_THRESHOLD,
-    but records at least MIN_RECORD_SECONDS before the silence check activates.
-    """
-    chunk_frames = int(SAMPLE_RATE * CHUNK_SECONDS)
-    max_chunks = int(MAX_DURATION / CHUNK_SECONDS)
-    silence_chunks_needed = int(SILENCE_DURATION / CHUNK_SECONDS)
-    min_chunks = int(MIN_RECORD_SECONDS / CHUNK_SECONDS)
-
-    recorded = []
-    silence_count = 0
-
-    print("Listening... (speak now)")
-
-    with sd.InputStream(
-        samplerate=SAMPLE_RATE, channels=CHANNELS, dtype="float32"
-    ) as stream:
-        for i in range(max_chunks):
-            chunk, _ = stream.read(chunk_frames)
-            recorded.append(chunk.copy())
-
-            if i >= min_chunks:
-                rms = float(np.sqrt(np.mean(chunk ** 2)))
-                if rms < SILENCE_THRESHOLD:
-                    silence_count += 1
-                    if silence_count >= silence_chunks_needed:
-                        break
-                else:
-                    silence_count = 0
-
-    audio = np.concatenate(recorded, axis=0)
-
+def _transcribe_chunk(audio_chunk: np.ndarray) -> str:
+    """Writes a single chunk to a temp file, transcribes it, cleans up."""
     tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             tmp_path = tmp.name
-        sf.write(tmp_path, audio, SAMPLE_RATE)
+        sf.write(tmp_path, audio_chunk, SAMPLE_RATE)
         result = _get_model().transcribe(tmp_path)
         return result["text"].strip()
     finally:
@@ -70,9 +37,43 @@ def listen_and_transcribe() -> str:
             os.remove(tmp_path)
 
 
+def listen_and_transcribe() -> str:
+    """
+    Records in CHUNK_SECONDS chunks, transcribing each with Whisper.
+    Accumulates text across chunks and stops when the wake word
+    "your move" is detected or MAX_DURATION seconds have elapsed.
+    Returns all accumulated text with the wake word stripped out.
+    """
+    chunk_frames = int(SAMPLE_RATE * CHUNK_SECONDS)
+    max_chunks = int(MAX_DURATION / CHUNK_SECONDS)
+
+    accumulated = []
+    print("Recording... say 'your move' when done")
+
+    with sd.InputStream(
+        samplerate=SAMPLE_RATE, channels=CHANNELS, dtype="float32"
+    ) as stream:
+        for _ in range(max_chunks):
+            chunk, _ = stream.read(chunk_frames)
+            chunk_text = _transcribe_chunk(chunk.copy())
+
+            if WAKE_WORD in chunk_text.lower():
+                clean = re.sub(
+                    r"your\s+move[.,!?]*", "", chunk_text, flags=re.IGNORECASE
+                ).strip()
+                if clean:
+                    accumulated.append(clean)
+                break
+
+            if chunk_text:
+                accumulated.append(chunk_text)
+
+    return " ".join(accumulated).strip()
+
+
 def test_voice_input() -> None:
-    """Records once and prints the transcription."""
-    print("Voice input test — recording once.")
+    """Records using wake word detection and prints the transcription."""
+    print("Voice input test — speak freely, then say 'your move' when finished.")
     text = listen_and_transcribe()
     print(f"Transcription: {text!r}")
 
