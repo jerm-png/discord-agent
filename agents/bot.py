@@ -1,4 +1,5 @@
 import asyncio
+import ctypes
 import discord
 import os
 import sys
@@ -9,6 +10,28 @@ from discord import app_commands
 import discord.ext.voice_recv as voice_recv
 from dotenv import load_dotenv
 from anthropic import Anthropic
+
+
+def load_opus():
+    opus_paths = [
+        os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), 'opus.dll'),
+        'opus.dll',
+        'libopus.dll',
+        'libopus-0.dll'
+    ]
+    for path in opus_paths:
+        try:
+            discord.opus.load_opus(path)
+            print(f"Opus loaded from: {path}")
+            return True
+        except:
+            continue
+    print("Warning: Opus not loaded — voice receive may not work")
+    return False
+
+load_opus()
+
 
 # Add project root to path
 project_root = os.path.dirname(os.path.dirname(
