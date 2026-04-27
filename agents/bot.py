@@ -1,5 +1,4 @@
 import asyncio
-import ctypes
 import discord
 import os
 import sys
@@ -7,39 +6,8 @@ import json
 import urllib.request
 import urllib.error
 from discord import app_commands
-import discord.ext.voice_recv as voice_recv
 from dotenv import load_dotenv
 from anthropic import Anthropic
-
-
-def load_opus():
-    # Use the Opus DLL bundled with discord.py
-    venv_opus = os.path.join(
-        os.path.dirname(sys.executable),
-        '..', 'Lib', 'site-packages', 'discord',
-        'bin', 'libopus-0.x64.dll'
-    )
-    venv_opus = os.path.normpath(venv_opus)
-
-    paths_to_try = [
-        venv_opus,
-        'libopus-0.x64.dll',
-        'libopus-0.dll',
-        'opus.dll'
-    ]
-
-    for path in paths_to_try:
-        try:
-            discord.opus.load_opus(path)
-            print(f"Opus loaded from: {path}")
-            return True
-        except:
-            continue
-    print("Warning: Opus not loaded")
-    return False
-
-load_opus()
-
 
 # Add project root to path
 project_root = os.path.dirname(os.path.dirname(
@@ -69,7 +37,7 @@ from tools.tool_definitions import (
     execute_tool
 )
 
-from voice_input import WhisperSink, transcribe_utterance
+from voice_input import transcribe_attachment
 
 # ============================================================
 # CONFIGURATION
@@ -98,8 +66,6 @@ LOG_CHANNEL = "bot-logs"
 MAX_TOOL_CALLS = 5
 
 conversation_history = {}
-_listen_task = None  # asyncio.Task for the owner voice loop
-_sink = None         # WhisperSink attached to the current VoiceRecvClient
 
 with open(
     os.path.join(project_root, "SOUL.md"), "r", encoding="utf-8"
@@ -141,7 +107,6 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 intents.presences = True
-intents.voice_states = True
 
 bot = discord.Client(intents=intents)
 tree = app_commands.CommandTree(bot)
@@ -566,30 +531,6 @@ async def process_user_message(
             )
 
 
-async def _owner_voice_loop(guild, cmd_channel, user_id, display_name, sink):
-    """Continuously transcribes and processes voice commands while owner is in channel."""
-    try:
-        while True:
-            try:
-                transcription = await transcribe_utterance(sink)
-            except Exception as e:
-                await cmd_channel.send(
-                    f"Voice transcription failed: {str(e)}"
-                )
-                continue
-
-            if not transcription:
-                continue
-
-            await cmd_channel.send(f"Heard: {transcription}")
-            await process_user_message(
-                transcription, user_id, display_name, guild, cmd_channel
-            )
-
-    except asyncio.CancelledError:
-        pass
-
-
 # ============================================================
 # BOT EVENTS
 # ============================================================
@@ -611,7 +552,7 @@ async def on_ready():
 
 @bot.event
 async def on_message(message):
-    """Handles all incoming messages."""
+    """Handles all incoming messages, including Discord voice message attachments."""
 
     if message.author == bot.user:
         return
@@ -619,6 +560,47 @@ async def on_message(message):
     if message.channel.name != COMMAND_CHANNEL:
         return
 
+    # ── VOICE MESSAGE ATTACHMENTS ─────────────────────────
+    voice_attachment = next(
+        (
+            a for a in message.attachments
+            if a.content_type and a.content_type.startswith("audio/")
+        ),
+        None
+    )
+
+    if voice_attachment:
+        suffix = (
+            os.path.splitext(voice_attachment.filename)[1]
+            if "." in voice_attachment.filename
+            else "." + voice_attachment.content_type.split("/")[-1].split(";")[0]
+        )
+        audio_bytes = await voice_attachment.read()
+        loop = asyncio.get_running_loop()
+        try:
+            transcription = await loop.run_in_executor(
+                None, transcribe_attachment, audio_bytes, suffix
+            )
+        except Exception as e:
+            await message.channel.send(
+                f"Voice transcription failed: {str(e)}"
+            )
+            return
+
+        if not transcription:
+            return
+
+        await message.channel.send(f"Heard: {transcription}")
+        await process_user_message(
+            transcription,
+            str(message.author.id),
+            message.author.display_name,
+            message.guild,
+            message.channel
+        )
+        return
+
+    # ── TEXT COMMANDS ─────────────────────────────────────
     is_mention = bot.user in message.mentions
     is_prefix = message.content.startswith("!")
 
@@ -646,149 +628,6 @@ async def on_message(message):
         message.guild,
         message.channel
     )
-
-
-@bot.event
-async def on_voice_state_update(member, before, after):
-    """Auto-joins owner's voice channel and runs a continuous listen loop."""
-    print(f"Voice state update: {member.name} before={before.channel} after={after.channel}")
-    global _listen_task, _sink
-
-    if not OWNER_ID or str(member.id) != OWNER_ID:
-        return
-
-    guild = member.guild
-    cmd_channel = discord.utils.get(guild.channels, name=COMMAND_CHANNEL)
-
-    # Owner joined a voice channel (wasn't in one before)
-    if before.channel is None and after.channel is not None:
-        # Always disconnect first so we can reconnect as VoiceRecvClient
-        existing = guild.voice_client
-        if existing and existing.is_connected():
-            await existing.disconnect()
-
-        try:
-            vc = await after.channel.connect(cls=voice_recv.VoiceRecvClient)
-        except Exception as e:
-            print(f"Voice connect failed: {type(e).__name__}: {e}")
-            return
-
-        _sink = WhisperSink(member.id)
-        vc.listen(_sink)
-
-        await cmd_channel.send("Listening in voice channel — speak now")
-
-        _listen_task = asyncio.create_task(
-            _owner_voice_loop(
-                guild,
-                cmd_channel,
-                str(member.id),
-                member.display_name,
-                _sink
-            )
-        )
-
-    # Owner left all voice channels
-    elif before.channel is not None and after.channel is None:
-        if _listen_task and not _listen_task.done():
-            _listen_task.cancel()
-        _listen_task = None
-        _sink = None
-
-        vc = guild.voice_client
-        if vc and vc.is_connected():
-            if isinstance(vc, voice_recv.VoiceRecvClient):
-                vc.stop_listening()
-            await vc.disconnect()
-
-        await cmd_channel.send("Owner left voice channel — disconnecting.")
-
-
-# ============================================================
-# SLASH COMMANDS
-# ============================================================
-
-@tree.command(
-    name="listen",
-    description="Join your voice channel and listen for a voice command"
-)
-async def slash_listen(interaction: discord.Interaction):
-    if not interaction.user.voice or not interaction.user.voice.channel:
-        await interaction.response.send_message(
-            "You need to be in a voice channel first.", ephemeral=True
-        )
-        return
-
-    voice_channel = interaction.user.voice.channel
-    guild = interaction.guild
-    cmd_channel = discord.utils.get(guild.channels, name=COMMAND_CHANNEL)
-
-    # If the owner's continuous loop is already running, don't double-up
-    if _listen_task and not _listen_task.done():
-        await interaction.response.send_message(
-            "Already listening via auto-join — just speak.", ephemeral=True
-        )
-        return
-
-    existing = guild.voice_client
-    if existing and existing.is_connected():
-        await existing.disconnect()
-
-    try:
-        vc = await voice_channel.connect(cls=voice_recv.VoiceRecvClient)
-    except Exception as e:
-        await interaction.response.send_message(
-            f"Could not join voice channel: {e}", ephemeral=True
-        )
-        return
-
-    sink = WhisperSink(interaction.user.id)
-    vc.listen(sink)
-
-    await interaction.response.send_message(
-        "Listening in voice channel — speak now"
-    )
-
-    try:
-        transcription = await transcribe_utterance(sink)
-    except Exception as e:
-        await cmd_channel.send(f"Voice transcription failed: {str(e)}")
-        return
-    finally:
-        vc.stop_listening()
-
-    if not transcription:
-        await cmd_channel.send(
-            "I didn't catch anything — try /listen again."
-        )
-        return
-
-    await cmd_channel.send(f"Heard: {transcription}")
-
-    await process_user_message(
-        transcription,
-        str(interaction.user.id),
-        interaction.user.display_name,
-        guild,
-        cmd_channel
-    )
-
-
-@tree.command(
-    name="leave",
-    description="Disconnect from the voice channel"
-)
-async def slash_leave(interaction: discord.Interaction):
-    voice_client = interaction.guild.voice_client
-    if voice_client and voice_client.is_connected():
-        await voice_client.disconnect()
-        await interaction.response.send_message(
-            "Disconnected from voice channel."
-        )
-    else:
-        await interaction.response.send_message(
-            "Not currently in a voice channel.", ephemeral=True
-        )
 
 
 # ============================================================
