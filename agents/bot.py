@@ -66,6 +66,7 @@ LOG_CHANNEL = "bot-logs"
 MAX_TOOL_CALLS = 5
 
 conversation_history = {}
+_listen_task = None  # asyncio.Task for the owner voice loop
 
 with open(
     os.path.join(project_root, "SOUL.md"), "r", encoding="utf-8"
@@ -531,6 +532,33 @@ async def process_user_message(
             )
 
 
+async def _owner_voice_loop(guild, cmd_channel, user_id, display_name):
+    """Continuously listens and processes voice commands while owner is in channel."""
+    event_loop = asyncio.get_running_loop()
+    try:
+        while True:
+            try:
+                transcription = await event_loop.run_in_executor(
+                    None, listen_and_transcribe
+                )
+            except Exception as e:
+                await cmd_channel.send(
+                    f"Voice transcription failed: {str(e)}"
+                )
+                continue
+
+            if not transcription:
+                continue
+
+            await cmd_channel.send(f"Heard: {transcription}")
+            await process_user_message(
+                transcription, user_id, display_name, guild, cmd_channel
+            )
+
+    except asyncio.CancelledError:
+        pass
+
+
 # ============================================================
 # BOT EVENTS
 # ============================================================
@@ -587,6 +615,49 @@ async def on_message(message):
         message.guild,
         message.channel
     )
+
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    """Auto-joins owner's voice channel and runs a continuous listen loop."""
+    global _listen_task
+
+    if not OWNER_ID or str(member.id) != OWNER_ID:
+        return
+
+    guild = member.guild
+    cmd_channel = discord.utils.get(guild.channels, name=COMMAND_CHANNEL)
+
+    # Owner joined a voice channel (wasn't in one before)
+    if before.channel is None and after.channel is not None:
+        voice_client = guild.voice_client
+        if voice_client:
+            await voice_client.move_to(after.channel)
+        else:
+            await after.channel.connect()
+
+        await cmd_channel.send("Listening in voice channel — speak now")
+
+        _listen_task = asyncio.create_task(
+            _owner_voice_loop(
+                guild,
+                cmd_channel,
+                str(member.id),
+                member.display_name
+            )
+        )
+
+    # Owner left all voice channels
+    elif before.channel is not None and after.channel is None:
+        if _listen_task and not _listen_task.done():
+            _listen_task.cancel()
+        _listen_task = None
+
+        voice_client = guild.voice_client
+        if voice_client and voice_client.is_connected():
+            await voice_client.disconnect()
+
+        await cmd_channel.send("Owner left voice channel — disconnecting.")
 
 
 # ============================================================
