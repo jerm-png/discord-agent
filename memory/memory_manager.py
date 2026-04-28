@@ -160,6 +160,15 @@ def init_db():
         )
     """)
 
+    for _table in ("strategic_memory", "operational_memory",
+                   "analytical_memory", "experiences"):
+        try:
+            c.execute(
+                f"ALTER TABLE {_table} ADD COLUMN project_tag TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass
+
     conn.commit()
     conn.close()
     print("Database initialised.")
@@ -205,7 +214,8 @@ def get_pending_reflection():
 # ============================================================
 
 def save_strategic_memory(content, category="general",
-                          confidence=0.8, source="conversation"):
+                          confidence=0.8, source="conversation",
+                          project_tag=None):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     now = datetime.now().isoformat()
@@ -213,24 +223,24 @@ def save_strategic_memory(content, category="general",
     c.execute("""
         INSERT INTO strategic_memory
         (content, category, confidence, created,
-         last_confirmed, flag_after_days, source)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+         last_confirmed, flag_after_days, source, project_tag)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (content, category, confidence, now, now,
-          DECAY_RATES["strategic"], source))
+          DECAY_RATES["strategic"], source, project_tag))
 
     memory_id = str(c.lastrowid)
     conn.commit()
     conn.close()
 
     embedding = embedding_model.encode(content).tolist()
+    meta = {"category": category, "confidence": confidence}
+    if project_tag:
+        meta["project_tag"] = project_tag
     strategic_collection.add(
         documents=[content],
         embeddings=[embedding],
         ids=[f"strategic_{memory_id}"],
-        metadatas=[{
-            "category": category,
-            "confidence": confidence
-        }]
+        metadatas=[meta]
     )
 
     return memory_id
@@ -238,7 +248,7 @@ def save_strategic_memory(content, category="general",
 
 def save_operational_memory(content, project_name="general",
                             priority="medium", blockers=None,
-                            dependencies=None):
+                            dependencies=None, project_tag=None):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     now = datetime.now().isoformat()
@@ -246,25 +256,26 @@ def save_operational_memory(content, project_name="general",
     c.execute("""
         INSERT INTO operational_memory
         (project_name, content, priority, created,
-         last_updated, flag_after_days, blockers, dependencies)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         last_updated, flag_after_days, blockers,
+         dependencies, project_tag)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (project_name, content, priority, now, now,
           DECAY_RATES["operational"],
-          blockers or "", dependencies or ""))
+          blockers or "", dependencies or "", project_tag))
 
     memory_id = str(c.lastrowid)
     conn.commit()
     conn.close()
 
     embedding = embedding_model.encode(content).tolist()
+    meta = {"project": project_name, "priority": priority}
+    if project_tag:
+        meta["project_tag"] = project_tag
     operational_collection.add(
         documents=[content],
         embeddings=[embedding],
         ids=[f"operational_{memory_id}"],
-        metadatas=[{
-            "project": project_name,
-            "priority": priority
-        }]
+        metadatas=[meta]
     )
 
     return memory_id
@@ -274,7 +285,8 @@ def save_analytical_memory(pattern, observation="",
                            reasoning="", outcome="",
                            confidence=0.5,
                            trigger_conditions="",
-                           pattern_type="general"):
+                           pattern_type="general",
+                           project_tag=None):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     now = datetime.now().isoformat()
@@ -283,11 +295,11 @@ def save_analytical_memory(pattern, observation="",
         INSERT INTO analytical_memory
         (pattern_type, observation, reasoning, outcome,
          pattern, confidence, trigger_conditions,
-         created, last_observed, flag_after_days)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         created, last_observed, flag_after_days, project_tag)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (pattern_type, observation, reasoning, outcome,
           pattern, confidence, trigger_conditions,
-          now, now, DECAY_RATES["analytical"]))
+          now, now, DECAY_RATES["analytical"], project_tag))
 
     memory_id = str(c.lastrowid)
     conn.commit()
@@ -295,15 +307,18 @@ def save_analytical_memory(pattern, observation="",
 
     full_text = f"{pattern} {trigger_conditions}".strip()
     embedding = embedding_model.encode(full_text).tolist()
+    meta = {
+        "pattern_type": pattern_type,
+        "confidence": confidence,
+        "trigger_conditions": trigger_conditions
+    }
+    if project_tag:
+        meta["project_tag"] = project_tag
     analytical_collection.add(
         documents=[full_text],
         embeddings=[embedding],
         ids=[f"analytical_{memory_id}"],
-        metadatas=[{
-            "pattern_type": pattern_type,
-            "confidence": confidence,
-            "trigger_conditions": trigger_conditions
-        }]
+        metadatas=[meta]
     )
 
     return memory_id
@@ -311,19 +326,21 @@ def save_analytical_memory(pattern, observation="",
 
 def save_experience(request_summary, approach_used,
                     outcome, lesson, layers_used=None,
-                    quality_score=0.5, task_completed=False):
+                    quality_score=0.5, task_completed=False,
+                    project_tag=None):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
 
     c.execute("""
         INSERT INTO experiences
         (request_summary, approach_used, outcome, lesson,
-         layers_used, timestamp, quality_score, task_completed)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         layers_used, timestamp, quality_score,
+         task_completed, project_tag)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (request_summary, approach_used, outcome, lesson,
           json.dumps(layers_used or []),
           datetime.now().isoformat(), quality_score,
-          1 if task_completed else 0))
+          1 if task_completed else 0, project_tag))
 
     conn.commit()
     conn.close()

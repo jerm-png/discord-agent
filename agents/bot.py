@@ -70,6 +70,36 @@ COMMAND_CHANNEL = "bot-commands"
 STATUS_CHANNEL = "bot-status"
 LOG_CHANNEL = "bot-logs"
 
+# ── CHANNEL MEMORY ROUTING ───────────────────────────────────
+# "ephemeral" = respond but skip memory extraction and reflection
+# "global"    = extract memories with no project tag
+# "project"   = extract memories tagged to a specific project
+# Channels absent from this map default to "ephemeral".
+CHANNEL_MEMORY_MODE = {
+    "bot-commands":           "ephemeral",
+    "sandbox":                "ephemeral",
+    "chief-of-staff":         "global",
+    "director-workspace":     "global",
+    "planning":               "global",
+    "contact-center":         "project",
+    "gamification-dashboard": "project",
+    "slack-intelligence":     "project",
+}
+
+CHANNEL_PROJECT_TAG = {
+    "contact-center":         "contact-center",
+    "gamification-dashboard": "gamification-dashboard",
+    "slack-intelligence":     "slack-intelligence",
+}
+
+CHANNEL_IGNORED = {
+    "rules-and-info",
+    "bot-status",
+    "bot-logs",
+    "research-reports",
+    "general-output",
+}
+
 # Maximum tool calls per response to prevent runaway loops
 MAX_TOOL_CALLS = 5
 
@@ -374,7 +404,8 @@ async def run_reflection_loop(guild, experiences):
 
 
 async def extract_and_store_memories(
-    user_message, bot_reply, guild, task_completed
+    user_message, bot_reply, guild, task_completed,
+    project_tag=None
 ):
     """
     Extracts anything worth storing in long term memory
@@ -413,14 +444,16 @@ Return empty arrays if nothing meaningful to store."""
                 save_strategic_memory(
                     content=item,
                     category="conversation",
-                    source="auto_extraction"
+                    source="auto_extraction",
+                    project_tag=project_tag
                 )
 
         for item in extracted.get("operational", []):
             if item:
                 save_operational_memory(
                     content=item,
-                    project_name="general"
+                    project_name="general",
+                    project_tag=project_tag
                 )
 
         exp = extracted.get("experience", {})
@@ -433,7 +466,8 @@ Return empty arrays if nothing meaningful to store."""
                 outcome=exp.get("outcome", "neutral"),
                 lesson=exp.get("lesson", ""),
                 layers_used=list(extracted.keys()),
-                task_completed=task_completed
+                task_completed=task_completed,
+                project_tag=project_tag
             )
 
     except Exception as e:
@@ -494,7 +528,8 @@ async def speak_response(text: str, guild) -> None:
 
 async def process_user_message(
     user_message, user_id, author_display_name, guild, channel,
-    speak: bool = False
+    speak: bool = False, memory_mode: str = "global",
+    project_tag: str = None
 ):
     """
     Shared Claude processing pipeline used by on_message and /listen.
@@ -580,19 +615,21 @@ async def process_user_message(
                     "Check bot-logs for details."
                 )
 
-            await extract_and_store_memories(
-                user_message,
-                final_response_text,
-                guild,
-                task_completed
-            )
-
-            if task_completed:
-                experiences = get_recent_experiences(
-                    limit=5,
-                    task_completed_only=True
+            if memory_mode != "ephemeral":
+                await extract_and_store_memories(
+                    user_message,
+                    final_response_text,
+                    guild,
+                    task_completed,
+                    project_tag=project_tag
                 )
-                await run_reflection_loop(guild, experiences)
+
+                if task_completed:
+                    experiences = get_recent_experiences(
+                        limit=5,
+                        task_completed_only=True
+                    )
+                    await run_reflection_loop(guild, experiences)
 
             stale_count = len(memories.get("stale_flags", []))
             in_tokens = response.usage.input_tokens
@@ -681,8 +718,13 @@ async def on_message(message):
     if message.author == bot.user:
         return
 
-    if message.channel.name != COMMAND_CHANNEL:
+    channel_name = message.channel.name
+
+    if channel_name in CHANNEL_IGNORED:
         return
+
+    memory_mode = CHANNEL_MEMORY_MODE.get(channel_name, "ephemeral")
+    project_tag = CHANNEL_PROJECT_TAG.get(channel_name)
 
     # ── VOICE MESSAGE ATTACHMENTS ─────────────────────────
     voice_attachment = next(
@@ -721,7 +763,9 @@ async def on_message(message):
             message.author.display_name,
             message.guild,
             message.channel,
-            speak=True
+            speak=True,
+            memory_mode=memory_mode,
+            project_tag=project_tag
         )
         return
 
@@ -738,6 +782,26 @@ async def on_message(message):
         user_message = message.content.replace(
             f"<@{bot.user.id}>", ""
         ).strip()
+
+    # !remember in bot-commands: save directly to global memory and confirm
+    if (channel_name == "bot-commands" and is_prefix
+            and user_message.lower().startswith("remember ")):
+        content = user_message[9:].strip()
+        if content:
+            save_strategic_memory(
+                content=content,
+                category="manual",
+                source="!remember"
+            )
+            await message.channel.send(
+                f"Saved to global memory: \"{content}\""
+            )
+        else:
+            await message.channel.send(
+                "Nothing to remember — please include "
+                "content after !remember."
+            )
+        return
 
     speak = user_message.lower().endswith(" speak")
     if speak:
@@ -756,7 +820,9 @@ async def on_message(message):
         message.author.display_name,
         message.guild,
         message.channel,
-        speak=speak
+        speak=speak,
+        memory_mode=memory_mode,
+        project_tag=project_tag
     )
 
 
