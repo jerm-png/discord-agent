@@ -586,15 +586,21 @@ async def process_user_message(
         try:
             tool_call_count = 0
             final_response_text = ""
+            active_tools = (
+                TOOL_DEFINITIONS if memory_mode != "ephemeral" else []
+            )
 
             while True:
-                response = client.messages.create(
-                    model=MAIN_MODEL,
-                    max_tokens=1024,
-                    system=SYSTEM_PROMPT,
-                    tools=TOOL_DEFINITIONS,
-                    messages=conversation_history[user_id]
-                )
+                api_params = {
+                    "model": MAIN_MODEL,
+                    "max_tokens": 1024,
+                    "system": SYSTEM_PROMPT,
+                    "messages": conversation_history[user_id],
+                }
+                if active_tools:
+                    api_params["tools"] = active_tools
+
+                response = client.messages.create(**api_params)
 
                 if response.stop_reason == "tool_use":
                     conversation_history[user_id].append({
@@ -663,6 +669,7 @@ async def process_user_message(
                 LOG_CHANNEL,
                 f"Responded to {author_display_name} | "
                 f"Model: {response.model} | "
+                f"Tools loaded: {len(active_tools)} | "
                 f"Tools used: {tool_call_count} | "
                 f"Task complete: {task_completed} | "
                 f"Stale flags: {stale_count}"
