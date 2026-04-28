@@ -7,6 +7,7 @@ import json
 import tempfile
 import urllib.request
 import urllib.error
+from datetime import datetime
 from discord import app_commands
 from dotenv import load_dotenv
 from anthropic import Anthropic
@@ -27,6 +28,7 @@ from memory.memory_manager import (
     format_memory_for_prompt,
     increment_interaction_count,
     get_recent_experiences,
+    get_handoff_memories,
     is_task_completion,
     set_pending_reflection,
     get_pending_reflection,
@@ -194,6 +196,30 @@ For each meaningful pattern you identify respond with this exact JSON format and
 
 Only include insights with genuine signal. Return empty arrays if nothing meaningful emerged.
 Confidence should be between 0.0 and 1.0 based on how many times this pattern was observed."""
+
+HANDOFF_SYSTEM_PROMPT = """You are generating a dense, structured handoff document from live memory snapshots.
+Your output will be pasted directly into a new AI session as context. Write for an AI reader, not a human one.
+Be maximally information-dense. No filler, no headers beyond what is specified, no pleasantries.
+
+Structure your output exactly as follows:
+
+## WHO I AM
+Key facts about the user: role, working style, communication preferences, goals, constraints.
+
+## WHAT IS ACTIVE
+Current projects and tasks with status. What is in progress, what is blocked, what is next.
+
+## WHAT I KNOW
+Analytical patterns and crystallised skills worth carrying forward. Confidence-weighted.
+
+## WHAT TO WATCH
+Open review flags, unresolved uncertainties, things that need follow-up.
+
+## RECENT CONTEXT
+Brief summary of the last few completed tasks and what was learned from them.
+
+Be specific. Use actual names, numbers, and project details from the memory data provided.
+If a section has nothing meaningful to report, write one sentence saying so — do not omit the section."""
 
 
 # ============================================================
@@ -557,6 +583,71 @@ Return empty arrays if nothing meaningful to store."""
         )
 
 
+async def run_handoff_command(channel, guild, channel_name):
+    """
+    Generates a dense handoff document from live memory for pasting
+    into a new AI session. Read-only — does not write to memory.
+    """
+    await send_to_channel(
+        guild, STATUS_CHANNEL, "Generating handoff document..."
+    )
+
+    loop = asyncio.get_running_loop()
+    snapshot = await loop.run_in_executor(None, get_handoff_memories)
+
+    def _fmt_list(items):
+        return "\n".join(f"- {i}" for i in items) if items else "None."
+
+    def _fmt_experiences(exps):
+        if not exps:
+            return "None."
+        lines = []
+        for e in exps:
+            lines.append(
+                f"- {e.get('request', '')} → {e.get('outcome', '')} | "
+                f"Lesson: {e.get('lesson', '')}"
+            )
+        return "\n".join(lines)
+
+    memory_text = f"""STRATEGIC MEMORIES (top by confidence):
+{_fmt_list(snapshot.get('strategic', []))}
+
+OPERATIONAL / ACTIVE TASKS:
+{_fmt_list(snapshot.get('operational', []))}
+
+ANALYTICAL PATTERNS:
+{_fmt_list(snapshot.get('analytical', []))}
+
+RECENT EXPERIENCES:
+{_fmt_experiences(snapshot.get('experiences', []))}
+
+OPEN REVIEW FLAGS:
+{_fmt_list(snapshot.get('review_flags', []))}"""
+
+    response = client.messages.create(
+        model=MAIN_MODEL,
+        max_tokens=2048,
+        system=HANDOFF_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": memory_text}]
+    )
+
+    handoff_doc = response.content[0].text.strip()
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    header = f"**HANDOFF DOCUMENT — {timestamp}**\n"
+
+    await send_long_message(channel, header + handoff_doc)
+
+    in_tokens = response.usage.input_tokens
+    out_tokens = response.usage.output_tokens
+    est_cost = (in_tokens / 1_000_000 * 3.00) + (out_tokens / 1_000_000 * 15.00)
+    await send_to_channel(
+        guild, LOG_CHANNEL,
+        f"Handoff generated | Channel: #{channel_name} | "
+        f"Tokens — in: {in_tokens:,} | out: {out_tokens:,} | "
+        f"est. cost: ${est_cost:.4f}"
+    )
+
+
 async def speak_response(text: str, guild) -> None:
     """
     Converts text to speech via ElevenLabs and plays it in the General
@@ -905,6 +996,13 @@ async def on_message(message):
                 "Nothing to remember — please include "
                 "content after !remember."
             )
+        return
+
+    # !handoff: generate dense memory snapshot for new AI session
+    if is_prefix and user_message.lower() == "handoff":
+        await run_handoff_command(
+            message.channel, message.guild, channel_name
+        )
         return
 
     speak = user_message.lower().endswith(" speak")

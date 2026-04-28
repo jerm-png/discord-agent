@@ -694,6 +694,119 @@ def get_recent_experiences(limit=10,
     ]
 
 
+def get_handoff_memories():
+    """
+    Pulls a structured snapshot of all memory layers for handoff
+    generation. Returns raw rows — no semantic search, ordered
+    by confidence and recency so the highest-signal items surface.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    today = datetime.now()
+
+    # Top 5 strategic by confidence then recency
+    c.execute("""
+        SELECT id, content, category, confidence, created
+        FROM strategic_memory
+        WHERE status = 'active'
+        ORDER BY confidence DESC, created DESC
+        LIMIT 5
+    """)
+    strategic = [
+        {
+            "id": r[0], "content": r[1], "category": r[2],
+            "confidence": r[3], "created": r[4]
+        }
+        for r in c.fetchall()
+    ]
+
+    # Active operational memories excluding review flags,
+    # filtered to non-stale only
+    c.execute("""
+        SELECT id, content, project_name, priority,
+               last_updated, flag_after_days, blockers
+        FROM operational_memory
+        WHERE status = 'active'
+          AND project_name != 'review_flags'
+        ORDER BY
+            CASE priority
+                WHEN 'high'   THEN 1
+                WHEN 'medium' THEN 2
+                WHEN 'low'    THEN 3
+                ELSE 4
+            END,
+            last_updated DESC
+    """)
+    operational = []
+    for r in c.fetchall():
+        last_updated_str = r[4]
+        flag_days = r[5] or 7
+        if last_updated_str:
+            try:
+                updated_date = datetime.fromisoformat(last_updated_str)
+                if (today - updated_date).days > flag_days:
+                    continue
+            except (ValueError, TypeError):
+                pass
+        operational.append({
+            "id": r[0], "content": r[1],
+            "project_name": r[2], "priority": r[3],
+            "blockers": r[6] or ""
+        })
+
+    # Top 5 analytical by confidence then times observed
+    c.execute("""
+        SELECT id, pattern, confidence,
+               trigger_conditions, pattern_type
+        FROM analytical_memory
+        WHERE status = 'active'
+        ORDER BY confidence DESC, times_observed DESC
+        LIMIT 5
+    """)
+    analytical = [
+        {
+            "id": r[0], "pattern": r[1], "confidence": r[2],
+            "trigger_conditions": r[3] or "",
+            "pattern_type": r[4] or ""
+        }
+        for r in c.fetchall()
+    ]
+
+    # Review flags stored as operational with project_name='review_flags'
+    c.execute("""
+        SELECT id, content, priority, created
+        FROM operational_memory
+        WHERE status = 'active'
+          AND project_name = 'review_flags'
+        ORDER BY
+            CASE priority
+                WHEN 'high'   THEN 1
+                WHEN 'medium' THEN 2
+                WHEN 'low'    THEN 3
+                ELSE 4
+            END,
+            created DESC
+    """)
+    review_flags = [
+        {
+            "id": r[0], "content": r[1],
+            "priority": r[2] or "medium",
+            "created": r[3]
+        }
+        for r in c.fetchall()
+    ]
+
+    conn.close()
+
+    return {
+        "strategic": strategic,
+        "operational": operational,
+        "analytical": analytical,
+        "experiences": get_recent_experiences(limit=3),
+        "review_flags": review_flags
+    }
+
+
 # ============================================================
 # INITIALISE ON IMPORT
 # ============================================================
