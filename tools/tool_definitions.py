@@ -2,7 +2,7 @@ import json
 import os
 import sys
 from datetime import datetime
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 # Add project root to path
 project_root = os.path.dirname(os.path.dirname(
