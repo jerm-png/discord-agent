@@ -405,7 +405,7 @@ async def run_reflection_loop(guild, experiences):
 
 async def extract_and_store_memories(
     user_message, bot_reply, guild, task_completed,
-    project_tag=None
+    project_tag=None, channel_name="unknown", memory_mode="global"
 ):
     """
     Extracts anything worth storing in long term memory
@@ -439,6 +439,9 @@ Return empty arrays if nothing meaningful to store."""
         ).replace("```", "").strip()
         extracted = json.loads(clean)
 
+        strategic_count = 0
+        operational_count = 0
+
         for item in extracted.get("strategic", []):
             if item:
                 save_strategic_memory(
@@ -447,6 +450,7 @@ Return empty arrays if nothing meaningful to store."""
                     source="auto_extraction",
                     project_tag=project_tag
                 )
+                strategic_count += 1
 
         for item in extracted.get("operational", []):
             if item:
@@ -455,6 +459,7 @@ Return empty arrays if nothing meaningful to store."""
                     project_name="general",
                     project_tag=project_tag
                 )
+                operational_count += 1
 
         exp = extracted.get("experience", {})
         if exp:
@@ -470,11 +475,26 @@ Return empty arrays if nothing meaningful to store."""
                 project_tag=project_tag
             )
 
+        tag_str = f" | Project: {project_tag}" if project_tag else ""
+        await send_to_channel(
+            guild,
+            LOG_CHANNEL,
+            f"Memory extraction complete | "
+            f"Channel: #{channel_name} | "
+            f"Mode: {memory_mode}{tag_str} | "
+            f"Strategic: {strategic_count} | "
+            f"Operational: {operational_count} | "
+            f"Experience: {'yes' if exp else 'no'}"
+        )
+
     except Exception as e:
         await send_to_channel(
             guild,
             LOG_CHANNEL,
-            f"Memory extraction note: {str(e)}"
+            f"Memory extraction error | "
+            f"Channel: #{channel_name} | "
+            f"Mode: {memory_mode} | "
+            f"{str(e)}"
         )
 
 
@@ -621,7 +641,9 @@ async def process_user_message(
                     final_response_text,
                     guild,
                     task_completed,
-                    project_tag=project_tag
+                    project_tag=project_tag,
+                    channel_name=channel.name,
+                    memory_mode=memory_mode
                 )
 
                 if task_completed:
