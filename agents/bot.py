@@ -31,7 +31,9 @@ from memory.memory_manager import (
     get_pending_reflection,
     validate_memory,
     archive_memory,
-    check_stale_memories
+    check_stale_memories,
+    save_conversation_history,
+    load_all_conversation_histories,
 )
 
 from tools.tool_definitions import (
@@ -125,6 +127,16 @@ tree = app_commands.CommandTree(bot)
 def tag_owner() -> str:
     """Returns a Discord mention string for the owner, or empty string if unset."""
     return f"<@{OWNER_ID}> " if OWNER_ID else ""
+
+
+def _saveable_history(history: list) -> list:
+    """Returns the last 50 messages whose content is a plain string.
+    Filters out intermediate tool_use/tool_result messages (non-serializable
+    SDK objects) so the persisted list is clean JSON and safe to restore."""
+    return [
+        m for m in history
+        if isinstance(m.get("content"), str)
+    ][-50:]
 
 
 async def call_background_model(prompt: str) -> str:
@@ -576,6 +588,14 @@ async def process_user_message(
                     f"flag(s) detected — review may be needed."
                 )
 
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None,
+                save_conversation_history,
+                user_id,
+                _saveable_history(conversation_history[user_id])
+            )
+
         except Exception as e:
             await channel.send(
                 "Something went wrong on my end. "
@@ -595,7 +615,9 @@ async def process_user_message(
 @bot.event
 async def on_ready():
     """Runs once when the bot connects to Discord."""
-    print(f"PerMyLastBot is online as {bot.user}")
+    conversation_history.update(load_all_conversation_histories())
+    print(f"PerMyLastBot is online as {bot.user} "
+          f"({len(conversation_history)} histories restored)")
     await tree.sync()
 
     for guild in bot.guilds:

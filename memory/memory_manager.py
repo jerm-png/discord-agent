@@ -152,6 +152,14 @@ def init_db():
         VALUES ('pending_reflection', 'false')
     """)
 
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS conversation_history (
+            user_id TEXT PRIMARY KEY,
+            history TEXT NOT NULL,
+            updated TEXT NOT NULL
+        )
+    """)
+
     conn.commit()
     conn.close()
     print("Database initialised.")
@@ -576,6 +584,34 @@ def format_memory_for_prompt(memories):
         return ""
 
     return "MEMORY CONTEXT:\n" + "\n\n".join(sections)
+
+
+# ============================================================
+# CONVERSATION HISTORY PERSISTENCE
+# ============================================================
+
+def save_conversation_history(user_id: str, history: list) -> None:
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    now = datetime.now().isoformat()
+    c.execute("""
+        INSERT INTO conversation_history (user_id, history, updated)
+        VALUES (?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            history = excluded.history,
+            updated = excluded.updated
+    """, (user_id, json.dumps(history), now))
+    conn.commit()
+    conn.close()
+
+
+def load_all_conversation_histories() -> dict:
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT user_id, history FROM conversation_history")
+    rows = c.fetchall()
+    conn.close()
+    return {user_id: json.loads(history) for user_id, history in rows}
 
 
 # ============================================================
