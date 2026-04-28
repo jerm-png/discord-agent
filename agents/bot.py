@@ -1,6 +1,7 @@
 import asyncio
 import discord
 import os
+import shutil
 import sys
 import json
 import tempfile
@@ -152,6 +153,19 @@ def check_ollama_health() -> None:
         print(
             f"[Ollama] WARNING: not reachable at {target} — "
             f"background tasks will fall back to {BACKGROUND_MODEL}"
+        )
+
+
+def check_ffmpeg() -> None:
+    """Checks whether FFmpeg is on the system PATH at startup."""
+    path = shutil.which("ffmpeg")
+    if path:
+        print(f"[FFmpeg] Found at {path}")
+    else:
+        print(
+            "[FFmpeg] WARNING: ffmpeg not found on PATH — "
+            "TTS voice output will silently fail until FFmpeg "
+            "is installed and added to PATH"
         )
 
 
@@ -646,6 +660,7 @@ async def on_ready():
     conversation_history.update(load_all_conversation_histories())
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, check_ollama_health)
+    await loop.run_in_executor(None, check_ffmpeg)
     print(f"PerMyLastBot is online as {bot.user} "
           f"({len(conversation_history)} histories restored)")
     await tree.sync()
