@@ -100,6 +100,24 @@ CHANNEL_IGNORED = {
     "general-output",
 }
 
+# ── CHANNEL TOOL LOADING ─────────────────────────────────────
+# "none"        = no tools sent (sandbox, unknown channels)
+# "search_only" = web_search + query_memory only (bot-commands)
+# "full"        = all tools (memory-active channels)
+# Channels absent from this map default to "none".
+CHANNEL_TOOL_MODE = {
+    "bot-commands":           "search_only",
+    "sandbox":                "none",
+    "chief-of-staff":         "full",
+    "director-workspace":     "full",
+    "planning":               "full",
+    "contact-center":         "full",
+    "gamification-dashboard": "full",
+    "slack-intelligence":     "full",
+}
+
+SEARCH_ONLY_TOOL_NAMES = {"web_search", "query_memory"}
+
 # Maximum tool calls per response to prevent runaway loops
 MAX_TOOL_CALLS = 5
 
@@ -586,9 +604,16 @@ async def process_user_message(
         try:
             tool_call_count = 0
             final_response_text = ""
-            active_tools = (
-                TOOL_DEFINITIONS if memory_mode != "ephemeral" else []
-            )
+            tool_mode = CHANNEL_TOOL_MODE.get(channel.name, "none")
+            if tool_mode == "full":
+                active_tools = TOOL_DEFINITIONS
+            elif tool_mode == "search_only":
+                active_tools = [
+                    t for t in TOOL_DEFINITIONS
+                    if t["name"] in SEARCH_ONLY_TOOL_NAMES
+                ]
+            else:
+                active_tools = []
 
             while True:
                 api_params = {
@@ -669,7 +694,7 @@ async def process_user_message(
                 LOG_CHANNEL,
                 f"Responded to {author_display_name} | "
                 f"Model: {response.model} | "
-                f"Tools loaded: {len(active_tools)} | "
+                f"Tools loaded: {', '.join(t['name'] for t in active_tools) or 'none'} | "
                 f"Tools used: {tool_call_count} | "
                 f"Task complete: {task_completed} | "
                 f"Stale flags: {stale_count}"
