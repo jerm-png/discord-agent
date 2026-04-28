@@ -139,6 +139,22 @@ def _saveable_history(history: list) -> list:
     ][-50:]
 
 
+def check_ollama_health() -> None:
+    """Pings Ollama's base URL to confirm it's running at startup."""
+    target = "http://localhost:11434"
+    try:
+        with urllib.request.urlopen(
+            urllib.request.Request(target), timeout=3
+        ):
+            pass
+        print(f"[Ollama] {OLLAMA_MODEL} reachable at {target}")
+    except Exception:
+        print(
+            f"[Ollama] WARNING: not reachable at {target} — "
+            f"background tasks will fall back to {BACKGROUND_MODEL}"
+        )
+
+
 async def call_background_model(prompt: str) -> str:
     """Tries Ollama first, falls back to Anthropic Haiku if unavailable."""
     def _call_ollama():
@@ -616,6 +632,8 @@ async def process_user_message(
 async def on_ready():
     """Runs once when the bot connects to Discord."""
     conversation_history.update(load_all_conversation_histories())
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, check_ollama_health)
     print(f"PerMyLastBot is online as {bot.user} "
           f"({len(conversation_history)} histories restored)")
     await tree.sync()
