@@ -552,6 +552,9 @@ async def process_user_message(
                 })
                 break
 
+            conversation_history[user_id] = \
+                conversation_history[user_id][-20:]
+
             if final_response_text:
                 await send_long_message(channel, final_response_text)
                 if speak:
@@ -578,16 +581,25 @@ async def process_user_message(
                 await run_reflection_loop(guild, experiences)
 
             stale_count = len(memories.get("stale_flags", []))
+            in_tokens = response.usage.input_tokens
+            out_tokens = response.usage.output_tokens
+            est_cost = (in_tokens / 1_000_000 * 3.00) + \
+                       (out_tokens / 1_000_000 * 15.00)
             await send_to_channel(
                 guild,
                 LOG_CHANNEL,
                 f"Responded to {author_display_name} | "
                 f"Model: {response.model} | "
-                f"Tokens: {response.usage.input_tokens} in / "
-                f"{response.usage.output_tokens} out | "
                 f"Tools used: {tool_call_count} | "
                 f"Task complete: {task_completed} | "
                 f"Stale flags: {stale_count}"
+            )
+            await send_to_channel(
+                guild,
+                LOG_CHANNEL,
+                f"Tokens — in: {in_tokens:,} | "
+                f"out: {out_tokens:,} | "
+                f"est. cost: ${est_cost:.4f}"
             )
 
             await send_to_channel(
