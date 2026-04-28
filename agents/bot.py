@@ -118,6 +118,47 @@ CHANNEL_TOOL_MODE = {
 
 SEARCH_ONLY_TOOL_NAMES = {"web_search", "query_memory"}
 
+# ── CHANNEL PURPOSE DESCRIPTIONS ─────────────────────────────
+# Injected into every user message so Claude knows what each
+# channel is for and adjusts scope and focus accordingly.
+CHANNEL_PURPOSE = {
+    "bot-commands": (
+        "General assistance channel. Open scope. "
+        "All topics welcome including personal, "
+        "workplace, and day-to-day situations."
+    ),
+    "chief-of-staff": (
+        "Strategic layer. Long-term decisions, "
+        "values, constraints, who the user is."
+    ),
+    "director-workspace": (
+        "Professional development, leadership "
+        "thinking, contact center insights, "
+        "career growth."
+    ),
+    "planning": (
+        "Strategic planning sessions and "
+        "long-form thinking."
+    ),
+    "contact-center": (
+        "Active project: 60-day contact center "
+        "intelligence validation. Balto audit, "
+        "Five9 pipeline, briefing format."
+    ),
+    "gamification-dashboard": (
+        "Active project: frontline agent "
+        "performance gamification dashboard build."
+    ),
+    "slack-intelligence": (
+        "Future project: Slack channel analysis, "
+        "common questions and obstacle surfacing."
+    ),
+    "sandbox": (
+        "Testing only. Treat all messages as "
+        "experiments, no real context assumed."
+    ),
+}
+
 # Maximum tool calls per response to prevent runaway loops
 MAX_TOOL_CALLS = 5
 
@@ -582,12 +623,21 @@ async def process_user_message(
     memories = get_relevant_memories(user_message)
     memory_context = format_memory_for_prompt(memories)
 
+    channel_purpose = CHANNEL_PURPOSE.get(
+        channel.name, "General"
+    )
+    channel_ctx = (
+        f"[Channel: #{channel.name} | Purpose: {channel_purpose}]"
+    )
+
     full_message = user_message
     if memory_context:
         full_message = (
             f"{memory_context}\n\n"
             f"Current message: {user_message}"
         )
+
+    full_message = f"{channel_ctx}\n{full_message}"
 
     conversation_history[user_id].append({
         "role": "user",
