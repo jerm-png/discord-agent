@@ -17,6 +17,8 @@ from anthropic import Anthropic
 from elevenlabs import ElevenLabs
 import PyPDF2
 import docx
+from pdf2image import convert_from_bytes
+from PIL import Image
 
 # Add project root to path
 project_root = os.path.dirname(os.path.dirname(
@@ -206,6 +208,9 @@ IMAGE_MEDIA_TYPES = {
     ".webp": "image/webp",
 }
 FILE_CONTENT_CHAR_LIMIT = 50_000
+POPPLER_PATH = r"C:\poppler\poppler-25.12.0\Library\bin"
+PDF_VISION_THRESHOLD = 50   # chars — below this triggers vision fallback
+PDF_VISION_MAX_PAGES = 3
 
 with open(
     os.path.join(project_root, "SOUL.md"), "r", encoding="utf-8"
@@ -430,6 +435,28 @@ def _process_attachment(filename: str, file_bytes: bytes) -> dict:
         reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
         pages = [page.extract_text() or "" for page in reader.pages]
         text_content = "\n\n".join(p for p in pages if p.strip())
+
+        if len(text_content.strip()) < PDF_VISION_THRESHOLD:
+            # Image-based PDF — fall back to vision
+            pil_pages = convert_from_bytes(
+                file_bytes,
+                poppler_path=POPPLER_PATH,
+            )[:PDF_VISION_MAX_PAGES]
+            vision_pages = []
+            for pil_page in pil_pages:
+                buf = io.BytesIO()
+                pil_page.save(buf, format="PNG")
+                vision_pages.append({
+                    "media_type": "image/png",
+                    "base64_data": base64.standard_b64encode(
+                        buf.getvalue()
+                    ).decode("utf-8"),
+                })
+            return {
+                "filename": filename,
+                "content_type": "pdf_vision",
+                "pages": vision_pages,
+            }
     elif ext == ".docx":
         doc = docx.Document(io.BytesIO(file_bytes))
         text_content = "\n".join(
@@ -1053,8 +1080,9 @@ async def process_user_message(
                 if f.get("channel_name") not in MEMORY_ISOLATED_CHANNELS
             ]
 
-        doc_files = [f for f in user_files if f["content_type"] == "document"]
-        img_files = [f for f in user_files if f["content_type"] == "image"]
+        doc_files       = [f for f in user_files if f["content_type"] == "document"]
+        img_files       = [f for f in user_files if f["content_type"] == "image"]
+        pdf_vision_files = [f for f in user_files if f["content_type"] == "pdf_vision"]
 
         # Cap total document text — drop oldest files first to stay under limit
         docs_to_inject = []
@@ -1086,18 +1114,28 @@ async def process_user_message(
                 + f"\n\n{full_message}"
             )
 
-        if img_files:
-            content_blocks = [
-                {
+        has_visual = img_files or pdf_vision_files
+        if has_visual:
+            content_blocks = []
+            for img in img_files:
+                content_blocks.append({
                     "type": "image",
                     "source": {
                         "type": "base64",
                         "media_type": img["media_type"],
                         "data": img["base64_data"],
                     },
-                }
-                for img in img_files
-            ]
+                })
+            for pdf_file in pdf_vision_files:
+                for page in pdf_file["pages"]:
+                    content_blocks.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": page["media_type"],
+                            "data": page["base64_data"],
+                        },
+                    })
             content_blocks.append({"type": "text", "text": full_message})
             conversation_history[user_id].append({
                 "role": "user",
@@ -1404,21 +1442,34 @@ async def on_message(message):
             file_data["channel_name"] = channel_name
             attached_files[uid].append(file_data)
 
-            await message.channel.send(
-                f"📎 {attachment.filename} received and ready. "
-                f"Ask me anything about it or keep uploading."
-            )
+            ct = file_data["content_type"]
+            if ct == "document":
+                char_count = len(file_data.get("text_content", ""))
+                await message.channel.send(
+                    f"📎 {attachment.filename} received — "
+                    f"{char_count:,} chars extracted. "
+                    f"Ask me anything about it or keep uploading."
+                )
+                log_detail = f"text | {char_count:,} chars"
+            elif ct == "pdf_vision":
+                page_count = len(file_data.get("pages", []))
+                await message.channel.send(
+                    f"📎 {attachment.filename} received as image-based PDF — "
+                    f"{page_count} page(s) will be read visually by Claude."
+                )
+                log_detail = f"vision | {page_count} page(s)"
+            else:
+                b64_len = len(file_data.get("base64_data", ""))
+                await message.channel.send(
+                    f"📎 {attachment.filename} received and ready. "
+                    f"Ask me anything about it or keep uploading."
+                )
+                log_detail = f"image | {b64_len:,} chars (base64)"
 
-            char_count = (
-                len(file_data.get("text_content", ""))
-                if file_data["content_type"] == "document"
-                else len(file_data.get("base64_data", ""))
-            )
             await send_to_channel(
                 message.guild, LOG_CHANNEL,
                 f"File received | {attachment.filename} | "
-                f"{file_data['content_type']} | "
-                f"{char_count:,} chars | Channel: #{channel_name}"
+                f"{log_detail} | Channel: #{channel_name}"
             )
 
         # Check if there's a question alongside the files
