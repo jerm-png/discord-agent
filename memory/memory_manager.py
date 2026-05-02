@@ -443,10 +443,22 @@ def get_relevant_memories(query, max_results=TOP_N_MEMORIES,
                           channel_name=None):
     """
     Retrieves semantically relevant memories with bidirectional
-    isolation for channels in MEMORY_ISOLATED_CHANNELS:
-    - Isolated channel: only its own tagged memories returned
-    - Any other channel: isolated channel memories excluded
-    Filtering is Python-level to avoid ChromaDB null-field edge cases.
+    isolation for channels in MEMORY_ISOLATED_CHANNELS.
+
+    Isolated channel strategy: the ChromaDB where clause enforces
+    isolation at query time — only documents whose metadata contains
+    project_tag == channel_name are fetched. Global memories (stored
+    without project_tag) cannot be returned because they have no
+    project_tag key, so they will never match $eq. Post-retrieval
+    filtering is not used for this path because it cannot prevent
+    global memories from being fetched and potentially returned via
+    the query_memory tool path where channel_name is not passed.
+
+    Non-isolated channel strategy: no where clause (avoids $ne
+    unreliable behaviour for missing-field documents in ChromaDB).
+    Candidates are fetched and filtered post-retrieval: any doc
+    whose project_tag is in MEMORY_ISOLATED_CHANNELS is excluded.
+    Global memories (project_tag absent → None) correctly pass.
     """
     query_embedding = embedding_model.encode(query).tolist()
     results = {}
@@ -463,30 +475,43 @@ def get_relevant_memories(query, max_results=TOP_N_MEMORIES,
                 results[layer_name] = []
                 continue
 
-            # Fetch extra candidates to absorb isolation filtering loss
-            fetch_n = min(max_results * 5, count, 25)
-            search_results = collection.query(
-                query_embeddings=[query_embedding],
-                n_results=fetch_n,
-                include=["documents", "metadatas"]
-            )
+            if is_isolated:
+                # Isolation enforced at query level. Only documents
+                # explicitly tagged for this channel are returned.
+                # n_results may exceed matching count — ChromaDB 1.x
+                # returns however many match, no error.
+                search_results = collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=min(max_results, count),
+                    where={"project_tag": {"$eq": channel_name}},
+                    include=["documents"]
+                )
+                results[layer_name] = (
+                    search_results["documents"][0][:max_results]
+                )
+            else:
+                # Fetch extra candidates, then exclude isolated-channel
+                # memories in Python. $ne on missing fields is unreliable
+                # in ChromaDB, so post-retrieval filter is safer here.
+                fetch_n = min(max_results * 5, count, 25)
+                search_results = collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=fetch_n,
+                    include=["documents", "metadatas"]
+                )
+                docs = search_results["documents"][0]
+                metas = search_results["metadatas"][0]
 
-            docs = search_results["documents"][0]
-            metas = search_results["metadatas"][0]
-
-            filtered = []
-            for doc, meta in zip(docs, metas):
-                doc_tag = meta.get("project_tag") if meta else None
-                if is_isolated:
-                    if doc_tag == channel_name:
-                        filtered.append(doc)
-                else:
+                filtered = []
+                for doc, meta in zip(docs, metas):
+                    doc_tag = (
+                        meta.get("project_tag") if meta else None
+                    )
                     if doc_tag not in MEMORY_ISOLATED_CHANNELS:
                         filtered.append(doc)
-                if len(filtered) >= max_results:
-                    break
-
-            results[layer_name] = filtered
+                    if len(filtered) >= max_results:
+                        break
+                results[layer_name] = filtered
 
         except Exception:
             results[layer_name] = []
