@@ -35,6 +35,10 @@ COMPLETION_SIGNALS = [
     "complete", "sorted", "great", "excellent", "thanks"
 ]
 
+# Channels whose memories are fully isolated — never bleed
+# into other channels and never receive memories from them.
+MEMORY_ISOLATED_CHANNELS = {"health-tracking"}
+
 # ============================================================
 # INITIALISATION
 # ============================================================
@@ -168,6 +172,33 @@ def init_db():
             )
         except sqlite3.OperationalError:
             pass
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS health_panels (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            test_date TEXT NOT NULL,
+            marker TEXT NOT NULL,
+            value REAL NOT NULL,
+            unit TEXT NOT NULL,
+            reference_range TEXT,
+            personal_baseline REAL,
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS health_protocols (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            protocol_name TEXT NOT NULL,
+            dose TEXT NOT NULL,
+            frequency TEXT NOT NULL,
+            start_date TEXT NOT NULL,
+            end_date TEXT,
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
 
     conn.commit()
     conn.close()
@@ -408,9 +439,18 @@ def archive_memory(layer, memory_id, reason,
 # RETRIEVE FUNCTIONS
 # ============================================================
 
-def get_relevant_memories(query, max_results=TOP_N_MEMORIES):
+def get_relevant_memories(query, max_results=TOP_N_MEMORIES,
+                          channel_name=None):
+    """
+    Retrieves semantically relevant memories with bidirectional
+    isolation for channels in MEMORY_ISOLATED_CHANNELS:
+    - Isolated channel: only its own tagged memories returned
+    - Any other channel: isolated channel memories excluded
+    Filtering is Python-level to avoid ChromaDB null-field edge cases.
+    """
     query_embedding = embedding_model.encode(query).tolist()
     results = {}
+    is_isolated = channel_name in MEMORY_ISOLATED_CHANNELS
 
     for layer_name, collection in [
         ("strategic", strategic_collection),
@@ -423,21 +463,46 @@ def get_relevant_memories(query, max_results=TOP_N_MEMORIES):
                 results[layer_name] = []
                 continue
 
+            # Fetch extra candidates to absorb isolation filtering loss
+            fetch_n = min(max_results * 5, count, 25)
             search_results = collection.query(
                 query_embeddings=[query_embedding],
-                n_results=min(max_results, count)
+                n_results=fetch_n,
+                include=["documents", "metadatas"]
             )
 
-            if search_results["documents"][0]:
-                results[layer_name] = \
-                    search_results["documents"][0]
-            else:
-                results[layer_name] = []
+            docs = search_results["documents"][0]
+            metas = search_results["metadatas"][0]
+
+            filtered = []
+            for doc, meta in zip(docs, metas):
+                doc_tag = meta.get("project_tag") if meta else None
+                if is_isolated:
+                    if doc_tag == channel_name:
+                        filtered.append(doc)
+                else:
+                    if doc_tag not in MEMORY_ISOLATED_CHANNELS:
+                        filtered.append(doc)
+                if len(filtered) >= max_results:
+                    break
+
+            results[layer_name] = filtered
 
         except Exception:
             results[layer_name] = []
 
-    results["stale_flags"] = check_stale_memories()
+    all_stale = check_stale_memories()
+    if is_isolated:
+        results["stale_flags"] = [
+            f for f in all_stale
+            if f.get("project_tag") == channel_name
+        ]
+    else:
+        results["stale_flags"] = [
+            f for f in all_stale
+            if f.get("project_tag") not in MEMORY_ISOLATED_CHANNELS
+        ]
+
     return results
 
 
@@ -448,12 +513,13 @@ def check_stale_memories():
     flags = []
 
     c.execute("""
-        SELECT id, content, last_confirmed, flag_after_days
+        SELECT id, content, last_confirmed, flag_after_days,
+               project_tag
         FROM strategic_memory
         WHERE status = 'active'
     """)
-    for mem_id, content, last_confirmed, flag_days in \
-            c.fetchall():
+    for mem_id, content, last_confirmed, flag_days, \
+            project_tag in c.fetchall():
         if last_confirmed:
             confirmed_date = datetime.fromisoformat(
                 last_confirmed
@@ -465,6 +531,7 @@ def check_stale_memories():
                     "id": mem_id,
                     "content": content[:120],
                     "days_old": days_old,
+                    "project_tag": project_tag,
                     "message": (
                         f"Strategic memory "
                         f"({days_old} days old) "
@@ -474,12 +541,13 @@ def check_stale_memories():
                 })
 
     c.execute("""
-        SELECT id, content, last_updated, flag_after_days
+        SELECT id, content, last_updated, flag_after_days,
+               project_tag
         FROM operational_memory
         WHERE status = 'active'
     """)
-    for mem_id, content, last_updated, flag_days in \
-            c.fetchall():
+    for mem_id, content, last_updated, flag_days, \
+            project_tag in c.fetchall():
         if last_updated:
             updated_date = datetime.fromisoformat(
                 last_updated
@@ -491,6 +559,7 @@ def check_stale_memories():
                     "id": mem_id,
                     "content": content[:120],
                     "days_old": days_old,
+                    "project_tag": project_tag,
                     "message": (
                         f"Operational memory "
                         f"({days_old} days old) "
@@ -805,6 +874,119 @@ def get_handoff_memories():
         "experiences": get_recent_experiences(limit=3),
         "review_flags": review_flags
     }
+
+
+# ============================================================
+# HEALTH TRACKING FUNCTIONS
+# ============================================================
+
+def log_health_panel(test_date, marker, value, unit,
+                     reference_range, notes=None):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO health_panels
+        (test_date, marker, value, unit, reference_range, notes)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (test_date, marker, float(value), unit,
+          reference_range, notes))
+    panel_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return panel_id
+
+
+def get_health_panels(marker=None, since_date=None):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    conditions = []
+    params = []
+    if marker:
+        conditions.append("marker = ?")
+        params.append(marker)
+    if since_date:
+        conditions.append("test_date >= ?")
+        params.append(since_date)
+
+    where = (
+        "WHERE " + " AND ".join(conditions) if conditions else ""
+    )
+    c.execute(f"""
+        SELECT id, test_date, marker, value, unit,
+               reference_range, personal_baseline, notes,
+               created_at
+        FROM health_panels
+        {where}
+        ORDER BY test_date DESC, marker
+    """, params)
+
+    rows = c.fetchall()
+    conn.close()
+    return [
+        {
+            "id": r[0], "test_date": r[1], "marker": r[2],
+            "value": r[3], "unit": r[4],
+            "reference_range": r[5] or "",
+            "personal_baseline": r[6],
+            "notes": r[7] or "",
+            "created_at": r[8]
+        }
+        for r in rows
+    ]
+
+
+def log_health_protocol(protocol_name, dose, frequency,
+                        start_date, notes=None):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO health_protocols
+        (protocol_name, dose, frequency, start_date, notes)
+        VALUES (?, ?, ?, ?, ?)
+    """, (protocol_name, dose, frequency, start_date, notes))
+    protocol_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return protocol_id
+
+
+def update_health_protocol_end(protocol_name, end_date):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        UPDATE health_protocols
+        SET end_date = ?
+        WHERE protocol_name = ? AND end_date IS NULL
+    """, (end_date, protocol_name))
+    updated = c.rowcount
+    conn.commit()
+    conn.close()
+    return updated > 0
+
+
+def get_active_protocols():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        SELECT id, protocol_name, dose, frequency,
+               start_date, notes, created_at
+        FROM health_protocols
+        WHERE end_date IS NULL
+        ORDER BY start_date DESC
+    """)
+    rows = c.fetchall()
+    conn.close()
+    return [
+        {
+            "id": r[0], "protocol_name": r[1],
+            "dose": r[2], "frequency": r[3],
+            "start_date": r[4],
+            "notes": r[5] or "",
+            "created_at": r[6]
+        }
+        for r in rows
+    ]
 
 
 # ============================================================

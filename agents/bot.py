@@ -37,6 +37,7 @@ from memory.memory_manager import (
     check_stale_memories,
     save_conversation_history,
     load_all_conversation_histories,
+    MEMORY_ISOLATED_CHANNELS,
 )
 
 from tools.tool_definitions import (
@@ -86,12 +87,14 @@ CHANNEL_MEMORY_MODE = {
     "contact-center":         "project",
     "gamification-dashboard": "project",
     "slack-intelligence":     "project",
+    "health-tracking":        "project",
 }
 
 CHANNEL_PROJECT_TAG = {
     "contact-center":         "contact-center",
     "gamification-dashboard": "gamification-dashboard",
     "slack-intelligence":     "slack-intelligence",
+    "health-tracking":        "health-tracking",
 }
 
 CHANNEL_IGNORED = {
@@ -116,9 +119,17 @@ CHANNEL_TOOL_MODE = {
     "contact-center":         "full",
     "gamification-dashboard": "full",
     "slack-intelligence":     "full",
+    "health-tracking":        "full",
 }
 
 SEARCH_ONLY_TOOL_NAMES = {"web_search", "query_memory"}
+
+# ── MEMORY ISOLATION ──────────────────────────────────────────
+# Channels in MEMORY_ISOLATED_CHANNELS get bidirectional isolation:
+# their memories never surface in other channels, and they never
+# receive memories from other channels. Defined in memory_manager.py
+# and imported here so bot logic can reference the same set.
+# Current isolated channels: health-tracking
 
 # ── CHANNEL PURPOSE DESCRIPTIONS ─────────────────────────────
 # Injected into every user message so Claude knows what each
@@ -158,6 +169,16 @@ CHANNEL_PURPOSE = {
     "sandbox": (
         "Testing only. Treat all messages as "
         "experiments, no real context assumed."
+    ),
+    "health-tracking": (
+        "Fully private health tracking channel. "
+        "Biomarker panel logging and trend analysis, "
+        "peptide protocol tracking, direct-to-consumer "
+        "panel recommendations, and health research. "
+        "Context is completely isolated from all other channels. "
+        "Treat all health information with discretion. "
+        "Always recommend consulting a doctor for clinical "
+        "decisions while providing thorough research-based guidance."
     ),
 }
 
@@ -497,11 +518,25 @@ async def extract_and_store_memories(
     after each interaction.
     """
     try:
+        if channel_name in MEMORY_ISOLATED_CHANNELS:
+            scope_instruction = (
+                "\nSCOPE RESTRICTION: This exchange is from the "
+                "private health tracking channel. Only extract "
+                "health-related insights — biomarker trends, "
+                "protocol effects, supplement or peptide patterns, "
+                "and health research findings. Never extract work, "
+                "business, career, or personal non-health context. "
+                "If nothing health-specific is worth storing, "
+                "return empty arrays."
+            )
+        else:
+            scope_instruction = ""
+
         extraction_prompt = f"""Review this exchange and identify anything worth storing in long term memory.
 
 User said: {user_message}
 Assistant replied: {bot_reply[:500]}
-Task completed: {task_completed}
+Task completed: {task_completed}{scope_instruction}
 
 Respond in this exact JSON format with no other text:
 {{
@@ -711,7 +746,9 @@ async def process_user_message(
 
     task_completed = is_task_completion(user_message)
 
-    memories = get_relevant_memories(user_message)
+    memories = get_relevant_memories(
+        user_message, channel_name=channel.name
+    )
     memory_context = format_memory_for_prompt(memories)
 
     channel_purpose = CHANNEL_PURPOSE.get(
