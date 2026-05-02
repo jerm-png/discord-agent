@@ -396,10 +396,10 @@ def _extract_original_message(full_content: str) -> str:
 def _check_ollama_status() -> tuple:
     """Returns (is_reachable, model_name) for use in !status."""
     try:
-        with urllib.request.urlopen(
-            urllib.request.Request("http://localhost:11434"), timeout=3
-        ):
-            return True, OLLAMA_MODEL
+        urllib.request.urlopen(
+            "http://localhost:11434", timeout=3
+        )
+        return True, OLLAMA_MODEL
     except Exception:
         return False, OLLAMA_MODEL
 
