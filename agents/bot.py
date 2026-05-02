@@ -1,5 +1,7 @@
 import asyncio
+import base64
 import discord
+import io
 import os
 import shutil
 import sys
@@ -7,11 +9,14 @@ import json
 import tempfile
 import urllib.request
 import urllib.error
+from collections import defaultdict
 from datetime import datetime
 from discord import app_commands
 from dotenv import load_dotenv
 from anthropic import Anthropic
 from elevenlabs import ElevenLabs
+import PyPDF2
+import docx
 
 # Add project root to path
 project_root = os.path.dirname(os.path.dirname(
@@ -187,8 +192,20 @@ CHANNEL_PURPOSE = {
 MAX_TOOL_CALLS = 5
 
 conversation_history = {}
+attached_files: defaultdict = defaultdict(list)
 BOT_START_TIME = None
 _last_token_usage = {"input": 0, "output": 0}
+
+SUPPORTED_DOC_EXTENSIONS   = {".pdf", ".txt", ".md", ".csv", ".docx"}
+SUPPORTED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+SUPPORTED_EXTENSIONS = SUPPORTED_DOC_EXTENSIONS | SUPPORTED_IMAGE_EXTENSIONS
+IMAGE_MEDIA_TYPES = {
+    ".png":  "image/png",
+    ".jpg":  "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+}
+FILE_CONTENT_CHAR_LIMIT = 50_000
 
 with open(
     os.path.join(project_root, "SOUL.md"), "r", encoding="utf-8"
@@ -391,6 +408,41 @@ def _extract_original_message(full_content: str) -> str:
     if len(lines) > 1 and lines[0].startswith("[Channel:"):
         return lines[1].strip()
     return full_content
+
+
+def _process_attachment(filename: str, file_bytes: bytes) -> dict:
+    """
+    Extracts content from a file attachment in memory.
+    Documents return text_content. Images return base64_data + media_type.
+    Raises on parse failure so the caller can post a user-facing error.
+    """
+    ext = os.path.splitext(filename)[1].lower()
+
+    if ext in SUPPORTED_IMAGE_EXTENSIONS:
+        return {
+            "filename": filename,
+            "content_type": "image",
+            "media_type": IMAGE_MEDIA_TYPES[ext],
+            "base64_data": base64.standard_b64encode(file_bytes).decode("utf-8"),
+        }
+
+    if ext == ".pdf":
+        reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
+        pages = [page.extract_text() or "" for page in reader.pages]
+        text_content = "\n\n".join(p for p in pages if p.strip())
+    elif ext == ".docx":
+        doc = docx.Document(io.BytesIO(file_bytes))
+        text_content = "\n".join(
+            p.text for p in doc.paragraphs if p.text.strip()
+        )
+    else:  # .txt, .md, .csv
+        text_content = file_bytes.decode("utf-8")
+
+    return {
+        "filename": filename,
+        "content_type": "document",
+        "text_content": text_content,
+    }
 
 
 def _check_ollama_status() -> tuple:
@@ -984,10 +1036,83 @@ async def process_user_message(
 
     full_message = f"{channel_ctx}\n{full_message}"
 
-    conversation_history[user_id].append({
-        "role": "user",
-        "content": full_message
-    })
+    # ── FILE INJECTION ────────────────────────────────────────
+    file_injection_chars = 0
+    all_user_files = list(attached_files.get(user_id, []))
+    is_isolated_channel = channel.name in MEMORY_ISOLATED_CHANNELS
+
+    if all_user_files:
+        if is_isolated_channel:
+            user_files = [
+                f for f in all_user_files
+                if f.get("channel_name") == channel.name
+            ]
+        else:
+            user_files = [
+                f for f in all_user_files
+                if f.get("channel_name") not in MEMORY_ISOLATED_CHANNELS
+            ]
+
+        doc_files = [f for f in user_files if f["content_type"] == "document"]
+        img_files = [f for f in user_files if f["content_type"] == "image"]
+
+        # Cap total document text — drop oldest files first to stay under limit
+        docs_to_inject = []
+        chars_used = 0
+        omitted = 0
+        for f in reversed(doc_files):
+            flen = len(f["text_content"])
+            if chars_used + flen <= FILE_CONTENT_CHAR_LIMIT:
+                docs_to_inject.insert(0, f)
+                chars_used += flen
+            else:
+                omitted += 1
+        file_injection_chars = chars_used
+
+        if docs_to_inject:
+            file_parts = [
+                f"[Attached file: {f['filename']}]\nContent: {f['text_content']}"
+                for f in docs_to_inject
+            ]
+            truncation_note = (
+                f"\n[{omitted} older file(s) omitted — "
+                f"50,000 character limit reached]"
+                if omitted else ""
+            )
+            full_message = (
+                f"ATTACHED FILES:\n"
+                + "\n\n".join(file_parts)
+                + truncation_note
+                + f"\n\n{full_message}"
+            )
+
+        if img_files:
+            content_blocks = [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": img["media_type"],
+                        "data": img["base64_data"],
+                    },
+                }
+                for img in img_files
+            ]
+            content_blocks.append({"type": "text", "text": full_message})
+            conversation_history[user_id].append({
+                "role": "user",
+                "content": content_blocks,
+            })
+        else:
+            conversation_history[user_id].append({
+                "role": "user",
+                "content": full_message,
+            })
+    else:
+        conversation_history[user_id].append({
+            "role": "user",
+            "content": full_message,
+        })
 
     await send_to_channel(
         guild,
@@ -1096,12 +1221,16 @@ async def process_user_message(
                 f"Task complete: {task_completed} | "
                 f"Stale flags: {stale_count}"
             )
+            file_token_note = (
+                f" | File injection: ~{file_injection_chars // 4:,} tokens"
+                if file_injection_chars else ""
+            )
             await send_to_channel(
                 guild,
                 LOG_CHANNEL,
                 f"Tokens — in: {in_tokens:,} | "
                 f"out: {out_tokens:,} | "
-                f"est. cost: ${est_cost:.4f}"
+                f"est. cost: ${est_cost:.4f}{file_token_note}"
             )
 
             await send_to_channel(
@@ -1237,6 +1366,86 @@ async def on_message(message):
         )
         return
 
+    # ── FILE ATTACHMENTS (non-audio) ──────────────────────
+    non_audio_attachments = [
+        a for a in message.attachments
+        if not (a.content_type and a.content_type.startswith("audio/"))
+    ]
+
+    if non_audio_attachments:
+        uid = str(message.author.id)
+        loop = asyncio.get_running_loop()
+        for attachment in non_audio_attachments:
+            ext = os.path.splitext(attachment.filename)[1].lower()
+            if ext not in SUPPORTED_EXTENSIONS:
+                await message.channel.send(
+                    f"⚠️ {attachment.filename} — file type not supported. "
+                    f"Supported: PDF, DOCX, TXT, MD, CSV, PNG, JPG, WEBP"
+                )
+                continue
+
+            file_bytes = await attachment.read()
+            try:
+                file_data = await loop.run_in_executor(
+                    None, _process_attachment, attachment.filename, file_bytes
+                )
+            except Exception as e:
+                await message.channel.send(
+                    f"⚠️ {attachment.filename} — could not read this file. "
+                    f"It may be corrupted or password protected."
+                )
+                await send_to_channel(
+                    message.guild, LOG_CHANNEL,
+                    f"File processing error | {attachment.filename} | "
+                    f"Channel: #{channel_name} | {str(e)}"
+                )
+                continue
+
+            file_data["channel_name"] = channel_name
+            attached_files[uid].append(file_data)
+
+            await message.channel.send(
+                f"📎 {attachment.filename} received and ready. "
+                f"Ask me anything about it or keep uploading."
+            )
+
+            char_count = (
+                len(file_data.get("text_content", ""))
+                if file_data["content_type"] == "document"
+                else len(file_data.get("base64_data", ""))
+            )
+            await send_to_channel(
+                message.guild, LOG_CHANNEL,
+                f"File received | {attachment.filename} | "
+                f"{file_data['content_type']} | "
+                f"{char_count:,} chars | Channel: #{channel_name}"
+            )
+
+        # Check if there's a question alongside the files
+        raw_text = message.content.strip()
+        if bot.user in message.mentions:
+            raw_text = raw_text.replace(
+                f"<@{bot.user.id}>", ""
+            ).strip()
+
+        if not raw_text:
+            return  # files only — waiting for a question
+
+        if not raw_text.startswith("!"):
+            # Plain-text question with files — run pipeline directly
+            await process_user_message(
+                raw_text,
+                uid,
+                message.author.display_name,
+                message.guild,
+                message.channel,
+                speak=False,
+                memory_mode=memory_mode,
+                project_tag=project_tag,
+            )
+            return
+        # Starts with "!" — fall through to command handling below
+
     # ── TEXT COMMANDS ─────────────────────────────────────
     is_mention = bot.user in message.mentions
     is_prefix = message.content.startswith("!")
@@ -1290,16 +1499,19 @@ async def on_message(message):
         )
         return
 
-    # !clear: wipe in-memory conversation history for this user
+    # !clear: wipe in-memory conversation history and attached files
     if is_prefix and user_message.lower() == "clear":
         uid = str(message.author.id)
         old_history = conversation_history.get(uid, [])
         _, stripped = strip_orphaned_tool_results(old_history)
         conversation_history[uid] = []
-        note = (
-            f" ({stripped} orphaned tool block(s) also cleaned.)"
-            if stripped else ""
-        )
+        cleared_files = len(attached_files.pop(uid, []))
+        note_parts = []
+        if stripped:
+            note_parts.append(f"{stripped} orphaned tool block(s) cleaned")
+        if cleared_files:
+            note_parts.append(f"{cleared_files} attached file(s) removed")
+        note = f" ({', '.join(note_parts)})" if note_parts else ""
         await message.channel.send(
             f"Conversation history cleared for this channel. "
             f"Starting fresh.{note}"
