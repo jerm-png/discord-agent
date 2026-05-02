@@ -659,12 +659,22 @@ RECENT EXPERIENCES:
 OPEN REVIEW FLAGS:
 {_fmt_list(snapshot.get('review_flags', []))}"""
 
-    response = client.messages.create(
-        model=MAIN_MODEL,
-        max_tokens=2048,
-        system=HANDOFF_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": memory_text}]
-    )
+    try:
+        response = client.messages.create(
+            model=MAIN_MODEL,
+            max_tokens=2048,
+            system=HANDOFF_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": memory_text}]
+        )
+    except Exception as e:
+        await channel.send(
+            "Handoff generation failed — please try again."
+        )
+        await send_to_channel(
+            guild, LOG_CHANNEL,
+            f"Handoff error in #{channel_name}: {str(e)}"
+        )
+        return
 
     handoff_doc = response.content[0].text.strip()
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -683,11 +693,11 @@ OPEN REVIEW FLAGS:
     )
 
 
-async def speak_response(text: str, guild) -> None:
+async def speak_response(text: str, guild, channel=None) -> None:
     """
     Converts text to speech via ElevenLabs and plays it in the General
-    voice channel. Disconnects when done. Fails silently so the text
-    response always reaches the user even if TTS breaks.
+    voice channel. Disconnects when done. On failure, notifies the user
+    in the originating channel and logs the raw error to bot-logs.
     """
     if not ELEVENLABS_API_KEY or not ELEVENLABS_VOICE_ID:
         return
@@ -722,8 +732,15 @@ async def speak_response(text: str, guild) -> None:
         voice_client.play(source, after=lambda _: done.set())
         await done.wait()
 
-    except Exception:
-        pass
+    except Exception as e:
+        if channel:
+            await channel.send(
+                "Voice response failed — text response above is complete."
+            )
+        await send_to_channel(
+            guild, LOG_CHANNEL,
+            f"TTS error: {str(e)}"
+        )
     finally:
         if voice_client and voice_client.is_connected():
             await voice_client.disconnect()
@@ -836,7 +853,7 @@ async def process_user_message(
             if final_response_text:
                 await send_long_message(channel, final_response_text)
                 if speak:
-                    await speak_response(final_response_text, guild)
+                    await speak_response(final_response_text, guild, channel)
             else:
                 await channel.send(
                     "I processed your request but had "
@@ -908,10 +925,7 @@ async def process_user_message(
             )
 
         except Exception as e:
-            await channel.send(
-                "Something went wrong on my end. "
-                "Check bot-logs for details."
-            )
+            await channel.send("Something went wrong — please try again.")
             await send_to_channel(
                 guild,
                 LOG_CHANNEL,
@@ -981,7 +995,12 @@ async def on_message(message):
             )
         except Exception as e:
             await message.channel.send(
-                f"Voice transcription failed: {str(e)}"
+                "Voice transcription failed — please try again "
+                "or type your message instead."
+            )
+            await send_to_channel(
+                message.guild, LOG_CHANNEL,
+                f"Transcription error in #{channel_name}: {str(e)}"
             )
             return
 

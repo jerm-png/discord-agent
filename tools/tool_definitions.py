@@ -438,7 +438,7 @@ def handle_web_search(inputs):
         return formatted
 
     except Exception as e:
-        return f"Search failed: {str(e)}"
+        return "Web search unavailable — answering from training knowledge."
 
 
 def handle_calculate_confidence(inputs):
@@ -490,4 +490,4 @@ def execute_tool(tool_name, tool_inputs):
     try:
         return handler(tool_inputs)
     except Exception as e:
-        return f"Tool error in {tool_name}: {str(e)}"
+        return f"Tool '{tool_name}' encountered an error — continue without this information."
