@@ -29,6 +29,7 @@ from memory.memory_manager import (
     increment_interaction_count,
     get_recent_experiences,
     get_handoff_memories,
+    get_memory_counts,
     is_task_completion,
     set_pending_reflection,
     get_pending_reflection,
@@ -186,6 +187,8 @@ CHANNEL_PURPOSE = {
 MAX_TOOL_CALLS = 5
 
 conversation_history = {}
+BOT_START_TIME = None
+_last_token_usage = {"input": 0, "output": 0}
 
 with open(
     os.path.join(project_root, "SOUL.md"), "r", encoding="utf-8"
@@ -241,6 +244,22 @@ Brief summary of the last few completed tasks and what was learned from them.
 
 Be specific. Use actual names, numbers, and project details from the memory data provided.
 If a section has nothing meaningful to report, write one sentence saying so — do not omit the section."""
+
+HELP_TEXT = """**PerMyLastBot — Commands**
+
+`!help` — Show this message. Works in any channel.
+
+`!memory` — Show what's stored in memory for the current channel context. Respects isolation — `#health-tracking` shows health memories only.
+
+`!clear` — Wipe your conversation history for this session. Fixes context confusion without touching long-term memory. Works in any channel.
+
+`!status` — System report: Ollama, FFmpeg, memory counts, uptime, last token usage. Works in any channel.
+
+`!retry` — Regenerate a response to your last message through the full pipeline. Works in any channel.
+
+`!remember <text>` — Save something directly to long-term memory. `#bot-commands` only.
+
+`!handoff` — Generate a dense memory snapshot document for pasting into a new AI session. Works in any channel."""
 
 
 # ============================================================
@@ -303,6 +322,86 @@ def check_ffmpeg() -> None:
             "TTS voice output will silently fail until FFmpeg "
             "is installed and added to PATH"
         )
+
+
+def strip_orphaned_tool_results(history: list) -> tuple:
+    """
+    Removes orphaned tool_result blocks from conversation history.
+    A tool_result is orphaned when the preceding assistant message lacks
+    a matching tool_use block with the same tool_use_id.
+    Returns (cleaned_history, count_stripped).
+    """
+    stripped = 0
+    cleaned = []
+
+    for msg in history:
+        content = msg.get("content")
+        role = msg.get("role")
+
+        if role == "user" and isinstance(content, list):
+            valid_ids = set()
+            if cleaned:
+                prev = cleaned[-1]
+                if prev.get("role") == "assistant":
+                    prev_content = prev.get("content", [])
+                    if isinstance(prev_content, list):
+                        for block in prev_content:
+                            if (hasattr(block, "type")
+                                    and block.type == "tool_use"):
+                                valid_ids.add(block.id)
+                            elif (isinstance(block, dict)
+                                  and block.get("type") == "tool_use"):
+                                valid_ids.add(block.get("id"))
+
+            surviving = []
+            for block in content:
+                is_tr = (
+                    (isinstance(block, dict)
+                     and block.get("type") == "tool_result")
+                    or (hasattr(block, "type")
+                        and getattr(block, "type") == "tool_result")
+                )
+                if is_tr:
+                    tid = (
+                        block.get("tool_use_id")
+                        if isinstance(block, dict)
+                        else getattr(block, "tool_use_id", None)
+                    )
+                    if tid in valid_ids:
+                        surviving.append(block)
+                    else:
+                        stripped += 1
+                else:
+                    surviving.append(block)
+
+            if surviving:
+                cleaned.append({**msg, "content": surviving})
+            # else: entire message was orphaned tool_results — drop it
+        else:
+            cleaned.append(msg)
+
+    return cleaned, stripped
+
+
+def _extract_original_message(full_content: str) -> str:
+    """Extracts the user's original message from the context-prefixed stored string."""
+    if "Current message: " in full_content:
+        return full_content.split("Current message: ", 1)[1].strip()
+    lines = full_content.split("\n", 1)
+    if len(lines) > 1 and lines[0].startswith("[Channel:"):
+        return lines[1].strip()
+    return full_content
+
+
+def _check_ollama_status() -> tuple:
+    """Returns (is_reachable, model_name) for use in !status."""
+    try:
+        with urllib.request.urlopen(
+            urllib.request.Request("http://localhost:11434"), timeout=3
+        ):
+            return True, OLLAMA_MODEL
+    except Exception:
+        return False, OLLAMA_MODEL
 
 
 async def call_background_model(prompt: str) -> str:
@@ -693,6 +792,107 @@ OPEN REVIEW FLAGS:
     )
 
 
+async def run_memory_command(channel, guild, channel_name):
+    """Displays what the bot knows in memory for the current channel context."""
+    memory_mode = CHANNEL_MEMORY_MODE.get(channel_name, "ephemeral")
+    is_isolated = channel_name in MEMORY_ISOLATED_CHANNELS
+
+    if memory_mode == "ephemeral":
+        await channel.send(
+            "This channel uses ephemeral mode — no memories are stored here."
+        )
+        return
+
+    if is_isolated:
+        query = "health biomarkers protocols supplements peptides"
+    elif memory_mode == "project":
+        query = f"{channel_name} project tasks status progress"
+    else:
+        query = "user background goals preferences working style projects"
+
+    loop = asyncio.get_running_loop()
+    memories = await loop.run_in_executor(
+        None,
+        lambda: get_relevant_memories(
+            query, max_results=5, channel_name=channel_name
+        )
+    )
+
+    lines = [f"**Memory snapshot — #{channel_name}**\n"]
+    strategic = memories.get("strategic", [])
+    operational = memories.get("operational", [])
+    analytical = memories.get("analytical", [])
+
+    if strategic:
+        lines.append("**Strategic:**")
+        for m in strategic[:5]:
+            lines.append(f"• {m}")
+        lines.append("")
+
+    if operational:
+        lines.append("**Operational:**")
+        for m in operational[:3]:
+            lines.append(f"• {m}")
+        lines.append("")
+
+    if analytical:
+        lines.append("**Patterns:**")
+        for m in analytical[:3]:
+            lines.append(f"• {m}")
+        lines.append("")
+
+    if not strategic and not operational and not analytical:
+        lines.append("No memories found for this channel context.")
+
+    await send_long_message(channel, "\n".join(lines))
+
+
+async def run_status_command(channel, guild):
+    """Posts a formatted system status report to the current channel."""
+    loop = asyncio.get_running_loop()
+
+    ollama_up, ollama_model = await loop.run_in_executor(
+        None, _check_ollama_status
+    )
+    ffmpeg_path = shutil.which("ffmpeg")
+    mem_counts = await loop.run_in_executor(None, get_memory_counts)
+
+    uptime_str = "unknown"
+    if BOT_START_TIME:
+        delta = datetime.now() - BOT_START_TIME
+        hours, rem = divmod(int(delta.total_seconds()), 3600)
+        minutes = rem // 60
+        uptime_str = f"{hours}h {minutes}m"
+
+    ollama_status = (
+        f"reachable ({ollama_model})" if ollama_up
+        else f"unreachable ({ollama_model})"
+    )
+    ffmpeg_status = (
+        f"found ({ffmpeg_path})" if ffmpeg_path else "not found"
+    )
+    last_in = _last_token_usage["input"]
+    last_out = _last_token_usage["output"]
+    last_tokens = (
+        f"in: {last_in:,} | out: {last_out:,}"
+        if last_in or last_out else "no responses yet"
+    )
+
+    report = (
+        "**System Status**\n"
+        f"Ollama: {ollama_status}\n"
+        f"FFmpeg: {ffmpeg_status}\n"
+        f"Memory — strategic: {mem_counts['strategic']} | "
+        f"operational: {mem_counts['operational']} | "
+        f"analytical: {mem_counts['analytical']}\n"
+        f"Conversation histories: {len(conversation_history)} user(s)\n"
+        f"Uptime: {uptime_str}\n"
+        f"Last tokens: {last_tokens}"
+    )
+
+    await channel.send(report)
+
+
 async def speak_response(text: str, guild, channel=None) -> None:
     """
     Converts text to speech via ElevenLabs and plays it in the General
@@ -884,6 +1084,8 @@ async def process_user_message(
             out_tokens = response.usage.output_tokens
             est_cost = (in_tokens / 1_000_000 * 3.00) + \
                        (out_tokens / 1_000_000 * 15.00)
+            _last_token_usage["input"] = in_tokens
+            _last_token_usage["output"] = out_tokens
             await send_to_channel(
                 guild,
                 LOG_CHANNEL,
@@ -940,7 +1142,22 @@ async def process_user_message(
 @bot.event
 async def on_ready():
     """Runs once when the bot connects to Discord."""
-    conversation_history.update(load_all_conversation_histories())
+    global BOT_START_TIME
+    BOT_START_TIME = datetime.now()
+
+    raw_histories = load_all_conversation_histories()
+    total_stripped = 0
+    for user_id, history in raw_histories.items():
+        cleaned, count = strip_orphaned_tool_results(history)
+        raw_histories[user_id] = cleaned
+        total_stripped += count
+    conversation_history.update(raw_histories)
+    if total_stripped:
+        print(
+            f"[Startup] Stripped {total_stripped} orphaned "
+            f"tool_result block(s) from loaded histories."
+        )
+
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, check_ollama_health)
     await loop.run_in_executor(None, check_ffmpeg)
@@ -1058,6 +1275,68 @@ async def on_message(message):
     if is_prefix and user_message.lower() == "handoff":
         await run_handoff_command(
             message.channel, message.guild, channel_name
+        )
+        return
+
+    # !help: list all commands
+    if is_prefix and user_message.lower() == "help":
+        await message.channel.send(HELP_TEXT)
+        return
+
+    # !memory: show memory snapshot for this channel context
+    if is_prefix and user_message.lower() == "memory":
+        await run_memory_command(
+            message.channel, message.guild, channel_name
+        )
+        return
+
+    # !clear: wipe in-memory conversation history for this user
+    if is_prefix and user_message.lower() == "clear":
+        uid = str(message.author.id)
+        old_history = conversation_history.get(uid, [])
+        _, stripped = strip_orphaned_tool_results(old_history)
+        conversation_history[uid] = []
+        note = (
+            f" ({stripped} orphaned tool block(s) also cleaned.)"
+            if stripped else ""
+        )
+        await message.channel.send(
+            f"Conversation history cleared for this channel. "
+            f"Starting fresh.{note}"
+        )
+        return
+
+    # !status: system health report
+    if is_prefix and user_message.lower() == "status":
+        await run_status_command(message.channel, message.guild)
+        return
+
+    # !retry: resend last user message through the full pipeline
+    if is_prefix and user_message.lower() == "retry":
+        uid = str(message.author.id)
+        history = conversation_history.get(uid, [])
+        last_user_content = None
+        for msg in reversed(history):
+            if (msg.get("role") == "user"
+                    and isinstance(msg.get("content"), str)):
+                last_user_content = msg["content"]
+                break
+        if not last_user_content:
+            await message.channel.send("No previous message to retry.")
+            return
+        original_message = _extract_original_message(last_user_content)
+        if not original_message:
+            await message.channel.send("No previous message to retry.")
+            return
+        await process_user_message(
+            original_message,
+            str(message.author.id),
+            message.author.display_name,
+            message.guild,
+            message.channel,
+            speak=False,
+            memory_mode=memory_mode,
+            project_tag=project_tag,
         )
         return
 

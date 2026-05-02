@@ -1014,6 +1014,30 @@ def get_active_protocols():
     ]
 
 
+def get_memory_counts() -> dict:
+    """Returns active record counts for each memory layer."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "SELECT COUNT(*) FROM strategic_memory WHERE status = 'active'"
+    )
+    strategic = c.fetchone()[0]
+    c.execute(
+        "SELECT COUNT(*) FROM operational_memory WHERE status = 'active'"
+    )
+    operational = c.fetchone()[0]
+    c.execute(
+        "SELECT COUNT(*) FROM analytical_memory WHERE status = 'active'"
+    )
+    analytical = c.fetchone()[0]
+    conn.close()
+    return {
+        "strategic": strategic,
+        "operational": operational,
+        "analytical": analytical
+    }
+
+
 # ============================================================
 # INITIALISE ON IMPORT
 # ============================================================
