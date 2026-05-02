@@ -409,9 +409,10 @@ def _extract_original_message(full_content: str) -> str:
     """Extracts the user's original message from the context-prefixed stored string."""
     if "Current message: " in full_content:
         return full_content.split("Current message: ", 1)[1].strip()
-    lines = full_content.split("\n", 1)
-    if len(lines) > 1 and lines[0].startswith("[Channel:"):
-        return lines[1].strip()
+    if "[Channel:" in full_content:
+        after = full_content.split("[Channel:", 1)[1]
+        lines = after.split("\n", 1)
+        return lines[1].strip() if len(lines) > 1 else ""
     return full_content
 
 
@@ -529,7 +530,7 @@ async def send_long_message(channel, message):
             await channel.send(message[i:i+2000])
 
 
-async def process_tool_calls(response, guild, tool_call_count):
+async def process_tool_calls(response, guild, tool_call_count, channel_name=None):
     """
     Handles tool calls from Claude.
     Executes the requested tool and returns the result.
@@ -563,10 +564,11 @@ async def process_tool_calls(response, guild, tool_call_count):
                 f"Inputs: {json.dumps(tool_inputs)[:200]}"
             )
 
-            # Execute the tool off the event loop thread
+            # Execute the tool off the event loop thread — pass channel_name
+            # so query_memory respects isolation for health-tracking and similar channels
             loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(
-                None, execute_tool, tool_name, tool_inputs
+                None, execute_tool, tool_name, tool_inputs, channel_name
             )
 
             # Show tool activity in status channel
@@ -1192,7 +1194,8 @@ async def process_user_message(
                     })
                     tool_results, tool_call_count = \
                         await process_tool_calls(
-                            response, guild, tool_call_count
+                            response, guild, tool_call_count,
+                            channel_name=channel.name
                         )
                     conversation_history[user_id].append({
                         "role": "user",

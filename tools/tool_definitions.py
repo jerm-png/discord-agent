@@ -290,7 +290,7 @@ _LAYER_LABELS = {
 }
 
 
-def handle_query_memory(inputs):
+def handle_query_memory(inputs, channel_name=None):
     """
     Searches memory semantically and returns
     relevant context for Claude to use.
@@ -298,7 +298,9 @@ def handle_query_memory(inputs):
     query = inputs.get("query", "")
     layer = inputs.get("layer", "all")
 
-    memories = get_relevant_memories(query, max_results=5)
+    memories = get_relevant_memories(
+        query, max_results=5, channel_name=channel_name
+    )
 
     if layer != "all":
         memories = {layer: memories.get(layer, [])}
@@ -468,26 +470,27 @@ def handle_calculate_confidence(inputs):
 # Single function that routes tool calls to the right handler
 # ============================================================
 
-def execute_tool(tool_name, tool_inputs):
+def execute_tool(tool_name, tool_inputs, channel_name=None):
     """
     Routes a tool call from Claude to the correct handler.
     Returns the result as a string for Claude to use.
     """
-    handlers = {
-        "query_memory": handle_query_memory,
-        "save_skill": handle_save_skill,
-        "update_user_model": handle_update_user_model,
-        "flag_for_review": handle_flag_for_review,
-        "web_search": handle_web_search,
-        "calculate_confidence": handle_calculate_confidence
-    }
-
-    handler = handlers.get(tool_name)
-
-    if not handler:
-        return f"Unknown tool: {tool_name}"
+    if not tool_name:
+        return "Unknown tool: (empty)"
 
     try:
-        return handler(tool_inputs)
+        if tool_name == "query_memory":
+            return handle_query_memory(tool_inputs, channel_name=channel_name)
+        if tool_name == "save_skill":
+            return handle_save_skill(tool_inputs)
+        if tool_name == "update_user_model":
+            return handle_update_user_model(tool_inputs)
+        if tool_name == "flag_for_review":
+            return handle_flag_for_review(tool_inputs)
+        if tool_name == "web_search":
+            return handle_web_search(tool_inputs)
+        if tool_name == "calculate_confidence":
+            return handle_calculate_confidence(tool_inputs)
+        return f"Unknown tool: {tool_name}"
     except Exception as e:
         return f"Tool '{tool_name}' encountered an error — continue without this information."
