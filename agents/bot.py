@@ -342,11 +342,12 @@ def tag_owner() -> str:
 
 
 def _saveable_history(history: list) -> list:
-    """Returns the last 50 messages whose content is a plain string.
-    Filters out intermediate tool_use/tool_result messages (non-serializable
-    SDK objects) so the persisted list is clean JSON and safe to restore."""
+    """Returns the last 50 plain-string messages after bidirectional tool-block
+    validation. Strips orphaned tool_use/tool_result blocks before filtering
+    so corrupted exchanges are never written to SQLite."""
+    validated, _ = strip_orphaned_tool_results(history)
     return [
-        m for m in history
+        m for m in validated
         if isinstance(m.get("content"), str)
     ][-50:]
 
@@ -382,48 +383,58 @@ def check_ffmpeg() -> None:
 
 def strip_orphaned_tool_results(history: list) -> tuple:
     """
-    Removes orphaned tool_result blocks from conversation history.
-    A tool_result is orphaned when the preceding assistant message lacks
-    a matching tool_use block with the same tool_use_id.
+    Removes orphaned tool blocks from conversation history in both directions.
+
+    Pass 1 — tool_result without matching tool_use: strips tool_result blocks
+    from a user message when the preceding assistant message has no tool_use
+    block with the same tool_use_id.
+
+    Pass 2 — tool_use without matching tool_result: strips tool_use blocks
+    from an assistant message when the immediately following user message has
+    no tool_result block with the matching tool_use_id. If an assistant message
+    loses all its content blocks it is removed entirely.
+
+    Handles both SDK objects (.type / .id attributes) and plain dicts.
     Returns (cleaned_history, count_stripped).
     """
     stripped = 0
-    cleaned = []
 
+    def _block_type(block):
+        if isinstance(block, dict):
+            return block.get("type")
+        return getattr(block, "type", None)
+
+    def _block_id(block):
+        if isinstance(block, dict):
+            return block.get("id")
+        return getattr(block, "id", None)
+
+    def _tool_use_id(block):
+        if isinstance(block, dict):
+            return block.get("tool_use_id")
+        return getattr(block, "tool_use_id", None)
+
+    # ── Pass 1: strip orphaned tool_results (user message direction) ──────────
+    pass1 = []
     for msg in history:
         content = msg.get("content")
         role = msg.get("role")
 
         if role == "user" and isinstance(content, list):
             valid_ids = set()
-            if cleaned:
-                prev = cleaned[-1]
+            if pass1:
+                prev = pass1[-1]
                 if prev.get("role") == "assistant":
                     prev_content = prev.get("content", [])
                     if isinstance(prev_content, list):
                         for block in prev_content:
-                            if (hasattr(block, "type")
-                                    and block.type == "tool_use"):
-                                valid_ids.add(block.id)
-                            elif (isinstance(block, dict)
-                                  and block.get("type") == "tool_use"):
-                                valid_ids.add(block.get("id"))
+                            if _block_type(block) == "tool_use":
+                                valid_ids.add(_block_id(block))
 
             surviving = []
             for block in content:
-                is_tr = (
-                    (isinstance(block, dict)
-                     and block.get("type") == "tool_result")
-                    or (hasattr(block, "type")
-                        and getattr(block, "type") == "tool_result")
-                )
-                if is_tr:
-                    tid = (
-                        block.get("tool_use_id")
-                        if isinstance(block, dict)
-                        else getattr(block, "tool_use_id", None)
-                    )
-                    if tid in valid_ids:
+                if _block_type(block) == "tool_result":
+                    if _tool_use_id(block) in valid_ids:
                         surviving.append(block)
                     else:
                         stripped += 1
@@ -431,12 +442,46 @@ def strip_orphaned_tool_results(history: list) -> tuple:
                     surviving.append(block)
 
             if surviving:
-                cleaned.append({**msg, "content": surviving})
+                pass1.append({**msg, "content": surviving})
             # else: entire message was orphaned tool_results — drop it
         else:
-            cleaned.append(msg)
+            pass1.append(msg)
 
-    return cleaned, stripped
+    # ── Pass 2: strip orphaned tool_use blocks (assistant message direction) ───
+    pass2 = []
+    for i, msg in enumerate(pass1):
+        content = msg.get("content")
+        role = msg.get("role")
+
+        if role == "assistant" and isinstance(content, list):
+            # Collect tool_result IDs from the immediately following user message
+            valid_result_ids = set()
+            if i + 1 < len(pass1):
+                next_msg = pass1[i + 1]
+                if next_msg.get("role") == "user":
+                    next_content = next_msg.get("content", [])
+                    if isinstance(next_content, list):
+                        for block in next_content:
+                            if _block_type(block) == "tool_result":
+                                valid_result_ids.add(_tool_use_id(block))
+
+            surviving = []
+            for block in content:
+                if _block_type(block) == "tool_use":
+                    if _block_id(block) in valid_result_ids:
+                        surviving.append(block)
+                    else:
+                        stripped += 1
+                else:
+                    surviving.append(block)
+
+            if surviving:
+                pass2.append({**msg, "content": surviving})
+            # else: all blocks stripped — drop the assistant message entirely
+        else:
+            pass2.append(msg)
+
+    return pass2, stripped
 
 
 def _extract_original_message(full_content: str) -> str:
