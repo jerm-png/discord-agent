@@ -36,7 +36,8 @@ from memory.memory_manager import (
     increment_interaction_count,
     get_recent_experiences,
     get_handoff_memories,
-    get_memory_counts,
+    memory_stats,
+    get_consolidation_candidates,
     is_task_completion,
     set_pending_reflection,
     get_pending_reflection,
@@ -131,6 +132,17 @@ CHANNEL_TOOL_MODE = {
 }
 
 SEARCH_ONLY_TOOL_NAMES = {"web_search", "query_memory"}
+
+# ── CONSOLIDATION THRESHOLDS ──────────────────────────────────
+# Auto-consolidation triggers when a layer's non-health count
+# exceeds the layer threshold, or health-tracking memories
+# across all layers exceed the health threshold.
+CONSOLIDATION_THRESHOLDS = {
+    "strategic":      100,
+    "operational":     50,
+    "analytical":      75,
+    "health_tracking": 150,
+}
 
 # ── MEMORY ISOLATION ──────────────────────────────────────────
 # Channels in MEMORY_ISOLATED_CHANNELS get bidirectional isolation:
@@ -281,7 +293,9 @@ HELP_TEXT = """**PerMyLastBot — Commands**
 
 `!remember <text>` — Save something directly to long-term memory. `#bot-commands` only.
 
-`!handoff` — Generate a dense memory snapshot document for pasting into a new AI session. Works in any channel."""
+`!handoff` — Generate a dense memory snapshot document for pasting into a new AI session. Works in any channel.
+
+`!consolidate` — Manually trigger memory consolidation for the current channel scope. Groups similar memories, merges them via AI, archives originals. Respects isolation — `#health-tracking` only consolidates health memories."""
 
 
 # ============================================================
@@ -798,6 +812,175 @@ Return empty arrays if nothing meaningful to store."""
         )
 
 
+_CONSOLIDATION_PROMPT = (
+    "You are consolidating these related memories into a single dense "
+    "entry. Preserve all specific facts, dates, numbers, and named "
+    "entities. Remove redundancy. Output a single memory entry that "
+    "contains everything important from all inputs. Be specific and "
+    "dense — no filler. Output only the consolidated memory text, "
+    "nothing else.\n\n{cluster_text}"
+)
+
+
+def _should_consolidate(stats: dict, channel_name: str) -> bool:
+    """Returns True if any layer exceeds its consolidation threshold."""
+    is_isolated = channel_name in MEMORY_ISOLATED_CHANNELS
+    for layer in ("strategic", "operational", "analytical"):
+        layer_stats = stats.get(layer, {})
+        if is_isolated:
+            count = layer_stats.get("by_tag", {}).get(channel_name, 0)
+            if count > CONSOLIDATION_THRESHOLDS["health_tracking"]:
+                return True
+        else:
+            total = layer_stats.get("total", 0)
+            health_count = sum(
+                v for k, v in layer_stats.get("by_tag", {}).items()
+                if k in MEMORY_ISOLATED_CHANNELS
+            )
+            if total - health_count > CONSOLIDATION_THRESHOLDS[layer]:
+                return True
+    return False
+
+
+async def _consolidate_layer(
+    guild, layer: str, channel_name: str, trigger: str
+) -> dict:
+    """
+    Fetches consolidation candidates for one layer, merges each cluster
+    via the background model, saves the consolidated entry, and archives
+    the originals. Returns {"merged": N, "archived": X, "skipped": Y}.
+    """
+    loop = asyncio.get_running_loop()
+    is_isolated = channel_name in MEMORY_ISOLATED_CHANNELS
+
+    before_stats = memory_stats()
+    before_count = (
+        before_stats.get(layer, {}).get("by_tag", {}).get(channel_name, 0)
+        if is_isolated
+        else before_stats.get(layer, {}).get("total", 0)
+    )
+
+    candidates = await loop.run_in_executor(
+        None, get_consolidation_candidates, layer, channel_name
+    )
+
+    merged = archived = skipped = 0
+
+    for cluster in candidates:
+        cluster_text = "\n\n".join(f"- {m['content']}" for m in cluster)
+        prompt = _CONSOLIDATION_PROMPT.format(cluster_text=cluster_text)
+
+        try:
+            consolidated_text = (
+                await call_background_model(prompt)
+            ).strip()
+        except Exception as e:
+            skipped += 1
+            await send_to_channel(
+                guild, LOG_CHANNEL,
+                f"Memory consolidation | Cluster skipped — model error "
+                f"| Layer: {layer} | {str(e)}"
+            )
+            continue
+
+        if not consolidated_text:
+            skipped += 1
+            await send_to_channel(
+                guild, LOG_CHANNEL,
+                f"Memory consolidation | Cluster skipped — empty output "
+                f"| Layer: {layer}"
+            )
+            continue
+
+        tags = {m["project_tag"] for m in cluster}
+        consolidated_tag = next(iter(tags)) if len(tags) == 1 else None
+        avg_conf = sum(m["confidence"] for m in cluster) / len(cluster)
+
+        try:
+            if layer == "strategic":
+                save_strategic_memory(
+                    content=consolidated_text,
+                    category="consolidation",
+                    confidence=avg_conf,
+                    source="consolidation",
+                    project_tag=consolidated_tag,
+                )
+            elif layer == "operational":
+                save_operational_memory(
+                    content=consolidated_text,
+                    project_name="consolidation",
+                    project_tag=consolidated_tag,
+                )
+            elif layer == "analytical":
+                save_analytical_memory(
+                    pattern=consolidated_text,
+                    confidence=avg_conf,
+                    pattern_type="consolidation",
+                    project_tag=consolidated_tag,
+                )
+        except Exception as e:
+            skipped += 1
+            await send_to_channel(
+                guild, LOG_CHANNEL,
+                f"Memory consolidation | Save failed | "
+                f"Layer: {layer} | {str(e)}"
+            )
+            continue
+
+        archived_count = sum(
+            1 for m in cluster
+            if archive_memory(layer, m["id"], "consolidated")
+        )
+        merged += 1
+        archived += archived_count
+
+    after_count = before_count - archived + merged
+    await send_to_channel(
+        guild, LOG_CHANNEL,
+        f"Memory consolidation | Layer: {layer} | "
+        f"Before: {before_count} | After: {after_count} | "
+        f"Archived: {archived} | Trigger: {trigger}"
+    )
+
+    return {"merged": merged, "archived": archived, "skipped": skipped}
+
+
+async def consolidate_all_layers(
+    guild, channel_name: str = None, trigger: str = "auto"
+) -> dict:
+    """
+    Consolidates all three memory layers. Used by auto-trigger and
+    exposed publicly so tests and future callers have a single entry point.
+    Returns {"merged": N, "archived": X, "skipped": Y}.
+    """
+    totals = {"merged": 0, "archived": 0, "skipped": 0}
+    for layer in ("strategic", "operational", "analytical"):
+        result = await _consolidate_layer(guild, layer, channel_name, trigger)
+        for k in totals:
+            totals[k] += result[k]
+    return totals
+
+
+async def run_consolidate_command(channel, guild, channel_name):
+    """Handles the !consolidate command — posts per-layer progress."""
+    totals = {"merged": 0, "archived": 0, "skipped": 0}
+    for layer in ("strategic", "operational", "analytical"):
+        await channel.send(f"🧠 Consolidating {layer} layer...")
+        result = await _consolidate_layer(guild, layer, channel_name, "manual")
+        for k in totals:
+            totals[k] += result[k]
+
+    await channel.send(
+        f"✅ Consolidation complete — "
+        f"{totals['merged']} memories merged into entries, "
+        f"{totals['archived']} archived"
+        + (
+            f", {totals['skipped']} cluster(s) skipped"
+            if totals["skipped"] else ""
+        )
+    )
+
+
 async def run_handoff_command(channel, guild, channel_name):
     """
     Generates a dense handoff document from live memory for pasting
@@ -936,7 +1119,7 @@ async def run_status_command(channel, guild):
         None, _check_ollama_status
     )
     ffmpeg_path = shutil.which("ffmpeg")
-    mem_counts = await loop.run_in_executor(None, get_memory_counts)
+    stats = await loop.run_in_executor(None, memory_stats)
 
     uptime_str = "unknown"
     if BOT_START_TIME:
@@ -959,13 +1142,30 @@ async def run_status_command(channel, guild):
         if last_in or last_out else "no responses yet"
     )
 
+    def _layer_line(layer: str) -> str:
+        ls = stats.get(layer, {})
+        total = ls.get("total", 0)
+        by_tag = ls.get("by_tag", {})
+        parts = []
+        global_count = by_tag.get(None, 0)
+        if global_count:
+            parts.append(f"global: {global_count}")
+        for tag, count in sorted(
+            (k, v) for k, v in by_tag.items() if k is not None
+        ):
+            parts.append(f"{tag}: {count}")
+        breakdown = " | ".join(parts) if parts else "none"
+        return f"{layer}: {total} ({breakdown})"
+
+    mem_lines = "\n  ".join(
+        _layer_line(l) for l in ("strategic", "operational", "analytical")
+    )
+
     report = (
         "**System Status**\n"
         f"Ollama: {ollama_status}\n"
         f"FFmpeg: {ffmpeg_status}\n"
-        f"Memory — strategic: {mem_counts['strategic']} | "
-        f"operational: {mem_counts['operational']} | "
-        f"analytical: {mem_counts['analytical']}\n"
+        f"Memory —\n  {mem_lines}\n"
         f"Conversation histories: {len(conversation_history)} user(s)\n"
         f"Uptime: {uptime_str}\n"
         f"Last tokens: {last_tokens}"
@@ -1244,6 +1444,17 @@ async def process_user_message(
                         task_completed_only=True
                     )
                     await run_reflection_loop(guild, experiences)
+
+                # Fire auto-consolidation in background if thresholds exceeded
+                current_stats = memory_stats()
+                if _should_consolidate(current_stats, channel.name):
+                    asyncio.create_task(
+                        consolidate_all_layers(
+                            guild,
+                            channel_name=channel.name,
+                            trigger="auto"
+                        )
+                    )
 
             stale_count = len(memories.get("stale_flags", []))
             in_tokens = response.usage.input_tokens
@@ -1537,6 +1748,13 @@ async def on_message(message):
     # !handoff: generate dense memory snapshot for new AI session
     if is_prefix and user_message.lower() == "handoff":
         await run_handoff_command(
+            message.channel, message.guild, channel_name
+        )
+        return
+
+    # !consolidate: manually trigger memory consolidation for this channel scope
+    if is_prefix and user_message.lower() == "consolidate":
+        await run_consolidate_command(
             message.channel, message.guild, channel_name
         )
         return

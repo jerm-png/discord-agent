@@ -1,8 +1,9 @@
 import sqlite3
 import json
 import os
+import numpy as np
 import chromadb
-from datetime import datetime
+from datetime import datetime, timedelta
 from sentence_transformers import SentenceTransformer
 
 # ============================================================
@@ -1036,6 +1037,208 @@ def get_memory_counts() -> dict:
         "operational": operational,
         "analytical": analytical
     }
+
+
+def memory_stats() -> dict:
+    """
+    Returns active memory counts per layer and per project_tag.
+    Structure:
+      {
+        "strategic":   {"total": N, "by_tag": {None: N, "health-tracking": N, ...}},
+        "operational": {"total": N, "by_tag": {...}},
+        "analytical":  {"total": N, "by_tag": {...}},
+      }
+    None key = global (no project tag).
+    """
+    tables = {
+        "strategic":   "strategic_memory",
+        "operational": "operational_memory",
+        "analytical":  "analytical_memory",
+    }
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    result = {}
+    for layer, table in tables.items():
+        c.execute(f"""
+            SELECT project_tag, COUNT(*)
+            FROM {table}
+            WHERE status = 'active'
+            GROUP BY project_tag
+        """)
+        by_tag = {}
+        total = 0
+        for tag, count in c.fetchall():
+            by_tag[tag] = count
+            total += count
+        result[layer] = {"total": total, "by_tag": by_tag}
+    conn.close()
+    return result
+
+
+def _cluster_by_similarity(memories: list, threshold: float = 0.85) -> list:
+    """
+    Groups a list of memory dicts into clusters using cosine similarity.
+    Each dict must have an "embedding" key (list of floats).
+    Uses union-find on the full pairwise similarity graph.
+    Returns only clusters with 3+ members.
+    """
+    n = len(memories)
+    if n < 3:
+        return []
+
+    arr = np.array([m["embedding"] for m in memories], dtype=np.float32)
+    norms = np.linalg.norm(arr, axis=1, keepdims=True)
+    norms = np.where(norms == 0, 1.0, norms)
+    normalized = arr / norms
+    sim_matrix = normalized @ normalized.T
+
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i, j):
+        pi, pj = find(i), find(j)
+        if pi != pj:
+            parent[pi] = pj
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if float(sim_matrix[i, j]) >= threshold:
+                union(i, j)
+
+    clusters_map = {}
+    for i, mem in enumerate(memories):
+        root = find(i)
+        if root not in clusters_map:
+            clusters_map[root] = []
+        clusters_map[root].append(mem)
+
+    return [cl for cl in clusters_map.values() if len(cl) >= 3]
+
+
+def get_consolidation_candidates(layer: str,
+                                  channel_name: str = None) -> list:
+    """
+    Returns clusters of semantically similar memories eligible for
+    consolidation. Only clusters of 3+ members are returned.
+
+    Constraints enforced:
+      - Age > 24 hours (too-recent memories are skipped)
+      - Operational layer: only non-active entries (active ones may
+        still be needed verbatim)
+      - Strategic / analytical: only active entries
+      - Respects bidirectional isolation via channel_name
+      - Never mixes memories from different project_tags
+
+    Each memory dict in a cluster contains:
+      {id, content, confidence, project_tag, embedding}
+    """
+    layer_config = {
+        "strategic":   ("strategic_memory",   "content",  True),
+        "operational": ("operational_memory",  "content",  False),
+        "analytical":  ("analytical_memory",   "pattern",  True),
+    }
+    collection_map = {
+        "strategic":   strategic_collection,
+        "operational": operational_collection,
+        "analytical":  analytical_collection,
+    }
+
+    if layer not in layer_config:
+        return []
+
+    table, content_col, only_active = layer_config[layer]
+    collection = collection_map[layer]
+    is_isolated = channel_name in MEMORY_ISOLATED_CHANNELS
+
+    cutoff = (datetime.now() - timedelta(hours=24)).isoformat()
+    excluded_tags = list(MEMORY_ISOLATED_CHANNELS)
+    status_clause = (
+        "status = 'active'" if only_active else "status != 'active'"
+    )
+
+    # Confidence column exists in strategic and analytical but not operational
+    conf_expr = "confidence" if layer != "operational" else "0.7"
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    if is_isolated:
+        c.execute(f"""
+            SELECT id, {content_col}, {conf_expr}, project_tag, created
+            FROM {table}
+            WHERE {status_clause}
+              AND project_tag = ?
+              AND created < ?
+        """, (channel_name, cutoff))
+    else:
+        placeholders = ",".join("?" * len(excluded_tags))
+        c.execute(f"""
+            SELECT id, {content_col}, {conf_expr}, project_tag, created
+            FROM {table}
+            WHERE {status_clause}
+              AND (project_tag IS NULL
+                   OR project_tag NOT IN ({placeholders}))
+              AND created < ?
+        """, excluded_tags + [cutoff])
+
+    rows = c.fetchall()
+    conn.close()
+
+    if len(rows) < 3:
+        return []
+
+    # Fetch embeddings from ChromaDB by explicit ID list
+    chroma_ids = [f"{layer}_{row[0]}" for row in rows]
+    try:
+        fetched = collection.get(
+            ids=chroma_ids,
+            include=["embeddings"]
+        )
+    except Exception:
+        return []
+
+    id_to_embedding = {
+        fid: emb
+        for fid, emb in zip(
+            fetched.get("ids", []),
+            fetched.get("embeddings", [])
+        )
+    }
+
+    memories = []
+    for mem_id, content, confidence, project_tag, _created in rows:
+        embedding = id_to_embedding.get(f"{layer}_{mem_id}")
+        if embedding is not None:
+            memories.append({
+                "id": mem_id,
+                "content": content,
+                "confidence": float(confidence or 0.5),
+                "project_tag": project_tag,
+                "embedding": embedding,
+            })
+
+    if len(memories) < 3:
+        return []
+
+    # Group by project_tag — never mix tags in a cluster
+    by_tag = {}
+    for m in memories:
+        tag = m["project_tag"]
+        if tag not in by_tag:
+            by_tag[tag] = []
+        by_tag[tag].append(m)
+
+    all_clusters = []
+    for tag_group in by_tag.values():
+        if len(tag_group) >= 3:
+            all_clusters.extend(_cluster_by_similarity(tag_group))
+
+    return all_clusters
 
 
 # ============================================================
