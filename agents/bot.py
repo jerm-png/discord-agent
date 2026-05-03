@@ -210,6 +210,10 @@ attached_files: defaultdict = defaultdict(list)
 BOT_START_TIME = None
 _last_token_usage = {"input": 0, "output": 0}
 
+# Goal mode state — keyed by user_id, cleared on restart
+pending_goals: dict = {}
+execution_context: dict = {}
+
 SUPPORTED_DOC_EXTENSIONS   = {".pdf", ".txt", ".md", ".csv", ".docx"}
 SUPPORTED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 SUPPORTED_EXTENSIONS = SUPPORTED_DOC_EXTENSIONS | SUPPORTED_IMAGE_EXTENSIONS
@@ -255,6 +259,20 @@ For each meaningful pattern you identify respond with this exact JSON format and
 Only include insights with genuine signal. Return empty arrays if nothing meaningful emerged.
 Confidence should be between 0.0 and 1.0 based on how many times this pattern was observed."""
 
+GOAL_PLANNER_SYSTEM_PROMPT = """You are a planning agent. Break down the following goal into 3-8 specific executable steps. Each step should be one of these types:
+- web_search: search for specific information
+- query_memory: check existing memory for context
+- analyze: synthesize information gathered so far
+- draft: write a structured output or report
+
+For each step specify:
+- step_number
+- type (from list above)
+- description (what to do)
+- query (the specific search query or memory query if applicable)
+
+Return ONLY a JSON array of steps, no other text."""
+
 HANDOFF_SYSTEM_PROMPT = """You are generating a dense, structured handoff document from live memory snapshots.
 Your output will be pasted directly into a new AI session as context. Write for an AI reader, not a human one.
 Be maximally information-dense. No filler, no headers beyond what is specified, no pleasantries.
@@ -295,7 +313,9 @@ HELP_TEXT = """**PerMyLastBot — Commands**
 
 `!handoff` — Generate a dense memory snapshot document for pasting into a new AI session. Works in any channel.
 
-`!consolidate` — Manually trigger memory consolidation for the current channel scope. Groups similar memories, merges them via AI, archives originals. Respects isolation — `#health-tracking` only consolidates health memories."""
+`!consolidate` — Manually trigger memory consolidation for the current channel scope. Groups similar memories, merges them via AI, archives originals. Respects isolation — `#health-tracking` only consolidates health memories.
+
+`!goal [description]` — Decompose a goal into an approved step plan, then execute it. Also `!plan` and `!research`. Reply `!approve` to run, `!cancel` to abort, `!modify [changes]` to revise, `!skip` to skip a failed step."""
 
 
 # ============================================================
@@ -979,6 +999,342 @@ async def run_consolidate_command(channel, guild, channel_name):
             if totals["skipped"] else ""
         )
     )
+
+
+def _parse_goal_trigger(user_message: str):
+    """
+    Returns (trigger_word, goal_text) if the message starts with a goal
+    trigger phrase (goal/plan/research), otherwise None.
+    Called after the leading '!' has already been stripped.
+    """
+    lower = user_message.lower()
+    for trigger in ("goal ", "plan ", "research "):
+        if lower.startswith(trigger):
+            goal_text = user_message[len(trigger):].strip()
+            if goal_text:
+                return (trigger.strip(), goal_text)
+    return None
+
+
+def _format_plan(goal: str, steps: list) -> str:
+    lines = [f"📋 Here's my plan for: **{goal}**\n"]
+    for step in steps:
+        num = step.get("step_number", "?")
+        stype = step.get("type", "unknown")
+        desc = step.get("description", "")
+        lines.append(f"Step {num} ({stype}): {desc}")
+    lines.append(
+        "\nReply `!approve` to execute, `!cancel` to abort, "
+        "or `!modify [changes]` to adjust the plan."
+    )
+    return "\n".join(lines)
+
+
+def _format_execution_context(findings: list) -> str:
+    if not findings:
+        return "No information gathered yet."
+    parts = [
+        f"[Step {f['step']} — {f['type']}]\n{f['content']}"
+        for f in findings
+    ]
+    return "\n\n---\n\n".join(parts)
+
+
+async def run_goal_planning(
+    goal_text: str, user_id: str, author_display_name: str,
+    guild, channel, memory_mode: str, project_tag
+):
+    """
+    Calls the planner model to decompose a goal into steps, validates
+    the plan, stores it in pending_goals, and posts it for approval.
+    """
+    try:
+        response = client.messages.create(
+            model=MAIN_MODEL,
+            max_tokens=1024,
+            system=GOAL_PLANNER_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": goal_text}]
+        )
+        raw = response.content[0].text.strip()
+        clean = raw.replace("```json", "").replace("```", "").strip()
+        steps = json.loads(clean)
+    except Exception as e:
+        await channel.send(
+            f"Failed to generate a plan: {str(e)[:200]}\n"
+            "Try rephrasing your goal."
+        )
+        return
+
+    if not isinstance(steps, list) or not steps:
+        await channel.send(
+            "I couldn't generate a valid plan for that goal. "
+            "Please try again with more detail."
+        )
+        return
+
+    if len(steps) > 8:
+        steps = steps[:8]
+        await channel.send("⚠️ Plan trimmed to 8 steps (maximum allowed).")
+
+    web_search_steps = sum(
+        1 for s in steps if s.get("type") == "web_search"
+    )
+    if web_search_steps > 5:
+        await channel.send(
+            f"⚠️ Plan has {web_search_steps} web search steps — "
+            "excess searches will be skipped during execution (max 5)."
+        )
+
+    pending_goals[user_id] = {
+        "goal": goal_text,
+        "steps": steps,
+        "channel": channel,
+        "guild": guild,
+        "channel_name": channel.name,
+        "memory_mode": memory_mode,
+        "project_tag": project_tag,
+        "status": "awaiting_approval",
+        "current_step": 0,
+        "web_search_count": 0,
+    }
+    execution_context.pop(user_id, None)
+
+    await send_long_message(channel, _format_plan(goal_text, steps))
+    await send_to_channel(
+        guild, LOG_CHANNEL,
+        f"Goal plan generated | User: {author_display_name} | "
+        f"Steps: {len(steps)} | Goal: {goal_text[:100]}"
+    )
+
+
+async def run_goal_modification(
+    changes: str, user_id: str, author_display_name: str,
+    guild, channel, memory_mode: str, project_tag
+):
+    """Replans a pending goal based on the user's modification request."""
+    pg = pending_goals.get(user_id)
+    if not pg:
+        await channel.send("No pending goal to modify.")
+        return
+
+    current_plan = json.dumps(pg["steps"], indent=2)
+    mod_prompt = (
+        f"Current plan:\n{current_plan}\n\n"
+        f"Modification request: {changes}\n\n"
+        "Update the plan accordingly. Return ONLY the updated "
+        "JSON array of steps, no other text."
+    )
+
+    try:
+        response = client.messages.create(
+            model=MAIN_MODEL,
+            max_tokens=1024,
+            system=GOAL_PLANNER_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": mod_prompt}]
+        )
+        raw = response.content[0].text.strip()
+        clean = raw.replace("```json", "").replace("```", "").strip()
+        steps = json.loads(clean)
+    except Exception as e:
+        await channel.send(f"Failed to modify the plan: {str(e)[:200]}")
+        return
+
+    if not isinstance(steps, list) or not steps:
+        await channel.send(
+            "I couldn't generate a valid revised plan. "
+            "Try a different modification request."
+        )
+        return
+
+    if len(steps) > 8:
+        steps = steps[:8]
+
+    pg["steps"] = steps
+    pg["status"] = "awaiting_approval"
+    pg["current_step"] = 0
+
+    await send_long_message(channel, _format_plan(pg["goal"], steps))
+
+
+async def execute_goal(user_id: str, author_display_name: str):
+    """
+    Executes an approved goal plan step by step as a background task.
+    On step failure, stores state and pauses — !skip or !cancel resumes.
+    """
+    pg = pending_goals.get(user_id)
+    if not pg:
+        return
+
+    channel = pg["channel"]
+    guild = pg["guild"]
+    steps = pg["steps"]
+    goal = pg["goal"]
+    channel_name = pg["channel_name"]
+    memory_mode = pg["memory_mode"]
+    project_tag = pg["project_tag"]
+    start_step = pg.get("current_step", 0)
+    total = len(steps)
+
+    if user_id not in execution_context:
+        execution_context[user_id] = []
+
+    loop = asyncio.get_running_loop()
+    final_output = ""
+
+    try:
+        async with channel.typing():
+            for i in range(start_step, total):
+                # Cancellation check between steps
+                if user_id not in pending_goals:
+                    return
+                pg = pending_goals[user_id]
+                if pg.get("status") != "executing":
+                    return
+
+                step = steps[i]
+                step_num = step.get("step_number", i + 1)
+                step_type = step.get("type", "analyze")
+                step_desc = step.get("description", "")
+                step_query = step.get("query", step_desc)
+
+                await send_to_channel(
+                    guild, STATUS_CHANNEL,
+                    f"⚙️ Step {step_num}/{total}: {step_desc}..."
+                )
+
+                try:
+                    if step_type == "web_search":
+                        search_count = pg.get("web_search_count", 0)
+                        if search_count >= 5:
+                            execution_context[user_id].append({
+                                "step": step_num, "type": step_type,
+                                "content": "[Skipped — web search limit of 5 reached]"
+                            })
+                            continue
+                        result = await loop.run_in_executor(
+                            None, execute_tool,
+                            "web_search",
+                            {"query": step_query, "max_results": 3},
+                            channel_name
+                        )
+                        execution_context[user_id].append({
+                            "step": step_num, "type": "web_search",
+                            "content": str(result)
+                        })
+                        pg["web_search_count"] = search_count + 1
+
+                    elif step_type == "query_memory":
+                        memories = await loop.run_in_executor(
+                            None,
+                            lambda q=step_query: get_relevant_memories(
+                                q, channel_name=channel_name
+                            )
+                        )
+                        mem_text = format_memory_for_prompt(memories)
+                        execution_context[user_id].append({
+                            "step": step_num, "type": "query_memory",
+                            "content": mem_text or "No relevant memories found."
+                        })
+
+                    elif step_type == "analyze":
+                        ctx = _format_execution_context(
+                            execution_context[user_id]
+                        )
+                        r = client.messages.create(
+                            model=MAIN_MODEL,
+                            max_tokens=2048,
+                            messages=[{"role": "user", "content": (
+                                f"Goal: {goal}\n\n"
+                                f"Information gathered:\n{ctx}\n\n"
+                                f"Task: {step_desc}\n\n"
+                                "Synthesize the above into a concise analysis."
+                            )}]
+                        )
+                        synthesis = r.content[0].text.strip()
+                        execution_context[user_id].append({
+                            "step": step_num, "type": "analyze",
+                            "content": synthesis
+                        })
+
+                    elif step_type == "draft":
+                        ctx = _format_execution_context(
+                            execution_context[user_id]
+                        )
+                        r = client.messages.create(
+                            model=MAIN_MODEL,
+                            max_tokens=4096,
+                            messages=[{"role": "user", "content": (
+                                f"Goal: {goal}\n\n"
+                                f"Research and analysis:\n{ctx}\n\n"
+                                f"Task: {step_desc}\n\n"
+                                "Produce the final output as requested."
+                            )}]
+                        )
+                        final_output = r.content[0].text.strip()
+                        execution_context[user_id].append({
+                            "step": step_num, "type": "draft",
+                            "content": final_output
+                        })
+
+                except Exception as e:
+                    pg["status"] = "step_failed"
+                    pg["current_step"] = i + 1
+                    await channel.send(
+                        f"Step {step_num} failed: {str(e)[:200]}\n"
+                        "Reply `!skip` to continue with remaining steps "
+                        "or `!cancel` to abort."
+                    )
+                    return
+
+    except Exception as e:
+        await send_to_channel(
+            guild, LOG_CHANNEL,
+            f"Goal execution error | User: {author_display_name} | {str(e)}"
+        )
+        pending_goals.pop(user_id, None)
+        execution_context.pop(user_id, None)
+        return
+
+    # Deliver output
+    if final_output:
+        await send_long_message(channel, final_output)
+    else:
+        findings = execution_context.get(user_id, [])
+        if findings:
+            parts = [f"**Goal complete: {goal}**\n"]
+            for f in findings:
+                parts.append(
+                    f"**Step {f['step']} ({f['type']}):**\n"
+                    f"{f['content'][:600]}"
+                )
+            await send_long_message(channel, "\n\n".join(parts))
+        else:
+            await channel.send(f"Goal complete: {goal}")
+
+    web_searches = pg.get("web_search_count", 0)
+    mem_queries = sum(
+        1 for f in execution_context.get(user_id, [])
+        if f["type"] == "query_memory"
+    )
+    await send_to_channel(
+        guild, LOG_CHANNEL,
+        f"Goal completed | Steps: {total} | "
+        f"Web searches: {web_searches} | "
+        f"Memory queries: {mem_queries} | "
+        f"Channel: #{channel_name}"
+    )
+
+    output_for_memory = final_output or goal
+    if memory_mode != "ephemeral":
+        await extract_and_store_memories(
+            goal, output_for_memory, guild, True,
+            project_tag=project_tag,
+            channel_name=channel_name,
+            memory_mode=memory_mode
+        )
+
+    pending_goals.pop(user_id, None)
+    execution_context.pop(user_id, None)
 
 
 async def run_handoff_command(channel, guild, channel_name):
@@ -1725,6 +2081,72 @@ async def on_message(message):
             f"<@{bot.user.id}>", ""
         ).strip()
 
+    uid = str(message.author.id)
+
+    # Goal triggers: !goal, !plan, !research
+    if is_prefix:
+        goal_trigger = _parse_goal_trigger(user_message)
+        if goal_trigger:
+            _, goal_text = goal_trigger
+            asyncio.create_task(
+                run_goal_planning(
+                    goal_text, uid, message.author.display_name,
+                    message.guild, message.channel, memory_mode, project_tag
+                )
+            )
+            return
+
+    # Goal mode response commands
+    if uid in pending_goals:
+        pg = pending_goals[uid]
+        pg_status = pg["status"]
+        if is_prefix:
+            lm = user_message.lower()
+            if lm == "approve":
+                if pg_status == "awaiting_approval":
+                    pg["status"] = "executing"
+                    pg["current_step"] = 0
+                    execution_context[uid] = []
+                    await message.channel.send("✅ Executing plan...")
+                    asyncio.create_task(
+                        execute_goal(uid, message.author.display_name)
+                    )
+                return
+            if lm == "cancel":
+                pending_goals.pop(uid, None)
+                execution_context.pop(uid, None)
+                await message.channel.send("❌ Goal cancelled.")
+                return
+            if lm.startswith("modify "):
+                if pg_status == "awaiting_approval":
+                    changes = user_message[7:].strip()
+                    if changes:
+                        asyncio.create_task(run_goal_modification(
+                            changes, uid, message.author.display_name,
+                            message.guild, message.channel, memory_mode, project_tag
+                        ))
+                return
+            if lm == "skip":
+                if pg_status == "step_failed":
+                    pg["status"] = "executing"
+                    asyncio.create_task(
+                        execute_goal(uid, message.author.display_name)
+                    )
+                return
+        if not is_prefix and pg_status == "awaiting_approval":
+            await message.channel.send(
+                "You have a pending goal plan. Reply `!approve`, `!cancel`, "
+                "or `!modify [changes]` — I will not process other messages "
+                "until the plan is resolved."
+            )
+            return
+        if not is_prefix and pg_status == "step_failed":
+            await message.channel.send(
+                "A goal step failed. Reply `!skip` to continue "
+                "or `!cancel` to abort the goal."
+            )
+            return
+
     # !remember in bot-commands: save directly to global memory and confirm
     if (channel_name == "bot-commands" and is_prefix
             and user_message.lower().startswith("remember ")):
@@ -1773,7 +2195,6 @@ async def on_message(message):
 
     # !clear: wipe in-memory conversation history and attached files
     if is_prefix and user_message.lower() == "clear":
-        uid = str(message.author.id)
         old_history = conversation_history.get(uid, [])
         _, stripped = strip_orphaned_tool_results(old_history)
         conversation_history[uid] = []
@@ -1797,7 +2218,6 @@ async def on_message(message):
 
     # !retry: resend last user message through the full pipeline
     if is_prefix and user_message.lower() == "retry":
-        uid = str(message.author.id)
         history = conversation_history.get(uid, [])
         last_user_content = None
         for msg in reversed(history):
@@ -1814,7 +2234,7 @@ async def on_message(message):
             return
         await process_user_message(
             original_message,
-            str(message.author.id),
+            uid,
             message.author.display_name,
             message.guild,
             message.channel,
@@ -1835,9 +2255,17 @@ async def on_message(message):
         )
         return
 
+    if uid in pending_goals and pending_goals[uid].get("status") == "awaiting_approval":
+        await message.channel.send(
+            "You have a pending goal plan. Reply `!approve`, `!cancel`, "
+            "or `!modify [changes]` — I will not process other messages "
+            "until the plan is resolved."
+        )
+        return
+
     await process_user_message(
         user_message,
-        str(message.author.id),
+        uid,
         message.author.display_name,
         message.guild,
         message.channel,
