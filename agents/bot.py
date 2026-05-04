@@ -114,6 +114,18 @@ CHANNEL_IGNORED = {
     "general-output",
 }
 
+# Channels where each new conversation starts in a dedicated Discord thread.
+# Bot creates a thread on the first message and responds inside it.
+# Subsequent messages in that thread continue the same context.
+THREADED_CHANNELS = {
+    "chief-of-staff",
+    "director-workspace",
+    "planning",
+    "contact-center",
+    "gamification-dashboard",
+    "health-tracking",
+}
+
 # ── CHANNEL TOOL LOADING ─────────────────────────────────────
 # "none"        = no tools sent (sandbox, unknown channels)
 # "search_only" = web_search + query_memory only (bot-commands)
@@ -621,6 +633,64 @@ async def call_background_model(prompt: str) -> str:
             messages=[{"role": "user", "content": prompt}]
         )
         return response.content[0].text.strip()
+
+
+async def generate_thread_name(message_text: str, channel_name: str) -> str:
+    """Generates a 4-6 word thread title via the background model (3 s timeout)."""
+    fallback = f"{channel_name} — {datetime.now().strftime('%Y-%m-%d')}"
+    prompt = (
+        f"Generate a 4-6 word thread title for this message in #{channel_name}. "
+        "Be specific and descriptive. No quotes, no trailing punctuation.\n\n"
+        f"Message: {message_text[:500]}"
+    )
+    try:
+        name = await asyncio.wait_for(call_background_model(prompt), timeout=3.0)
+        name = name.strip().strip("\"'").strip()
+        return name[:100] if name else fallback
+    except Exception:
+        return fallback
+
+
+async def _resolve_response_channel(message, channel_name: str, text_hint: str = "") -> tuple:
+    """
+    Returns (response_channel, context_id) for a message.
+
+    For messages in THREADED_CHANNELS that are NOT already in a thread:
+    creates a new Discord thread on the message, posts 'Replied in thread →'
+    in the main channel, and returns the thread. Falls back to the main
+    channel if thread creation fails.
+
+    For all other cases (already in a thread, or not a THREADED_CHANNEL):
+    returns the message's current channel unchanged.
+    """
+    # Already in a thread — keep going there
+    if isinstance(message.channel, discord.Thread):
+        return message.channel, message.channel.id
+
+    # Not a channel that uses threads
+    if channel_name not in THREADED_CHANNELS:
+        return message.channel, message.channel.id
+
+    # Create a thread on this message
+    content = text_hint or message.content or ""
+    thread_name = await generate_thread_name(content, channel_name)
+    try:
+        thread = await message.create_thread(name=thread_name)
+        await message.channel.send("Replied in thread →")
+        await send_to_channel(
+            message.guild, LOG_CHANNEL,
+            f"Thread created | #{channel_name} | \"{thread_name}\" | ID: {thread.id}"
+        )
+        return thread, thread.id
+    except Exception as e:
+        await send_to_channel(
+            message.guild, LOG_CHANNEL,
+            f"Thread creation failed | #{channel_name} | {str(e)}"
+        )
+        await message.channel.send(
+            "(Thread creation failed — responding here instead)"
+        )
+        return message.channel, message.channel.id
 
 
 async def send_to_channel(guild, channel_name, message):
@@ -1872,7 +1942,8 @@ async def run_status_command(channel, guild):
         f"Ollama: {ollama_status}\n"
         f"FFmpeg: {ffmpeg_status}\n"
         f"Memory —\n  {mem_lines}\n"
-        f"Conversation histories: {len(conversation_history)} user(s)\n"
+        f"Conversation contexts: {len(conversation_history)} active "
+        f"({len({k[0] for k in conversation_history})} user(s))\n"
         f"Uptime: {uptime_str}\n"
         f"Last tokens: {last_tokens}"
     )
@@ -1939,32 +2010,43 @@ async def process_user_message(
     user_message, user_id, author_display_name, guild, channel,
     speak: bool = False, memory_mode: str = "global",
     project_tag: str = None, active_agent_slug: str = None,
-    agent_trigger: str = "none"
+    agent_trigger: str = "none", context_id: int = 0,
+    channel_name: str = None,
 ):
     """
     Shared Claude processing pipeline used by on_message and /listen.
     Handles memory retrieval, the agentic tool loop, memory storage,
     reflection, and logging.
+
+    context_id: thread.id if responding inside a Discord thread, channel.id
+        otherwise. Used to key conversation_history so each thread gets its
+        own independent history.
+    channel_name: the parent channel name (for routing / memory lookups).
+        Defaults to channel.name if not supplied. Must be the parent channel
+        name when channel is a discord.Thread so that CHANNEL_TOOL_MODE and
+        similar dicts resolve correctly.
     """
-    if user_id not in conversation_history:
-        conversation_history[user_id] = []
+    effective_channel_name = channel_name or channel.name
+    _hist_key = (user_id, context_id)
+    if _hist_key not in conversation_history:
+        conversation_history[_hist_key] = []
 
     task_completed = is_task_completion(user_message)
 
     memories = get_relevant_memories(
-        user_message, channel_name=channel.name
+        user_message, channel_name=effective_channel_name
     )
     memory_context = format_memory_for_prompt(memories)
 
     channel_purpose = CHANNEL_PURPOSE.get(
-        channel.name, "General"
+        effective_channel_name, "General"
     )
     _agent_label = (
         f" | Agent: {AGENT_DEFINITIONS[active_agent_slug]['name']}"
         if active_agent_slug and active_agent_slug in AGENT_DEFINITIONS else ""
     )
     channel_ctx = (
-        f"[Channel: #{channel.name} | Purpose: {channel_purpose}{_agent_label}]"
+        f"[Channel: #{effective_channel_name} | Purpose: {channel_purpose}{_agent_label}]"
     )
 
     full_message = user_message
@@ -1979,13 +2061,13 @@ async def process_user_message(
     # ── FILE INJECTION ────────────────────────────────────────
     file_injection_chars = 0
     all_user_files = list(attached_files.get(user_id, []))
-    is_isolated_channel = channel.name in MEMORY_ISOLATED_CHANNELS
+    is_isolated_channel = effective_channel_name in MEMORY_ISOLATED_CHANNELS
 
     if all_user_files:
         if is_isolated_channel:
             user_files = [
                 f for f in all_user_files
-                if f.get("channel_name") == channel.name
+                if f.get("channel_name") == effective_channel_name
             ]
         else:
             user_files = [
@@ -2050,17 +2132,17 @@ async def process_user_message(
                         },
                     })
             content_blocks.append({"type": "text", "text": full_message})
-            conversation_history[user_id].append({
+            conversation_history[_hist_key].append({
                 "role": "user",
                 "content": content_blocks,
             })
         else:
-            conversation_history[user_id].append({
+            conversation_history[_hist_key].append({
                 "role": "user",
                 "content": full_message,
             })
     else:
-        conversation_history[user_id].append({
+        conversation_history[_hist_key].append({
             "role": "user",
             "content": full_message,
         })
@@ -2081,7 +2163,7 @@ async def process_user_message(
         try:
             tool_call_count = 0
             final_response_text = ""
-            tool_mode = CHANNEL_TOOL_MODE.get(channel.name, "none")
+            tool_mode = CHANNEL_TOOL_MODE.get(effective_channel_name, "none")
             if tool_mode == "full":
                 active_tools = TOOL_DEFINITIONS
             elif tool_mode == "search_only":
@@ -2107,7 +2189,7 @@ async def process_user_message(
                     "model": MAIN_MODEL,
                     "max_tokens": 1024,
                     "system": effective_system,
-                    "messages": conversation_history[user_id],
+                    "messages": conversation_history[_hist_key],
                 }
                 if active_tools:
                     api_params["tools"] = active_tools
@@ -2115,16 +2197,16 @@ async def process_user_message(
                 response = client.messages.create(**api_params)
 
                 if response.stop_reason == "tool_use":
-                    conversation_history[user_id].append({
+                    conversation_history[_hist_key].append({
                         "role": "assistant",
                         "content": response.content
                     })
                     tool_results, tool_call_count = \
                         await process_tool_calls(
                             response, guild, tool_call_count,
-                            channel_name=channel.name
+                            channel_name=effective_channel_name
                         )
-                    conversation_history[user_id].append({
+                    conversation_history[_hist_key].append({
                         "role": "user",
                         "content": tool_results
                     })
@@ -2134,14 +2216,14 @@ async def process_user_message(
                     if hasattr(block, "text"):
                         final_response_text += block.text
 
-                conversation_history[user_id].append({
+                conversation_history[_hist_key].append({
                     "role": "assistant",
                     "content": final_response_text
                 })
                 break
 
-            conversation_history[user_id] = \
-                conversation_history[user_id][-20:]
+            conversation_history[_hist_key] = \
+                conversation_history[_hist_key][-20:]
 
             if final_response_text:
                 await send_long_message(channel, final_response_text)
@@ -2161,7 +2243,7 @@ async def process_user_message(
                     guild,
                     task_completed,
                     project_tag=project_tag,
-                    channel_name=channel.name,
+                    channel_name=effective_channel_name,
                     memory_mode=memory_mode
                 )
 
@@ -2174,11 +2256,11 @@ async def process_user_message(
 
                 # Fire auto-consolidation in background if thresholds exceeded
                 current_stats = memory_stats()
-                if _should_consolidate(current_stats, channel.name):
+                if _should_consolidate(current_stats, effective_channel_name):
                     asyncio.create_task(
                         consolidate_all_layers(
                             guild,
-                            channel_name=channel.name,
+                            channel_name=effective_channel_name,
                             trigger="auto"
                         )
                     )
@@ -2238,8 +2320,8 @@ async def process_user_message(
             await loop.run_in_executor(
                 None,
                 save_conversation_history,
-                user_id,
-                _saveable_history(conversation_history[user_id])
+                f"{user_id}:{context_id}",
+                _saveable_history(conversation_history[_hist_key])
             )
 
         except Exception as e:
@@ -2449,11 +2531,19 @@ async def on_ready():
 
     raw_histories = load_all_conversation_histories()
     total_stripped = 0
-    for user_id, history in raw_histories.items():
+    for key, history in raw_histories.items():
         cleaned, count = strip_orphaned_tool_results(history)
-        raw_histories[user_id] = cleaned
         total_stripped += count
-    conversation_history.update(raw_histories)
+        if ":" in key:
+            uid_str, cid_str = key.split(":", 1)
+            try:
+                tuple_key = (uid_str, int(cid_str))
+            except ValueError:
+                continue
+        else:
+            # Legacy key (user_id only, pre-thread keying) — skip; stale context
+            continue
+        conversation_history[tuple_key] = cleaned
     if total_stripped:
         print(
             f"[Startup] Stripped {total_stripped} orphaned "
@@ -2464,7 +2554,7 @@ async def on_ready():
     await loop.run_in_executor(None, check_ollama_health)
     await loop.run_in_executor(None, check_ffmpeg)
     print(f"PerMyLastBot is online as {bot.user} "
-          f"({len(conversation_history)} histories restored)")
+          f"({len(conversation_history)} conversation context(s) restored)")
     await tree.sync()
     await _load_agent_definitions()
     if AGENT_DEFINITIONS:
@@ -2490,7 +2580,16 @@ async def on_message(message):
     if message.author == bot.user:
         return
 
-    channel_name = message.channel.name
+    # Resolve effective channel name: threads inherit their parent's settings
+    if isinstance(message.channel, discord.Thread):
+        channel_name = (
+            message.channel.parent.name
+            if message.channel.parent else message.channel.name
+        )
+        context_id = message.channel.id
+    else:
+        channel_name = message.channel.name
+        context_id = message.channel.id
 
     if channel_name in CHANNEL_IGNORED:
         return
@@ -2535,18 +2634,22 @@ async def on_message(message):
 
         await message.channel.send(f"Heard: {transcription}")
         _va_slug, _va_trigger = select_agent(transcription, channel_name)
-
+        _va_channel, context_id = await _resolve_response_channel(
+            message, channel_name, transcription
+        )
         await process_user_message(
             transcription,
             str(message.author.id),
             message.author.display_name,
             message.guild,
-            message.channel,
+            _va_channel,
             speak=True,
             memory_mode=memory_mode,
             project_tag=project_tag,
             active_agent_slug=_va_slug,
-            agent_trigger=_va_trigger
+            agent_trigger=_va_trigger,
+            context_id=context_id,
+            channel_name=channel_name,
         )
         return
 
@@ -2631,18 +2734,22 @@ async def on_message(message):
         if not raw_text.startswith("!"):
             # Plain-text question with files — run pipeline directly
             _fa_slug, _fa_trigger = select_agent(raw_text, channel_name)
-
+            _fa_channel, context_id = await _resolve_response_channel(
+                message, channel_name, raw_text
+            )
             await process_user_message(
                 raw_text,
                 uid,
                 message.author.display_name,
                 message.guild,
-                message.channel,
+                _fa_channel,
                 speak=False,
                 memory_mode=memory_mode,
                 project_tag=project_tag,
                 active_agent_slug=_fa_slug,
                 agent_trigger=_fa_trigger,
+                context_id=context_id,
+                channel_name=channel_name,
             )
             return
         # Starts with "!" — fall through to command handling below
@@ -2830,13 +2937,18 @@ async def on_message(message):
         await message.channel.send(
             f"🤖 Using **{AGENT_DEFINITIONS[_found_slug]['name']}**"
         )
+        _ag_channel, context_id = await _resolve_response_channel(
+            message, channel_name, _rest
+        )
         await process_user_message(
             _rest, uid, message.author.display_name,
-            message.guild, message.channel,
+            message.guild, _ag_channel,
             speak=False, memory_mode=memory_mode,
             project_tag=project_tag,
             active_agent_slug=_found_slug,
-            agent_trigger="explicit"
+            agent_trigger="explicit",
+            context_id=context_id,
+            channel_name=channel_name,
         )
         return
 
@@ -2886,11 +2998,12 @@ async def on_message(message):
         )
         return
 
-    # !clear: wipe in-memory conversation history and attached files
+    # !clear: wipe in-memory conversation history for this (user, context) pair
     if is_prefix and user_message.lower() == "clear":
-        old_history = conversation_history.get(uid, [])
+        _clear_key = (uid, context_id)
+        old_history = conversation_history.get(_clear_key, [])
         _, stripped = strip_orphaned_tool_results(old_history)
-        conversation_history[uid] = []
+        conversation_history[_clear_key] = []
         cleared_files = len(attached_files.pop(uid, []))
         note_parts = []
         if stripped:
@@ -2911,7 +3024,7 @@ async def on_message(message):
 
     # !retry: resend last user message through the full pipeline
     if is_prefix and user_message.lower() == "retry":
-        history = conversation_history.get(uid, [])
+        history = conversation_history.get((uid, context_id), [])
         last_user_content = None
         for msg in reversed(history):
             if (msg.get("role") == "user"
@@ -2926,7 +3039,6 @@ async def on_message(message):
             await message.channel.send("No previous message to retry.")
             return
         _retry_slug, _retry_trigger = select_agent(original_message, channel_name)
-
         await process_user_message(
             original_message,
             uid,
@@ -2938,6 +3050,8 @@ async def on_message(message):
             project_tag=project_tag,
             active_agent_slug=_retry_slug,
             agent_trigger=_retry_trigger,
+            context_id=context_id,
+            channel_name=channel_name,
         )
         return
 
@@ -2976,18 +3090,22 @@ async def on_message(message):
         return
 
     _auto_slug, _auto_trigger = select_agent(user_message, channel_name)
-
+    _auto_channel, context_id = await _resolve_response_channel(
+        message, channel_name, user_message
+    )
     await process_user_message(
         user_message,
         uid,
         message.author.display_name,
         message.guild,
-        message.channel,
+        _auto_channel,
         speak=speak,
         memory_mode=memory_mode,
         project_tag=project_tag,
         active_agent_slug=_auto_slug,
-        agent_trigger=_auto_trigger
+        agent_trigger=_auto_trigger,
+        context_id=context_id,
+        channel_name=channel_name,
     )
 
 
