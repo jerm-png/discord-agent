@@ -2028,6 +2028,7 @@ async def process_user_message(
         name when channel is a discord.Thread so that CHANNEL_TOOL_MODE and
         similar dicts resolve correctly.
     """
+    global stale_warned_this_session
     effective_channel_name = channel_name or channel.name
     _hist_key = (user_id, context_id)
     if _hist_key not in conversation_history:
@@ -2311,7 +2312,6 @@ async def process_user_message(
             )
 
             if stale_count and not stale_warned_this_session:
-                global stale_warned_this_session
                 stale_warned_this_session = True
                 await send_to_channel(
                     guild,
