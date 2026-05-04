@@ -637,18 +637,25 @@ async def call_background_model(prompt: str) -> str:
 
 
 async def generate_thread_name(message_text: str, channel_name: str) -> str:
-    """Generates a 4-6 word thread title via the background model (3 s timeout)."""
-    fallback = f"{channel_name} — {datetime.now().strftime('%Y-%m-%d')}"
+    """Generates a 4-6 word thread title via the background model (5 s timeout)."""
+    preview = message_text[:30].strip()
+    fallback = f"{preview}..." if preview else channel_name
     prompt = (
-        f"Generate a 4-6 word thread title for this message in #{channel_name}. "
-        "Be specific and descriptive. No quotes, no trailing punctuation.\n\n"
-        f"Message: {message_text[:500]}"
+        "Create a short 4-6 word thread title that captures the topic of this message. "
+        "Be specific about the actual subject matter. "
+        "Return only the title, no punctuation, no quotes, no explanation.\n\n"
+        f"Message: {message_text[:200]}"
     )
     try:
-        name = await asyncio.wait_for(call_background_model(prompt), timeout=3.0)
+        name = await asyncio.wait_for(call_background_model(prompt), timeout=5.0)
         name = name.strip().strip("\"'").strip()
-        return name[:100] if name else fallback
+        if name:
+            print(f"[Thread] name='{name[:100]}' source=ai")
+            return name[:100]
+        print(f"[Thread] name='{fallback}' source=fallback")
+        return fallback
     except Exception:
+        print(f"[Thread] name='{fallback}' source=fallback")
         return fallback
 
 
