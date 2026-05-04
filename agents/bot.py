@@ -221,6 +221,7 @@ conversation_history = {}
 attached_files: defaultdict = defaultdict(list)
 BOT_START_TIME = None
 _last_token_usage = {"input": 0, "output": 0}
+stale_warned_this_session = False
 
 # Goal mode state — keyed by user_id, cleared on restart
 pending_goals: dict = {}
@@ -671,6 +672,7 @@ async def _resolve_response_channel(message, channel_name: str, text_hint: str =
     if channel_name not in THREADED_CHANNELS:
         return message.channel, message.channel.id
 
+    print(f"[Thread] channel={channel_name} threaded={channel_name in THREADED_CHANNELS}")
     # Create a thread on this message
     content = text_hint or message.content or ""
     thread_name = await generate_thread_name(content, channel_name)
@@ -2308,7 +2310,9 @@ async def process_user_message(
                 f"Response delivered to {author_display_name}. Ready."
             )
 
-            if stale_count:
+            if stale_count and not stale_warned_this_session:
+                global stale_warned_this_session
+                stale_warned_this_session = True
                 await send_to_channel(
                     guild,
                     STATUS_CHANNEL,
