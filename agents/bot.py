@@ -221,6 +221,27 @@ gate_pending: dict = {}
 # minimal = only gate before draft steps
 GOAL_GATE_MODE = "smart"
 
+# ── AGENT DEFINITIONS ──────────────────────────────────────────
+# Agent .md files are loaded at startup from AGENTS_DIR.
+# Keyword extraction uses the background model once, then caches to disk.
+AGENTS_DIR = r"C:\Users\Jerm\.claude\agents"
+AGENT_KEYWORDS_CACHE_PATH = os.path.join(
+    project_root, "memory", "agent_keywords_cache.json"
+)
+AGENT_DEFINITIONS: dict = {}
+
+# Channel → preferred agent slug(s).
+# health-tracking is a hard rule (enforced in select_agent, not overridable by keywords).
+# Lists are resolved by keyword matching; first valid entry is fallback.
+CHANNEL_AGENT_HINTS: dict = {
+    "health-tracking":        "health-researcher",
+    "gamification-dashboard": ["engineering-ai-engineer", "engineering-data-engineer"],
+    "director-workspace":     "director-advisor",
+    "chief-of-staff":         ["personal-productivity", "director-advisor"],
+    "slack-intelligence":     "support-analytics-reporter",
+    "contact-center":         "support-analytics-reporter",
+}
+
 SUPPORTED_DOC_EXTENSIONS   = {".pdf", ".txt", ".md", ".csv", ".docx"}
 SUPPORTED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 SUPPORTED_EXTENSIONS = SUPPORTED_DOC_EXTENSIONS | SUPPORTED_IMAGE_EXTENSIONS
@@ -322,7 +343,11 @@ HELP_TEXT = """**PerMyLastBot — Commands**
 
 `!consolidate` — Manually trigger memory consolidation for the current channel scope. Groups similar memories, merges them via AI, archives originals. Respects isolation — `#health-tracking` only consolidates health memories.
 
-`!goal [description]` — Decompose a goal into an approved step plan, then execute it. Also `!plan` and `!research`. Reply `!approve` to run, `!cancel` to abort, `!modify [changes]` to revise the plan before running. During execution: `!continue` resumes a paused gate, `!adjust [changes]` replans remaining steps, `!retry` retries a failed step, `!skip` skips it."""
+`!goal [description]` — Decompose a goal into an approved step plan, then execute it. Also `!plan` and `!research`. Reply `!approve` to run, `!cancel` to abort, `!modify [changes]` to revise the plan before running. During execution: `!continue` resumes a paused gate, `!adjust [changes]` replans remaining steps, `!retry` retries a failed step, `!skip` skips it.
+
+`!agent [slug] [message]` — Activate a specific specialist agent for one response. Example: `!agent health-researcher what peptides help with EBV reactivation`. Reverts to default after the response.
+
+`!agents` — List all available specialist agents with their slugs and descriptions."""
 
 
 # ============================================================
@@ -1913,7 +1938,8 @@ async def speak_response(text: str, guild, channel=None) -> None:
 async def process_user_message(
     user_message, user_id, author_display_name, guild, channel,
     speak: bool = False, memory_mode: str = "global",
-    project_tag: str = None
+    project_tag: str = None, active_agent_slug: str = None,
+    agent_trigger: str = "none"
 ):
     """
     Shared Claude processing pipeline used by on_message and /listen.
@@ -1933,8 +1959,12 @@ async def process_user_message(
     channel_purpose = CHANNEL_PURPOSE.get(
         channel.name, "General"
     )
+    _agent_label = (
+        f" | Agent: {AGENT_DEFINITIONS[active_agent_slug]['name']}"
+        if active_agent_slug and active_agent_slug in AGENT_DEFINITIONS else ""
+    )
     channel_ctx = (
-        f"[Channel: #{channel.name} | Purpose: {channel_purpose}]"
+        f"[Channel: #{channel.name} | Purpose: {channel_purpose}{_agent_label}]"
     )
 
     full_message = user_message
@@ -2041,6 +2071,12 @@ async def process_user_message(
         f"Processing request from {author_display_name}..."
     )
 
+    if active_agent_slug and active_agent_slug in AGENT_DEFINITIONS:
+        await send_to_channel(
+            guild, STATUS_CHANNEL,
+            f"🤖 {AGENT_DEFINITIONS[active_agent_slug]['name']} activated"
+        )
+
     async with channel.typing():
         try:
             tool_call_count = 0
@@ -2056,11 +2092,21 @@ async def process_user_message(
             else:
                 active_tools = []
 
+            if active_agent_slug and active_agent_slug in AGENT_DEFINITIONS:
+                _adef = AGENT_DEFINITIONS[active_agent_slug]
+                effective_system = (
+                    SYSTEM_PROMPT
+                    + f"\n\n---\nACTIVE SPECIALIST AGENT: {_adef['name']}\n"
+                    + _adef["content"]
+                )
+            else:
+                effective_system = SYSTEM_PROMPT
+
             while True:
                 api_params = {
                     "model": MAIN_MODEL,
                     "max_tokens": 1024,
-                    "system": SYSTEM_PROMPT,
+                    "system": effective_system,
                     "messages": conversation_history[user_id],
                 }
                 if active_tools:
@@ -2166,6 +2212,14 @@ async def process_user_message(
                 f"est. cost: ${est_cost:.4f}{file_token_note}"
             )
 
+            if active_agent_slug and active_agent_slug in AGENT_DEFINITIONS:
+                _agent_tokens = len(AGENT_DEFINITIONS[active_agent_slug]["content"]) // 4
+                await send_to_channel(
+                    guild, LOG_CHANNEL,
+                    f"Agent activated | {AGENT_DEFINITIONS[active_agent_slug]['name']} | "
+                    f"+~{_agent_tokens:,} tokens | trigger: {agent_trigger}"
+                )
+
             await send_to_channel(
                 guild,
                 STATUS_CHANNEL,
@@ -2198,6 +2252,175 @@ async def process_user_message(
 
 
 # ============================================================
+# AGENT LOADING & SELECTION
+# ============================================================
+
+async def _load_agent_definitions():
+    """
+    Reads all .md files from AGENTS_DIR at startup, parses frontmatter for
+    name/description, and extracts keywords via the background model.
+    Keywords are cached to AGENT_KEYWORDS_CACHE_PATH so we only call the
+    model once per agent (or when new agents are added).
+    Skips files that cannot be read — logs to stdout, does not raise.
+    """
+    import re as _re
+
+    if not os.path.isdir(AGENTS_DIR):
+        print(f"[Agents] Directory not found: {AGENTS_DIR} — skipping agent load")
+        return
+
+    # Load keyword cache from disk
+    cache: dict = {}
+    if os.path.exists(AGENT_KEYWORDS_CACHE_PATH):
+        try:
+            with open(AGENT_KEYWORDS_CACHE_PATH, "r", encoding="utf-8") as _cf:
+                cache = json.load(_cf)
+        except Exception:
+            cache = {}
+
+    cache_updated = False
+
+    for filename in sorted(os.listdir(AGENTS_DIR)):
+        if not filename.endswith(".md"):
+            continue
+        slug = filename[:-3]
+        path = os.path.join(AGENTS_DIR, filename)
+        try:
+            with open(path, "r", encoding="utf-8") as _f:
+                content = _f.read()
+        except Exception as e:
+            print(f"[Agents] Skipping {filename}: {e}")
+            continue
+
+        # Parse frontmatter for name and description
+        name = slug
+        description = ""
+        fm_match = _re.search(r"^---\n(.*?)\n---", content, _re.DOTALL)
+        if fm_match:
+            fm_body = fm_match.group(1)
+            name_m = _re.search(r"^name:\s*(.+)$", fm_body, _re.MULTILINE)
+            if name_m:
+                name = name_m.group(1).strip()
+            desc_m = _re.search(r"^description:\s*(.+)$", fm_body, _re.MULTILINE)
+            if desc_m:
+                description = desc_m.group(1).strip()
+
+        # Get keywords: use cache if present, otherwise extract via background model
+        if slug in cache:
+            keywords = cache[slug]
+        else:
+            try:
+                kw_prompt = (
+                    "Read this agent definition and return a JSON array of 15 keywords "
+                    "that would indicate a user needs this agent. "
+                    "Return only the JSON array, no other text.\n\n"
+                    + content[:2000]
+                )
+                raw_kw = await call_background_model(kw_prompt)
+                keywords = json.loads(
+                    raw_kw.replace("```json", "").replace("```", "").strip()
+                )
+                if not isinstance(keywords, list):
+                    keywords = []
+                cache[slug] = keywords
+                cache_updated = True
+            except Exception as e:
+                print(f"[Agents] Keyword extraction failed for {slug}: {e}")
+                keywords = []
+
+        AGENT_DEFINITIONS[slug] = {
+            "name": name,
+            "slug": slug,
+            "description": description,
+            "content": content,
+            "keywords": [str(k).lower() for k in keywords],
+        }
+        print(f"[Agents] Loaded: {name} ({slug})")
+
+    if cache_updated:
+        try:
+            with open(AGENT_KEYWORDS_CACHE_PATH, "w", encoding="utf-8") as _cf:
+                json.dump(cache, _cf, indent=2)
+        except Exception as e:
+            print(f"[Agents] Failed to save keyword cache: {e}")
+
+    print(f"[Agents] {len(AGENT_DEFINITIONS)} agent definition(s) loaded.")
+
+
+def select_agent(message_text: str, channel_name: str) -> tuple:
+    """
+    Returns (agent_slug, trigger_type) for auto-detection.
+    trigger_type: "channel" | "keyword" | "explicit" | "none"
+
+    Priority order:
+    1. Health-tracking hard rule — always returns health-researcher (cannot be
+       overridden by keywords; use !agent explicitly to bypass).
+    2. Sandbox — never activates any agent.
+    3. Explicit mention of agent name or slug in the message text.
+    4. Channel hints (CHANNEL_AGENT_HINTS): single slug returned directly;
+       lists resolved by keyword score among candidates.
+    5. Global keyword matching — activate if score >= 3 across all agents.
+    6. Default: (None, "none").
+
+    Does NOT handle !agent explicit commands — those bypass this function.
+    """
+    if not AGENT_DEFINITIONS:
+        return None, "none"
+
+    # Hard rule: health-tracking always uses health-researcher
+    if channel_name == "health-tracking":
+        slug = "health-researcher"
+        return (slug, "channel") if slug in AGENT_DEFINITIONS else (None, "none")
+
+    # Sandbox never activates any agent
+    if channel_name == "sandbox":
+        return None, "none"
+
+    msg_lower = message_text.lower()
+
+    # Priority 3: explicit mention of agent name or slug in the message
+    for slug, agent in AGENT_DEFINITIONS.items():
+        if slug in msg_lower or agent["name"].lower() in msg_lower:
+            return slug, "explicit"
+
+    # Priority 4: channel hints
+    hint = CHANNEL_AGENT_HINTS.get(channel_name)
+    if hint:
+        if isinstance(hint, str):
+            if hint in AGENT_DEFINITIONS:
+                return hint, "channel"
+        elif isinstance(hint, list):
+            # Score each candidate; first entry wins ties (including all-zero)
+            best_slug = None
+            best_score = -1
+            for s in hint:
+                if s not in AGENT_DEFINITIONS:
+                    continue
+                score = sum(
+                    1 for kw in AGENT_DEFINITIONS[s]["keywords"] if kw in msg_lower
+                )
+                if score > best_score:
+                    best_score = score
+                    best_slug = s
+            if best_slug:
+                return best_slug, "channel"
+
+    # Priority 5: global keyword matching (threshold: 3)
+    best_slug = None
+    best_score = 0
+    for slug, agent in AGENT_DEFINITIONS.items():
+        score = sum(1 for kw in agent["keywords"] if kw in msg_lower)
+        if score > best_score:
+            best_score = score
+            best_slug = slug
+
+    if best_score >= 3:
+        return best_slug, "keyword"
+
+    return None, "none"
+
+
+# ============================================================
 # BOT EVENTS
 # ============================================================
 
@@ -2226,6 +2449,7 @@ async def on_ready():
     print(f"PerMyLastBot is online as {bot.user} "
           f"({len(conversation_history)} histories restored)")
     await tree.sync()
+    await _load_agent_definitions()
 
     for guild in bot.guilds:
         await send_to_channel(
@@ -2287,6 +2511,7 @@ async def on_message(message):
             return
 
         await message.channel.send(f"Heard: {transcription}")
+        _va_slug, _va_trigger = select_agent(transcription, channel_name)
         await process_user_message(
             transcription,
             str(message.author.id),
@@ -2295,7 +2520,9 @@ async def on_message(message):
             message.channel,
             speak=True,
             memory_mode=memory_mode,
-            project_tag=project_tag
+            project_tag=project_tag,
+            active_agent_slug=_va_slug,
+            agent_trigger=_va_trigger
         )
         return
 
@@ -2379,6 +2606,7 @@ async def on_message(message):
 
         if not raw_text.startswith("!"):
             # Plain-text question with files — run pipeline directly
+            _fa_slug, _fa_trigger = select_agent(raw_text, channel_name)
             await process_user_message(
                 raw_text,
                 uid,
@@ -2388,6 +2616,8 @@ async def on_message(message):
                 speak=False,
                 memory_mode=memory_mode,
                 project_tag=project_tag,
+                active_agent_slug=_fa_slug,
+                agent_trigger=_fa_trigger,
             )
             return
         # Starts with "!" — fall through to command handling below
@@ -2522,6 +2752,69 @@ async def on_message(message):
             )
             return
 
+    # !agents: list all available specialist agents
+    if is_prefix and user_message.lower() == "agents":
+        if not AGENT_DEFINITIONS:
+            await message.channel.send(
+                "No agent definitions loaded — check startup logs."
+            )
+            return
+        lines = ["**Available Specialist Agents**\n"]
+        for _slug in sorted(AGENT_DEFINITIONS.keys()):
+            _ag = AGENT_DEFINITIONS[_slug]
+            _desc = _ag["description"][:120] if _ag["description"] else "No description."
+            lines.append(f"`{_slug}` — **{_ag['name']}**: {_desc}")
+        await send_long_message(message.channel, "\n".join(lines))
+        return
+
+    # !agent [slug-or-name] [message]: manually activate one agent for one response
+    if is_prefix and user_message.lower().startswith("agent "):
+        _parts = user_message[6:].strip().split(None, 1)
+        if not _parts:
+            await message.channel.send(
+                "Usage: `!agent [slug-or-name] [your message]`\n"
+                "Run `!agents` to see available agents."
+            )
+            return
+        _query = _parts[0].lower()
+        _rest = _parts[1].strip() if len(_parts) > 1 else ""
+
+        # Match by exact slug, then by name, then by slug substring
+        _found_slug = None
+        if _query in AGENT_DEFINITIONS:
+            _found_slug = _query
+        else:
+            for _s, _a in AGENT_DEFINITIONS.items():
+                if _query == _a["name"].lower() or _query in _s:
+                    _found_slug = _s
+                    break
+
+        if not _found_slug:
+            _available = ", ".join(f"`{s}`" for s in sorted(AGENT_DEFINITIONS.keys()))
+            await message.channel.send(
+                f"Unknown agent `{_query}`. Available: {_available}"
+            )
+            return
+
+        if not _rest:
+            await message.channel.send(
+                f"Usage: `!agent {_found_slug} [your message]`"
+            )
+            return
+
+        await message.channel.send(
+            f"🤖 Using **{AGENT_DEFINITIONS[_found_slug]['name']}**"
+        )
+        await process_user_message(
+            _rest, uid, message.author.display_name,
+            message.guild, message.channel,
+            speak=False, memory_mode=memory_mode,
+            project_tag=project_tag,
+            active_agent_slug=_found_slug,
+            agent_trigger="explicit"
+        )
+        return
+
     # !remember in bot-commands: save directly to global memory and confirm
     if (channel_name == "bot-commands" and is_prefix
             and user_message.lower().startswith("remember ")):
@@ -2607,6 +2900,7 @@ async def on_message(message):
         if not original_message:
             await message.channel.send("No previous message to retry.")
             return
+        _retry_slug, _retry_trigger = select_agent(original_message, channel_name)
         await process_user_message(
             original_message,
             uid,
@@ -2616,6 +2910,8 @@ async def on_message(message):
             speak=False,
             memory_mode=memory_mode,
             project_tag=project_tag,
+            active_agent_slug=_retry_slug,
+            agent_trigger=_retry_trigger,
         )
         return
 
@@ -2653,6 +2949,7 @@ async def on_message(message):
         )
         return
 
+    _auto_slug, _auto_trigger = select_agent(user_message, channel_name)
     await process_user_message(
         user_message,
         uid,
@@ -2661,7 +2958,9 @@ async def on_message(message):
         message.channel,
         speak=speak,
         memory_mode=memory_mode,
-        project_tag=project_tag
+        project_tag=project_tag,
+        active_agent_slug=_auto_slug,
+        agent_trigger=_auto_trigger
     )
 
 
