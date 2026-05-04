@@ -2344,7 +2344,24 @@ async def _load_agent_definitions():
         except Exception as e:
             print(f"[Agents] Failed to save keyword cache: {e}")
 
-    print(f"[Agents] {len(AGENT_DEFINITIONS)} agent definition(s) loaded.")
+    count = len(AGENT_DEFINITIONS)
+    print(f"[Agents] {count} agent definition(s) loaded.")
+    if AGENT_DEFINITIONS:
+        pairs = ", ".join(
+            f"{slug}: {agent['name']}"
+            for slug, agent in sorted(AGENT_DEFINITIONS.items())
+        )
+        print(f"[Agents] Agents loaded: {pairs}")
+
+    # Validate CHANNEL_AGENT_HINTS against loaded slugs — warn on any miss
+    for _ch, _hint in CHANNEL_AGENT_HINTS.items():
+        slugs_to_check = [_hint] if isinstance(_hint, str) else _hint
+        for _s in slugs_to_check:
+            if _s not in AGENT_DEFINITIONS:
+                print(
+                    f"[Agents] WARNING: CHANNEL_AGENT_HINTS['{_ch}'] "
+                    f"references unknown slug '{_s}' — hint will be ignored"
+                )
 
 
 def select_agent(message_text: str, channel_name: str) -> tuple:
@@ -2450,6 +2467,12 @@ async def on_ready():
           f"({len(conversation_history)} histories restored)")
     await tree.sync()
     await _load_agent_definitions()
+    if AGENT_DEFINITIONS:
+        _agent_summary = " | ".join(
+            f"{slug}: {a['name']}"
+            for slug, a in sorted(AGENT_DEFINITIONS.items())
+        )
+        print(f"[Startup] Agents loaded: {_agent_summary}")
 
     for guild in bot.guilds:
         await send_to_channel(
