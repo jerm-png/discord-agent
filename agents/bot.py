@@ -2535,6 +2535,7 @@ async def on_message(message):
 
         await message.channel.send(f"Heard: {transcription}")
         _va_slug, _va_trigger = select_agent(transcription, channel_name)
+
         await process_user_message(
             transcription,
             str(message.author.id),
@@ -2630,6 +2631,7 @@ async def on_message(message):
         if not raw_text.startswith("!"):
             # Plain-text question with files — run pipeline directly
             _fa_slug, _fa_trigger = select_agent(raw_text, channel_name)
+
             await process_user_message(
                 raw_text,
                 uid,
@@ -2924,6 +2926,7 @@ async def on_message(message):
             await message.channel.send("No previous message to retry.")
             return
         _retry_slug, _retry_trigger = select_agent(original_message, channel_name)
+
         await process_user_message(
             original_message,
             uid,
@@ -2973,6 +2976,7 @@ async def on_message(message):
         return
 
     _auto_slug, _auto_trigger = select_agent(user_message, channel_name)
+
     await process_user_message(
         user_message,
         uid,
