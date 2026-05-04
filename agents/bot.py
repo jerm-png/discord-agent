@@ -213,6 +213,13 @@ _last_token_usage = {"input": 0, "output": 0}
 # Goal mode state — keyed by user_id, cleared on restart
 pending_goals: dict = {}
 execution_context: dict = {}
+gate_pending: dict = {}
+
+# Gate frequency: "smart" | "always" | "minimal"
+# smart   = gate when results are surprising, low quality, or last search before synthesis
+# always  = gate after every web_search step and always before draft
+# minimal = only gate before draft steps
+GOAL_GATE_MODE = "smart"
 
 SUPPORTED_DOC_EXTENSIONS   = {".pdf", ".txt", ".md", ".csv", ".docx"}
 SUPPORTED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
@@ -315,7 +322,7 @@ HELP_TEXT = """**PerMyLastBot — Commands**
 
 `!consolidate` — Manually trigger memory consolidation for the current channel scope. Groups similar memories, merges them via AI, archives originals. Respects isolation — `#health-tracking` only consolidates health memories.
 
-`!goal [description]` — Decompose a goal into an approved step plan, then execute it. Also `!plan` and `!research`. Reply `!approve` to run, `!cancel` to abort, `!modify [changes]` to revise, `!skip` to skip a failed step."""
+`!goal [description]` — Decompose a goal into an approved step plan, then execute it. Also `!plan` and `!research`. Reply `!approve` to run, `!cancel` to abort, `!modify [changes]` to revise the plan before running. During execution: `!continue` resumes a paused gate, `!adjust [changes]` replans remaining steps, `!retry` retries a failed step, `!skip` skips it."""
 
 
 # ============================================================
@@ -1085,6 +1092,57 @@ def _format_execution_context(findings: list) -> str:
     return "\n\n---\n\n".join(parts)
 
 
+def _is_last_search_before_synthesis(steps: list, current_idx: int) -> bool:
+    """True if there are no further web_search steps before the next analyze/draft."""
+    for step in steps[current_idx + 1:]:
+        t = step.get("type")
+        if t == "web_search":
+            return False
+        if t in ("analyze", "draft"):
+            return True
+    return False
+
+
+def _is_low_quality_result(result_str: str) -> bool:
+    """True if the search result is empty, very short, or flagged as unavailable."""
+    if not result_str or len(result_str.strip()) < 100:
+        return True
+    lower = result_str.lower()
+    return "no results found" in lower or "web search unavailable" in lower
+
+
+async def _search_changes_direction(goal: str, result_str: str) -> bool:
+    """
+    Asks the background model whether search results significantly change the
+    research direction. Returns True if the answer is yes.
+    """
+    prompt = (
+        f"Goal: {goal}\n\n"
+        f"Search results:\n{result_str[:800]}\n\n"
+        "Do these results significantly change the direction of this research, "
+        "revealing that the original assumption was wrong or that a fundamentally "
+        "different approach is needed? Answer with a single word: yes or no."
+    )
+    try:
+        answer = await call_background_model(prompt)
+        return answer.strip().lower().startswith("yes")
+    except Exception:
+        return False
+
+
+async def _summarize_search_results(goal: str, result_str: str) -> str:
+    """Returns a 2-3 sentence summary of search results for a gate message."""
+    prompt = (
+        f"Goal: {goal}\n\n"
+        f"Search results:\n{result_str[:1200]}\n\n"
+        "Summarize the key findings in 2-3 sentences. Be specific and direct."
+    )
+    try:
+        return (await call_background_model(prompt)).strip()
+    except Exception:
+        return result_str[:300]
+
+
 async def run_goal_planning(
     goal_text: str, user_id: str, author_display_name: str,
     guild, channel, memory_mode: str, project_tag
@@ -1201,10 +1259,20 @@ async def run_goal_modification(
     await send_long_message(channel, _format_plan(pg["goal"], steps))
 
 
-async def execute_goal(user_id: str, author_display_name: str):
+async def execute_goal(
+    user_id: str, author_display_name: str, skip_gate_for_step: int = -1
+):
     """
     Executes an approved goal plan step by step as a background task.
-    On step failure, stores state and pauses — !skip or !cancel resumes.
+
+    Pauses at gate conditions and stores state in gate_pending so the user
+    can respond with !continue, !adjust, !retry, or !skip. Gates:
+      - DRAFT GATE: always pause before any draft step (unless resuming)
+      - RESEARCH GATE: pause after web_search when mode requires it
+      - STEP FAILURE GATE: pause on any step exception with retry option
+
+    skip_gate_for_step: when resuming after a draft gate, pass the step
+    index so the draft gate is not re-triggered for that step.
     """
     pg = pending_goals.get(user_id)
     if not pg:
@@ -1229,7 +1297,7 @@ async def execute_goal(user_id: str, author_display_name: str):
     try:
         async with channel.typing():
             for i in range(start_step, total):
-                # Cancellation check between steps
+                # Cancellation / external-status check between steps
                 if user_id not in pending_goals:
                     return
                 pg = pending_goals[user_id]
@@ -1241,6 +1309,31 @@ async def execute_goal(user_id: str, author_display_name: str):
                 step_type = step.get("type", "analyze")
                 step_desc = step.get("description", "")
                 step_query = step.get("query", step_desc)
+
+                # ── DRAFT GATE: always pause before draft steps ──────────────
+                if step_type == "draft" and i != skip_gate_for_step:
+                    findings = execution_context.get(user_id, [])
+                    bullets = "\n".join(
+                        f"• Step {f['step']} ({f['type']}): "
+                        f"{f['content'][:120].rstrip()}..."
+                        for f in findings
+                    ) or "No findings gathered yet."
+
+                    pg["status"] = "gated"
+                    pg["current_step"] = i
+                    gate_pending[user_id] = {
+                        "type": "draft_gate",
+                        "step_index": i,
+                        "step_num": step_num,
+                        "author_display_name": author_display_name,
+                    }
+                    await send_long_message(channel, (
+                        f"📝 Ready to draft the final output based on:\n"
+                        f"{bullets}\n\n"
+                        "Reply `!continue` to generate the draft "
+                        "or `!cancel` to abort."
+                    ))
+                    return
 
                 await send_to_channel(
                     guild, STATUS_CHANNEL,
@@ -1256,17 +1349,65 @@ async def execute_goal(user_id: str, author_display_name: str):
                                 "content": "[Skipped — web search limit of 5 reached]"
                             })
                             continue
+
                         result = await loop.run_in_executor(
                             None, execute_tool,
                             "web_search",
                             {"query": step_query, "max_results": 3},
                             channel_name
                         )
+                        result_str = str(result)
                         execution_context[user_id].append({
                             "step": step_num, "type": "web_search",
-                            "content": str(result)
+                            "content": result_str
                         })
                         pg["web_search_count"] = search_count + 1
+
+                        # ── RESEARCH GATE ────────────────────────────────────
+                        should_gate = False
+                        if GOAL_GATE_MODE == "always":
+                            should_gate = True
+                        elif GOAL_GATE_MODE == "smart":
+                            low_quality = _is_low_quality_result(result_str)
+                            last_search = _is_last_search_before_synthesis(
+                                steps, i
+                            )
+                            direction_change = (
+                                await _search_changes_direction(goal, result_str)
+                                if not low_quality else False
+                            )
+                            should_gate = low_quality or last_search or direction_change
+                        # "minimal": no research gate
+
+                        if should_gate:
+                            summary = await _summarize_search_results(
+                                goal, result_str
+                            )
+                            remaining_lines = "\n".join(
+                                f"• Step {s.get('step_number', '?')} "
+                                f"({s.get('type', '?')}): "
+                                f"{s.get('description', '')}"
+                                for s in steps[i + 1:]
+                            ) or "No remaining steps."
+
+                            pg["status"] = "gated"
+                            pg["current_step"] = i + 1
+                            gate_pending[user_id] = {
+                                "type": "research_gate",
+                                "step_index": i + 1,
+                                "step_num": step_num,
+                                "author_display_name": author_display_name,
+                            }
+                            await send_long_message(channel, (
+                                f"🔍 Step {step_num} complete — "
+                                f"here's what I found:\n{summary}\n\n"
+                                f"Remaining steps:\n{remaining_lines}\n\n"
+                                "Does this look right? Reply:\n"
+                                "`!continue` — proceed with remaining steps\n"
+                                "`!adjust [changes]` — modify the remaining plan\n"
+                                "`!cancel` — abort the goal"
+                            ))
+                            return
 
                     elif step_type == "query_memory":
                         memories = await loop.run_in_executor(
@@ -1295,10 +1436,9 @@ async def execute_goal(user_id: str, author_display_name: str):
                                 "Synthesize the above into a concise analysis."
                             )}]
                         )
-                        synthesis = r.content[0].text.strip()
                         execution_context[user_id].append({
                             "step": step_num, "type": "analyze",
-                            "content": synthesis
+                            "content": r.content[0].text.strip()
                         })
 
                     elif step_type == "draft":
@@ -1322,12 +1462,27 @@ async def execute_goal(user_id: str, author_display_name: str):
                         })
 
                 except Exception as e:
-                    pg["status"] = "step_failed"
-                    pg["current_step"] = i + 1
+                    # ── STEP FAILURE GATE ────────────────────────────────────
+                    remaining_descs = "\n".join(
+                        f"• Step {s.get('step_number', '?')} "
+                        f"({s.get('type', '?')}): {s.get('description', '')}"
+                        for s in steps[i + 1:]
+                    )
+                    pg["status"] = "gated"
+                    pg["current_step"] = i
+                    gate_pending[user_id] = {
+                        "type": "step_failure",
+                        "step_index": i,
+                        "step_num": step_num,
+                        "author_display_name": author_display_name,
+                    }
                     await channel.send(
-                        f"Step {step_num} failed: {str(e)[:200]}\n"
-                        "Reply `!skip` to continue with remaining steps "
-                        "or `!cancel` to abort."
+                        f"⚠️ Step {step_num} failed: {str(e)[:200]}"
+                        + (f"\n\nRemaining steps:\n{remaining_descs}" if remaining_descs else "")
+                        + "\n\nReply:\n"
+                        "`!skip` — skip this step and continue\n"
+                        "`!retry` — try this step again\n"
+                        "`!cancel` — abort the goal"
                     )
                     return
 
@@ -1338,9 +1493,10 @@ async def execute_goal(user_id: str, author_display_name: str):
         )
         pending_goals.pop(user_id, None)
         execution_context.pop(user_id, None)
+        gate_pending.pop(user_id, None)
         return
 
-    # Deliver output
+    # ── Deliver output ───────────────────────────────────────────────────────
     if final_output:
         await send_long_message(channel, final_output)
     else:
@@ -1380,6 +1536,130 @@ async def execute_goal(user_id: str, author_display_name: str):
 
     pending_goals.pop(user_id, None)
     execution_context.pop(user_id, None)
+    gate_pending.pop(user_id, None)
+
+
+async def _replan_remaining_steps(
+    user_id: str, author_display_name: str,
+    from_step_index: int, changes: str, channel, pg: dict
+):
+    """
+    Replans steps from from_step_index onwards based on the user's adjustment
+    request. Splices the revised steps into pg["steps"] and resumes execution.
+    Called by resume_goal_from_gate when action is "adjust".
+    """
+    steps = pg["steps"]
+    remaining = steps[from_step_index:]
+
+    if not remaining:
+        await channel.send("No remaining steps to adjust — goal is already complete.")
+        pg["status"] = "executing"
+        asyncio.create_task(execute_goal(user_id, author_display_name))
+        return
+
+    ctx_summary = _format_execution_context(execution_context.get(user_id, []))
+    mod_prompt = (
+        f"Goal: {pg['goal']}\n\n"
+        f"Context gathered so far:\n{ctx_summary[:800]}\n\n"
+        f"Remaining plan:\n{json.dumps(remaining, indent=2)}\n\n"
+        f"Adjustment request: {changes}\n\n"
+        "Revise the remaining steps accordingly. "
+        "Return ONLY a JSON array of steps, no other text."
+    )
+
+    try:
+        response = client.messages.create(
+            model=MAIN_MODEL,
+            max_tokens=1024,
+            system=GOAL_PLANNER_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": mod_prompt}]
+        )
+        raw = response.content[0].text.strip()
+        new_steps = json.loads(
+            raw.replace("```json", "").replace("```", "").strip()
+        )
+        if not isinstance(new_steps, list) or not new_steps:
+            raise ValueError("empty plan returned")
+    except Exception as e:
+        await channel.send(
+            f"Failed to adjust the plan: {str(e)[:200]}\n"
+            "Continuing with the original remaining steps."
+        )
+        new_steps = remaining
+
+    pg["steps"] = steps[:from_step_index] + new_steps
+    pg["current_step"] = from_step_index
+    pg["status"] = "executing"
+
+    step_lines = "\n".join(
+        f"• Step {s.get('step_number', '?')} ({s.get('type', '?')}): "
+        f"{s.get('description', '')}"
+        for s in new_steps
+    )
+    await channel.send(f"📋 Adjusted plan:\n{step_lines}\n\nContinuing...")
+    asyncio.create_task(execute_goal(user_id, author_display_name))
+
+
+async def resume_goal_from_gate(
+    user_id: str, author_display_name: str, action: str, changes: str = ""
+):
+    """
+    Resumes goal execution after a gate pause.
+    action: "continue" | "adjust" | "retry" | "skip"
+    Reads gate_pending[user_id] for context, then dispatches accordingly.
+    """
+    gate = gate_pending.get(user_id)
+    pg = pending_goals.get(user_id)
+    if not gate or not pg:
+        return
+
+    gate_type = gate["type"]
+    step_index = gate["step_index"]
+    channel = pg["channel"]
+
+    gate_pending.pop(user_id, None)
+
+    if action == "skip" and gate_type == "step_failure":
+        pg["current_step"] = step_index + 1
+        pg["status"] = "executing"
+        remaining_count = len(pg["steps"]) - (step_index + 1)
+        await channel.send(
+            f"⏭️ Step skipped — continuing with "
+            f"{remaining_count} remaining step(s)..."
+        )
+        asyncio.create_task(execute_goal(user_id, author_display_name))
+        return
+
+    if action == "retry" and gate_type == "step_failure":
+        pg["current_step"] = step_index
+        pg["status"] = "executing"
+        await channel.send("🔄 Retrying step...")
+        asyncio.create_task(execute_goal(user_id, author_display_name))
+        return
+
+    if action == "continue":
+        pg["status"] = "executing"
+        if gate_type == "draft_gate":
+            pg["current_step"] = step_index
+            await channel.send("✍️ Generating draft...")
+            asyncio.create_task(
+                execute_goal(
+                    user_id, author_display_name,
+                    skip_gate_for_step=step_index
+                )
+            )
+        else:
+            # research_gate: step_index already points to the next step
+            pg["current_step"] = step_index
+            await channel.send("▶️ Continuing execution...")
+            asyncio.create_task(execute_goal(user_id, author_display_name))
+        return
+
+    if action == "adjust":
+        await _replan_remaining_steps(
+            user_id, author_display_name, step_index, changes, channel, pg
+        )
+        return
 
 
 async def run_handoff_command(channel, guild, channel_name):
@@ -2141,7 +2421,63 @@ async def on_message(message):
             )
             return
 
-    # Goal mode response commands
+    # Gate commands — mid-execution pauses awaiting !continue/!adjust/!retry/!skip
+    if uid in gate_pending:
+        gate = gate_pending[uid]
+        gate_type = gate["type"]
+        if is_prefix:
+            lm = user_message.lower()
+            if lm == "continue":
+                asyncio.create_task(
+                    resume_goal_from_gate(
+                        uid, message.author.display_name, "continue"
+                    )
+                )
+                return
+            if lm.startswith("adjust "):
+                changes = user_message[7:].strip()
+                if changes:
+                    asyncio.create_task(
+                        resume_goal_from_gate(
+                            uid, message.author.display_name, "adjust", changes
+                        )
+                    )
+                return
+            if lm == "skip" and gate_type == "step_failure":
+                asyncio.create_task(
+                    resume_goal_from_gate(
+                        uid, message.author.display_name, "skip"
+                    )
+                )
+                return
+            if lm == "retry" and gate_type == "step_failure":
+                asyncio.create_task(
+                    resume_goal_from_gate(
+                        uid, message.author.display_name, "retry"
+                    )
+                )
+                return
+            if lm == "cancel":
+                pending_goals.pop(uid, None)
+                gate_pending.pop(uid, None)
+                execution_context.pop(uid, None)
+                await message.channel.send("❌ Goal cancelled.")
+                return
+        if not is_prefix:
+            step_num = gate.get("step_num", gate.get("step_index", 0) + 1)
+            if gate_type == "step_failure":
+                await message.channel.send(
+                    f"⚠️ Execution paused — step {step_num} failed. "
+                    "Reply `!retry`, `!skip`, or `!cancel`."
+                )
+            else:
+                await message.channel.send(
+                    f"⏸️ Execution paused at step {step_num}. "
+                    "Reply `!continue`, `!adjust [changes]`, or `!cancel`."
+                )
+            return
+
+    # Goal approval/modification commands — pre-execution only
     if uid in pending_goals:
         pg = pending_goals[uid]
         pg_status = pg["status"]
@@ -2171,13 +2507,6 @@ async def on_message(message):
                             message.guild, message.channel, memory_mode, project_tag
                         ))
                 return
-            if lm == "skip":
-                if pg_status == "step_failed":
-                    pg["status"] = "executing"
-                    asyncio.create_task(
-                        execute_goal(uid, message.author.display_name)
-                    )
-                return
         if not is_prefix and pg_status == "awaiting_approval":
             await message.channel.send(
                 "You have a pending goal plan. Reply `!approve`, `!cancel`, "
@@ -2185,10 +2514,11 @@ async def on_message(message):
                 "until the plan is resolved."
             )
             return
-        if not is_prefix and pg_status == "step_failed":
+        if not is_prefix and pg_status == "gated":
+            # gate_pending block should have caught this — defensive fallback
             await message.channel.send(
-                "A goal step failed. Reply `!skip` to continue "
-                "or `!cancel` to abort the goal."
+                "⏸️ Execution is paused. "
+                "Reply `!continue`, `!adjust [changes]`, or `!cancel`."
             )
             return
 
@@ -2298,6 +2628,21 @@ async def on_message(message):
             "I got your message but there was nothing in it. "
             "What do you need?"
         )
+        return
+
+    if uid in gate_pending:
+        gate = gate_pending[uid]
+        step_num = gate.get("step_num", gate.get("step_index", 0) + 1)
+        if gate["type"] == "step_failure":
+            await message.channel.send(
+                f"⚠️ Execution paused — step {step_num} failed. "
+                "Reply `!retry`, `!skip`, or `!cancel`."
+            )
+        else:
+            await message.channel.send(
+                f"⏸️ Execution paused at step {step_num}. "
+                "Reply `!continue`, `!adjust [changes]`, or `!cancel`."
+            )
         return
 
     if uid in pending_goals and pending_goals[uid].get("status") == "awaiting_approval":
