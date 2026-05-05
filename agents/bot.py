@@ -734,7 +734,14 @@ async def send_long_message(channel, message):
             await channel.send(message[i:i+2000])
 
 
-async def process_tool_calls(response, guild, tool_call_count, channel_name=None):
+async def post_status(guild, message: str, memory_mode: str = "global") -> None:
+    """Posts a one-line status to STATUS_CHANNEL. Skips ephemeral channels."""
+    if memory_mode == "ephemeral":
+        return
+    await send_to_channel(guild, STATUS_CHANNEL, message)
+
+
+async def process_tool_calls(response, guild, tool_call_count, channel_name=None, memory_mode: str = "global"):
     """
     Handles tool calls from Claude.
     Executes the requested tool and returns the result.
@@ -768,18 +775,17 @@ async def process_tool_calls(response, guild, tool_call_count, channel_name=None
                 f"Inputs: {json.dumps(tool_inputs)[:200]}"
             )
 
+            # Status before execution — web search gets a dedicated message
+            if tool_name == "web_search":
+                await post_status(guild, "🔍 Searching the web...", memory_mode)
+            else:
+                await post_status(guild, f"🔧 Using tool: {tool_name}", memory_mode)
+
             # Execute the tool off the event loop thread — pass channel_name
             # so query_memory respects isolation for health-tracking and similar channels
             loop = asyncio.get_running_loop()
             result = await loop.run_in_executor(
                 None, execute_tool, tool_name, tool_inputs, channel_name
-            )
-
-            # Show tool activity in status channel
-            await send_to_channel(
-                guild,
-                STATUS_CHANNEL,
-                f"Tool used: {tool_name}"
             )
 
             tool_results.append({
@@ -1453,9 +1459,10 @@ async def execute_goal(
                     ))
                     return
 
-                await send_to_channel(
-                    guild, STATUS_CHANNEL,
-                    f"⚙️ Step {step_num}/{total}: {step_desc}..."
+                await post_status(
+                    guild,
+                    f"⚙️ Step {step_num}/{total}: {step_desc}...",
+                    memory_mode
                 )
 
                 try:
@@ -1629,6 +1636,12 @@ async def execute_goal(
             await send_long_message(channel, "\n\n".join(parts))
         else:
             await channel.send(f"Goal complete: {goal}")
+
+    await post_status(
+        guild,
+        f"✅ Goal complete — {total} steps executed",
+        memory_mode
+    )
 
     web_searches = pg.get("web_search_count", 0)
     mem_queries = sum(
@@ -2061,6 +2074,11 @@ async def process_user_message(
         user_message, channel_name=effective_channel_name
     )
     memory_context = format_memory_for_prompt(memories)
+    _mem_count = sum(
+        len(memories.get(k, [])) for k in ("strategic", "operational", "analytical")
+    )
+    if _mem_count > 0:
+        await post_status(guild, "🧠 Memory searched — context loaded", memory_mode)
 
     channel_purpose = CHANNEL_PURPOSE.get(
         effective_channel_name, "General"
@@ -2102,6 +2120,9 @@ async def process_user_message(
         doc_files       = [f for f in user_files if f["content_type"] == "document"]
         img_files       = [f for f in user_files if f["content_type"] == "image"]
         pdf_vision_files = [f for f in user_files if f["content_type"] == "pdf_vision"]
+
+        if user_files:
+            await post_status(guild, "📎 Reading attached file(s)...", memory_mode)
 
         # Cap total document text — drop oldest files first to stay under limit
         docs_to_inject = []
@@ -2171,16 +2192,17 @@ async def process_user_message(
             "content": full_message,
         })
 
-    await send_to_channel(
+    await post_status(
         guild,
-        STATUS_CHANNEL,
-        f"Processing request from {author_display_name}..."
+        f"Processing request from {author_display_name}...",
+        memory_mode
     )
 
     if active_agent_slug and active_agent_slug in AGENT_DEFINITIONS:
-        await send_to_channel(
-            guild, STATUS_CHANNEL,
-            f"🤖 {AGENT_DEFINITIONS[active_agent_slug]['name']} activated"
+        await post_status(
+            guild,
+            f"🤖 {AGENT_DEFINITIONS[active_agent_slug]['name']} activated",
+            memory_mode
         )
 
     async with channel.typing():
@@ -2238,7 +2260,8 @@ async def process_user_message(
                     tool_results, tool_call_count = \
                         await process_tool_calls(
                             response, guild, tool_call_count,
-                            channel_name=effective_channel_name
+                            channel_name=effective_channel_name,
+                            memory_mode=memory_mode,
                         )
                     conversation_history[_hist_key].append({
                         "role": "user",
@@ -2336,10 +2359,10 @@ async def process_user_message(
                     f"+~{_agent_tokens:,} tokens | trigger: {agent_trigger}"
                 )
 
-            await send_to_channel(
+            await post_status(
                 guild,
-                STATUS_CHANNEL,
-                f"Response delivered to {author_display_name}. Ready."
+                f"Response delivered to {author_display_name}. Ready.",
+                memory_mode
             )
 
             if stale_count and not stale_warned_this_session:
