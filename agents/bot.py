@@ -50,6 +50,7 @@ from memory.memory_manager import (
     log_conversation_turn,
     search_conversations,
     cleanup_old_conversation_log,
+    backfill_conversation_log,
 )
 
 from tools.tool_definitions import (
@@ -2661,6 +2662,9 @@ async def on_ready():
     _deleted = await loop.run_in_executor(None, cleanup_old_conversation_log)
     if _deleted:
         print(f"[Startup] Pruned {_deleted} conversation_log entries older than 90 days.")
+    _backfilled = await loop.run_in_executor(None, backfill_conversation_log)
+    if _backfilled > 0:
+        print(f"[Search] Backfilled {_backfilled} conversation turns into search index")
     print(f"PerMyLastBot is online as {bot.user} "
           f"({len(conversation_history)} conversation context(s) restored)")
     await tree.sync()

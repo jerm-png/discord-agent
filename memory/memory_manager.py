@@ -329,6 +329,90 @@ def cleanup_old_conversation_log() -> int:
     return deleted
 
 
+def backfill_conversation_log() -> int:
+    """
+    One-time migration: copies existing conversation_history rows into
+    conversation_log so !search and confabulation checks have historical data.
+
+    Guarded by the meta key 'conversation_log_backfilled' — skips entirely
+    if that key already exists, so this is safe to call on every startup.
+
+    channel_name is set to 'unknown' for all backfilled rows because the
+    channel name cannot be recovered from a Discord channel/thread ID alone.
+    project_tag is set to None (global) for the same reason.
+
+    Returns count of turns inserted.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    # Guard: run only once
+    c.execute(
+        "SELECT value FROM meta WHERE key = 'conversation_log_backfilled'"
+    )
+    if c.fetchone():
+        conn.close()
+        return 0
+
+    # Snapshot existing entries to avoid duplicates
+    # (user_id, role, first-100-chars-of-content) as the dedup key
+    existing: set = set()
+    try:
+        c.execute("SELECT user_id, role, content FROM conversation_log")
+        for _uid, _role, _content in c.fetchall():
+            existing.add((_uid, _role, (_content or "")[:100]))
+    except Exception:
+        pass
+
+    c.execute("SELECT user_id, history, updated FROM conversation_history")
+    rows = c.fetchall()
+
+    inserted = 0
+    for key, history_json, updated_ts in rows:
+        # Only handle "uid:context_id" format — skip pre-thread legacy keys
+        if ":" not in key:
+            continue
+        uid_str, cid_str = key.split(":", 1)
+
+        try:
+            history = json.loads(history_json)
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+        ts = updated_ts or datetime.now().isoformat()
+
+        for msg in history:
+            role = msg.get("role")
+            content = msg.get("content")
+
+            # Skip tool use blocks and non-string content
+            if not isinstance(content, str) or not content.strip():
+                continue
+            if role not in ("user", "assistant"):
+                continue
+
+            dedup_key = (uid_str, role, content[:100])
+            if dedup_key in existing:
+                continue
+
+            c.execute("""
+                INSERT INTO conversation_log
+                    (user_id, context_id, channel_name, role,
+                     content, project_tag, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (uid_str, cid_str, "unknown", role, content, None, ts))
+            existing.add(dedup_key)
+            inserted += 1
+
+    c.execute("""
+        INSERT OR REPLACE INTO meta (key, value)
+        VALUES ('conversation_log_backfilled', 'true')
+    """)
+    conn.commit()
+    conn.close()
+    return inserted
+
+
 def set_pending_reflection(value):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
