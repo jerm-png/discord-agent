@@ -47,6 +47,9 @@ from memory.memory_manager import (
     save_conversation_history,
     load_all_conversation_histories,
     MEMORY_ISOLATED_CHANNELS,
+    log_conversation_turn,
+    search_conversations,
+    cleanup_old_conversation_log,
 )
 
 from tools.tool_definitions import (
@@ -233,6 +236,18 @@ BOT_START_TIME = None
 _last_token_usage = {"input": 0, "output": 0}
 stale_warned_this_session = False
 
+CONFABULATION_TRIGGERS = (
+    "you said", "you told me", "you mentioned", "did you say",
+    "show me where", "you recommended", "you suggested",
+    "you told", "you wrote", "you claimed",
+)
+
+
+def _is_confabulation_check(text: str) -> bool:
+    lower = text.lower()
+    return any(t in lower for t in CONFABULATION_TRIGGERS)
+
+
 # Goal mode state — keyed by user_id, cleared on restart
 pending_goals: dict = {}
 execution_context: dict = {}
@@ -370,7 +385,9 @@ HELP_TEXT = """**PerMyLastBot — Commands**
 
 `!agent [slug] [message]` — Activate a specific specialist agent for one response. Example: `!agent health-researcher what peptides help with EBV reactivation`. Reverts to default after the response.
 
-`!agents` — List all available specialist agents with their slugs and descriptions."""
+`!agents` — List all available specialist agents with their slugs and descriptions.
+
+`!search [query]` — Full-text search of your past conversations. Scans the permanent archive and summarises matching exchanges. Respects channel isolation — `#health-tracking` searches only health conversations."""
 
 
 # ============================================================
@@ -2068,6 +2085,11 @@ async def process_user_message(
     if _hist_key not in conversation_history:
         conversation_history[_hist_key] = []
 
+    log_conversation_turn(
+        str(user_id), context_id, effective_channel_name,
+        "user", user_message, project_tag=project_tag
+    )
+
     task_completed = is_task_completion(user_message)
 
     memories = get_relevant_memories(
@@ -2091,6 +2113,25 @@ async def process_user_message(
         f"[Channel: #{effective_channel_name} | Purpose: {channel_purpose}{_agent_label}]"
     )
 
+    _search_context = ""
+    if _is_confabulation_check(user_message):
+        _conv_hits = search_conversations(
+            user_message, effective_channel_name, str(user_id)
+        )
+        if _conv_hits:
+            _lines = []
+            for _h in _conv_hits:
+                _ts = _h["timestamp"][:19].replace("T", " ")
+                _snippet = _h["content"][:300].replace("\n", " ")
+                _lines.append(
+                    f"[{_ts}] #{_h['channel_name']} [{_h['role']}]: {_snippet}"
+                )
+            _search_context = (
+                "[SESSION ARCHIVE — past exchanges matching this query:]\n"
+                + "\n".join(_lines)
+                + "\n[Use these records to verify claims about what you previously said.]\n\n"
+            )
+
     full_message = user_message
     if memory_context:
         full_message = (
@@ -2098,7 +2139,7 @@ async def process_user_message(
             f"Current message: {user_message}"
         )
 
-    full_message = f"{channel_ctx}\n{full_message}"
+    full_message = f"{channel_ctx}\n{_search_context}{full_message}"
 
     # ── FILE INJECTION ────────────────────────────────────────
     file_injection_chars = 0
@@ -2278,6 +2319,12 @@ async def process_user_message(
                     "content": final_response_text
                 })
                 break
+
+            if final_response_text:
+                log_conversation_turn(
+                    str(user_id), context_id, effective_channel_name,
+                    "assistant", final_response_text, project_tag=project_tag
+                )
 
             conversation_history[_hist_key] = \
                 conversation_history[_hist_key][-20:]
@@ -2611,6 +2658,9 @@ async def on_ready():
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, check_ollama_health)
     await loop.run_in_executor(None, check_ffmpeg)
+    _deleted = await loop.run_in_executor(None, cleanup_old_conversation_log)
+    if _deleted:
+        print(f"[Startup] Pruned {_deleted} conversation_log entries older than 90 days.")
     print(f"PerMyLastBot is online as {bot.user} "
           f"({len(conversation_history)} conversation context(s) restored)")
     await tree.sync()
@@ -3034,6 +3084,40 @@ async def on_message(message):
     if is_prefix and user_message.lower() == "handoff":
         await run_handoff_command(
             message.channel, message.guild, channel_name
+        )
+        return
+
+    # !search [query]: full-text search of permanent conversation archive
+    if is_prefix and user_message.lower().startswith("search "):
+        _sq = user_message[7:].strip()
+        if not _sq:
+            await message.channel.send("Usage: `!search [query]`")
+            return
+        _hits = search_conversations(_sq, channel_name, uid)
+        await send_to_channel(
+            message.guild, LOG_CHANNEL,
+            f"!search | {message.author.display_name} | \"{_sq}\" | {len(_hits)} result(s)"
+        )
+        if not _hits:
+            await message.channel.send("No past conversations found.")
+            return
+        _excerpt_lines = []
+        for _r in _hits:
+            _ts = _r["timestamp"][:19].replace("T", " ")
+            _snip = _r["content"][:400].replace("\n", " ")
+            _excerpt_lines.append(
+                f"**[{_ts}] #{_r['channel_name']} [{_r['role']}]:**\n{_snip}"
+            )
+        _excerpts = "\n\n".join(_excerpt_lines)
+        _summary_prompt = (
+            f"The user searched for: \"{_sq}\"\n\n"
+            f"Matching conversation excerpts from the archive:\n\n{_excerpts}\n\n"
+            f"Briefly summarise what these records show. Be direct and specific."
+        )
+        _summary = await call_background_model(_summary_prompt)
+        await send_long_message(
+            message.channel,
+            f"{_summary}\n\n---\n*Found {len(_hits)} relevant exchange(s).*"
         )
         return
 

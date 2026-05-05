@@ -1,6 +1,7 @@
 import sqlite3
 import json
 import os
+import re
 import numpy as np
 import chromadb
 from datetime import datetime, timedelta
@@ -201,6 +202,18 @@ def init_db():
         )
     """)
 
+    c.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS conversation_log USING fts5(
+            user_id UNINDEXED,
+            context_id UNINDEXED,
+            channel_name UNINDEXED,
+            role UNINDEXED,
+            content,
+            project_tag UNINDEXED,
+            timestamp UNINDEXED
+        )
+    """)
+
     conn.commit()
     conn.close()
     print("Database initialised.")
@@ -216,6 +229,104 @@ def is_task_completion(message):
         if signal in message_lower:
             return True
     return False
+
+
+# ============================================================
+# CONVERSATION LOG — FTS5 SESSION SEARCH
+# ============================================================
+
+def _sanitize_fts_query(query: str) -> str:
+    """Strips characters that cause FTS5 MATCH syntax errors."""
+    sanitized = re.sub(r'[^a-zA-Z0-9\s]', ' ', query)
+    sanitized = ' '.join(sanitized.split())
+    return sanitized if sanitized else "conversation"
+
+
+def log_conversation_turn(user_id: str, context_id: int, channel_name: str,
+                          role: str, content: str,
+                          project_tag: str = None) -> None:
+    """Appends a single conversation turn to the permanent FTS5 archive."""
+    if not isinstance(content, str) or not content.strip():
+        return
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO conversation_log
+            (user_id, context_id, channel_name, role, content, project_tag, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        str(user_id),
+        str(context_id),
+        channel_name,
+        role,
+        content,
+        project_tag,
+        datetime.now().isoformat()
+    ))
+    conn.commit()
+    conn.close()
+
+
+def search_conversations(query: str, channel_name: str, user_id: str,
+                         limit: int = 5) -> list:
+    """
+    Full-text search over the conversation_log archive.
+    Returns list of dicts: timestamp, channel_name, role, content, context_id.
+    Health-tracking isolation enforced at SQL level.
+    """
+    safe_query = _sanitize_fts_query(query)
+    is_isolated = channel_name in MEMORY_ISOLATED_CHANNELS
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        if is_isolated:
+            c.execute("""
+                SELECT timestamp, channel_name, role, content, context_id
+                FROM conversation_log
+                WHERE conversation_log MATCH ?
+                  AND user_id = ?
+                  AND project_tag = ?
+                ORDER BY rank, timestamp DESC
+                LIMIT ?
+            """, (safe_query, str(user_id), channel_name, limit))
+        else:
+            excluded = list(MEMORY_ISOLATED_CHANNELS)
+            placeholders = ",".join("?" * len(excluded))
+            c.execute(f"""
+                SELECT timestamp, channel_name, role, content, context_id
+                FROM conversation_log
+                WHERE conversation_log MATCH ?
+                  AND user_id = ?
+                  AND (project_tag IS NULL OR project_tag NOT IN ({placeholders}))
+                ORDER BY rank, timestamp DESC
+                LIMIT ?
+            """, [safe_query, str(user_id)] + excluded + [limit])
+        rows = c.fetchall()
+    except Exception:
+        rows = []
+    conn.close()
+    return [
+        {
+            "timestamp": row[0],
+            "channel_name": row[1],
+            "role": row[2],
+            "content": row[3],
+            "context_id": row[4],
+        }
+        for row in rows
+    ]
+
+
+def cleanup_old_conversation_log() -> int:
+    """Deletes conversation_log entries older than 90 days. Returns count deleted."""
+    cutoff = (datetime.now() - timedelta(days=90)).isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM conversation_log WHERE timestamp < ?", (cutoff,))
+    deleted = c.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
 
 
 def set_pending_reflection(value):
