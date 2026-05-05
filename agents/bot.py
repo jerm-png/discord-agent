@@ -126,6 +126,16 @@ THREADED_CHANNELS = {
     "health-tracking",
 }
 
+THREAD_ARCHIVE_DURATION = {
+    "health-tracking":        1440,
+    "chief-of-staff":         1440,
+    "director-workspace":     1440,
+    "planning":               1440,
+    "contact-center":         4320,
+    "gamification-dashboard": 4320,
+    "slack-intelligence":     4320,
+}
+
 # ── CHANNEL TOOL LOADING ─────────────────────────────────────
 # "none"        = no tools sent (sandbox, unknown channels)
 # "search_only" = web_search + query_memory only (bot-commands)
@@ -683,8 +693,12 @@ async def _resolve_response_channel(message, channel_name: str, text_hint: str =
     # Create a thread on this message
     content = text_hint or message.content or ""
     thread_name = await generate_thread_name(content, channel_name)
+    archive_duration = THREAD_ARCHIVE_DURATION.get(channel_name, 1440)
     try:
-        thread = await message.create_thread(name=thread_name)
+        thread = await message.create_thread(
+            name=thread_name,
+            auto_archive_duration=archive_duration,
+        )
         await message.channel.send("Replied in thread →")
         await send_to_channel(
             message.guild, LOG_CHANNEL,
