@@ -2195,6 +2195,16 @@ async def process_user_message(
                 effective_system = SYSTEM_PROMPT
 
             while True:
+                _cleaned, _n_stripped = strip_orphaned_tool_results(
+                    conversation_history[_hist_key]
+                )
+                if _n_stripped:
+                    conversation_history[_hist_key] = _cleaned
+                    print(
+                        f"[Safety] Stripped {_n_stripped} orphaned blocks "
+                        f"before API call in thread {context_id}"
+                    )
+
                 api_params = {
                     "model": MAIN_MODEL,
                     "max_tokens": 1024,
