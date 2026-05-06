@@ -2,6 +2,7 @@ import sqlite3
 import json
 import os
 import re
+import difflib
 import numpy as np
 import chromadb
 from datetime import datetime, timedelta
@@ -924,6 +925,130 @@ def check_stale_memories():
     return flags
 
 
+def auto_archive_stale_operational() -> int:
+    """
+    Archives active operational memories that are open clarification
+    questions (contain 'clarify', 'determine', 'confirm', or '?') and
+    have not been updated in more than 30 days.
+
+    Health-tracking memories are never touched under any circumstances.
+    Returns count of memories archived.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    today = datetime.now()
+
+    c.execute("""
+        SELECT id, content, last_updated, project_tag
+        FROM operational_memory
+        WHERE status = 'active'
+          AND (project_tag IS NULL OR project_tag != 'health-tracking')
+          AND (
+              content LIKE '%clarify%'
+           OR content LIKE '%determine%'
+           OR content LIKE '%confirm%'
+           OR content LIKE '%?%'
+          )
+    """)
+    rows = c.fetchall()
+    conn.close()
+
+    archived = 0
+    for mem_id, content, last_updated, project_tag in rows:
+        if not last_updated:
+            continue
+        try:
+            updated_date = datetime.fromisoformat(last_updated)
+        except (ValueError, TypeError):
+            continue
+        if (today - updated_date).days <= 30:
+            continue
+        if archive_memory("operational", mem_id,
+                          "auto-archived: exceeded decay threshold"):
+            print(
+                f"[Decay] Auto-archived operational memory "
+                f"id={mem_id}: {content[:80]}"
+            )
+            archived += 1
+
+    return archived
+
+
+def check_operational_duplicate(content: str,
+                                 project_tag=None) -> tuple:
+    """
+    Returns (is_duplicate, ratio, existing_id).
+    is_duplicate is True when any active operational memory with the
+    same project_tag has a SequenceMatcher ratio > 0.90 against content.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    if project_tag is None:
+        c.execute("""
+            SELECT id, content FROM operational_memory
+            WHERE status = 'active' AND project_tag IS NULL
+        """)
+    else:
+        c.execute("""
+            SELECT id, content FROM operational_memory
+            WHERE status = 'active' AND project_tag = ?
+        """, (project_tag,))
+    rows = c.fetchall()
+    conn.close()
+
+    for existing_id, existing_content in rows:
+        ratio = difflib.SequenceMatcher(
+            None, existing_content, content
+        ).ratio()
+        if ratio > 0.90:
+            return (True, ratio, existing_id)
+    return (False, 0.0, None)
+
+
+def audit_stale_operational() -> None:
+    """
+    Prints all operational memories grouped by status with days since
+    last_updated. Call manually for decay diagnostics — not scheduled.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        SELECT id, status, content, last_updated, project_tag
+        FROM operational_memory
+        ORDER BY status, last_updated ASC
+    """)
+    rows = c.fetchall()
+    conn.close()
+
+    today = datetime.now()
+    by_status: dict = {}
+    for mem_id, status, content, last_updated, project_tag in rows:
+        by_status.setdefault(status, []).append(
+            (mem_id, content, last_updated, project_tag)
+        )
+
+    for status, entries in sorted(by_status.items()):
+        print(f"\n{'=' * 60}")
+        print(f"STATUS: {status.upper()} ({len(entries)} entries)")
+        print(f"{'=' * 60}")
+        print(f"{'ID':<6} {'Days':<6} {'Tag':<20} Content")
+        print(f"{'-' * 6} {'-' * 6} {'-' * 20} {'-' * 40}")
+        for mem_id, content, last_updated, project_tag in entries:
+            if last_updated:
+                try:
+                    days: object = (
+                        today - datetime.fromisoformat(last_updated)
+                    ).days
+                except (ValueError, TypeError):
+                    days = "?"
+            else:
+                days = "?"
+            tag = project_tag or "global"
+            print(
+                f"{mem_id:<6} {str(days):<6} {tag:<20} {content[:60]}"
+            )
+
+
 def validate_memory(layer, memory_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -1571,3 +1696,4 @@ def get_consolidation_candidates(layer: str,
 # ============================================================
 
 init_db()
+auto_archive_stale_operational()

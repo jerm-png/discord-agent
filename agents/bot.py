@@ -52,6 +52,7 @@ from memory.memory_manager import (
     cleanup_old_conversation_log,
     backfill_conversation_log,
     log_reasoning_trace,
+    check_operational_duplicate,
 )
 
 from tools.tool_definitions import (
@@ -1000,6 +1001,16 @@ Return empty arrays if nothing meaningful to store."""
 
         for item in extracted.get("operational", []):
             if item:
+                is_dup, ratio, dup_id = check_operational_duplicate(
+                    item, project_tag
+                )
+                if is_dup:
+                    print(
+                        f"[Dedup] Skipped operational memory save"
+                        f" — similarity {ratio:.2f} to existing"
+                        f" id={dup_id}"
+                    )
+                    continue
                 save_operational_memory(
                     content=item,
                     project_name="general",
