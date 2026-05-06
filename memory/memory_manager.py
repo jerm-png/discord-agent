@@ -41,6 +41,10 @@ COMPLETION_SIGNALS = [
 # into other channels and never receive memories from them.
 MEMORY_ISOLATED_CHANNELS = {"health-tracking"}
 
+# Channels that receive no global-memory fallback during retrieval.
+# Memories saved in these channels only surface in those channels.
+RESTRICTED_CHANNELS = {"health-tracking"}
+
 # ============================================================
 # INITIALISATION
 # ============================================================
@@ -77,7 +81,8 @@ def init_db():
             times_referenced INTEGER DEFAULT 0,
             flag_after_days INTEGER DEFAULT 60,
             status TEXT DEFAULT 'active',
-            source TEXT
+            source TEXT,
+            channel_name TEXT NOT NULL DEFAULT 'global'
         )
     """)
 
@@ -92,7 +97,8 @@ def init_db():
             last_updated TEXT,
             flag_after_days INTEGER DEFAULT 7,
             blockers TEXT,
-            dependencies TEXT
+            dependencies TEXT,
+            channel_name TEXT NOT NULL DEFAULT 'global'
         )
     """)
 
@@ -110,7 +116,8 @@ def init_db():
             created TEXT,
             last_observed TEXT,
             flag_after_days INTEGER DEFAULT 21,
-            status TEXT DEFAULT 'active'
+            status TEXT DEFAULT 'active',
+            channel_name TEXT NOT NULL DEFAULT 'global'
         )
     """)
 
@@ -171,6 +178,16 @@ def init_db():
         try:
             c.execute(
                 f"ALTER TABLE {_table} ADD COLUMN project_tag TEXT"
+            )
+        except sqlite3.OperationalError:
+            pass
+
+    for _table in ("strategic_memory", "operational_memory",
+                   "analytical_memory"):
+        try:
+            c.execute(
+                f"ALTER TABLE {_table} ADD COLUMN"
+                f" channel_name TEXT NOT NULL DEFAULT 'global'"
             )
         except sqlite3.OperationalError:
             pass
@@ -442,7 +459,7 @@ def get_pending_reflection():
 
 def save_strategic_memory(content, category="general",
                           confidence=0.8, source="conversation",
-                          project_tag=None):
+                          project_tag=None, channel_name="global"):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     now = datetime.now().isoformat()
@@ -450,17 +467,23 @@ def save_strategic_memory(content, category="general",
     c.execute("""
         INSERT INTO strategic_memory
         (content, category, confidence, created,
-         last_confirmed, flag_after_days, source, project_tag)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         last_confirmed, flag_after_days, source, project_tag,
+         channel_name)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (content, category, confidence, now, now,
-          DECAY_RATES["strategic"], source, project_tag))
+          DECAY_RATES["strategic"], source, project_tag,
+          channel_name))
 
     memory_id = str(c.lastrowid)
     conn.commit()
     conn.close()
 
     embedding = embedding_model.encode(content).tolist()
-    meta = {"category": category, "confidence": confidence}
+    meta = {
+        "category": category,
+        "confidence": confidence,
+        "channel_name": channel_name,
+    }
     if project_tag:
         meta["project_tag"] = project_tag
     strategic_collection.add(
@@ -475,7 +498,8 @@ def save_strategic_memory(content, category="general",
 
 def save_operational_memory(content, project_name="general",
                             priority="medium", blockers=None,
-                            dependencies=None, project_tag=None):
+                            dependencies=None, project_tag=None,
+                            channel_name="global"):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     now = datetime.now().isoformat()
@@ -484,18 +508,23 @@ def save_operational_memory(content, project_name="general",
         INSERT INTO operational_memory
         (project_name, content, priority, created,
          last_updated, flag_after_days, blockers,
-         dependencies, project_tag)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         dependencies, project_tag, channel_name)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (project_name, content, priority, now, now,
           DECAY_RATES["operational"],
-          blockers or "", dependencies or "", project_tag))
+          blockers or "", dependencies or "", project_tag,
+          channel_name))
 
     memory_id = str(c.lastrowid)
     conn.commit()
     conn.close()
 
     embedding = embedding_model.encode(content).tolist()
-    meta = {"project": project_name, "priority": priority}
+    meta = {
+        "project": project_name,
+        "priority": priority,
+        "channel_name": channel_name,
+    }
     if project_tag:
         meta["project_tag"] = project_tag
     operational_collection.add(
@@ -513,7 +542,8 @@ def save_analytical_memory(pattern, observation="",
                            confidence=0.5,
                            trigger_conditions="",
                            pattern_type="general",
-                           project_tag=None):
+                           project_tag=None,
+                           channel_name="global"):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     now = datetime.now().isoformat()
@@ -522,11 +552,13 @@ def save_analytical_memory(pattern, observation="",
         INSERT INTO analytical_memory
         (pattern_type, observation, reasoning, outcome,
          pattern, confidence, trigger_conditions,
-         created, last_observed, flag_after_days, project_tag)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         created, last_observed, flag_after_days, project_tag,
+         channel_name)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (pattern_type, observation, reasoning, outcome,
           pattern, confidence, trigger_conditions,
-          now, now, DECAY_RATES["analytical"], project_tag))
+          now, now, DECAY_RATES["analytical"], project_tag,
+          channel_name))
 
     memory_id = str(c.lastrowid)
     conn.commit()
@@ -537,7 +569,8 @@ def save_analytical_memory(pattern, observation="",
     meta = {
         "pattern_type": pattern_type,
         "confidence": confidence,
-        "trigger_conditions": trigger_conditions
+        "trigger_conditions": trigger_conditions,
+        "channel_name": channel_name,
     }
     if project_tag:
         meta["project_tag"] = project_tag
@@ -659,6 +692,7 @@ def get_relevant_memories(query, max_results=TOP_N_MEMORIES,
     query_embedding = embedding_model.encode(query).tolist()
     results = {}
     is_isolated = channel_name in MEMORY_ISOLATED_CHANNELS
+    is_restricted = channel_name in RESTRICTED_CHANNELS
 
     for layer_name, collection in [
         ("strategic", strategic_collection),
@@ -672,23 +706,37 @@ def get_relevant_memories(query, max_results=TOP_N_MEMORIES,
                 continue
 
             if is_isolated:
-                # Isolation enforced at query level. Only documents
-                # explicitly tagged for this channel are returned.
-                # n_results may exceed matching count — ChromaDB 1.x
-                # returns however many match, no error.
+                # Isolation enforced at query level — only documents
+                # tagged for this channel are fetched. Post-filter
+                # enforces channel_name match with no global fallback
+                # for restricted channels.
                 search_results = collection.query(
                     query_embeddings=[query_embedding],
                     n_results=min(max_results, count),
                     where={"project_tag": {"$eq": channel_name}},
-                    include=["documents"]
+                    include=["documents", "metadatas"]
                 )
-                results[layer_name] = (
-                    search_results["documents"][0][:max_results]
-                )
+                docs = search_results["documents"][0]
+                metas = search_results["metadatas"][0]
+                filtered = []
+                for doc, meta in zip(docs, metas):
+                    doc_channel = (
+                        meta.get("channel_name") if meta else None
+                    ) or "global"
+                    if is_restricted:
+                        if doc_channel == channel_name:
+                            filtered.append(doc)
+                    else:
+                        filtered.append(doc)
+                    if len(filtered) >= max_results:
+                        break
+                results[layer_name] = filtered
             else:
                 # Fetch extra candidates, then exclude isolated-channel
                 # memories in Python. $ne on missing fields is unreliable
                 # in ChromaDB, so post-retrieval filter is safer here.
+                # Also enforce channel scoping: global memories surface
+                # everywhere; channel-scoped memories stay local.
                 fetch_n = min(max_results * 5, count, 25)
                 search_results = collection.query(
                     query_embeddings=[query_embedding],
@@ -703,8 +751,16 @@ def get_relevant_memories(query, max_results=TOP_N_MEMORIES,
                     doc_tag = (
                         meta.get("project_tag") if meta else None
                     )
-                    if doc_tag not in MEMORY_ISOLATED_CHANNELS:
-                        filtered.append(doc)
+                    if doc_tag in MEMORY_ISOLATED_CHANNELS:
+                        continue
+                    if channel_name:
+                        doc_channel = (
+                            meta.get("channel_name") if meta else None
+                        ) or "global"
+                        if (doc_channel != "global"
+                                and doc_channel != channel_name):
+                            continue
+                    filtered.append(doc)
                     if len(filtered) >= max_results:
                         break
                 results[layer_name] = filtered
