@@ -13,7 +13,7 @@ from collections import defaultdict
 from datetime import datetime
 from discord import app_commands
 from dotenv import load_dotenv
-from anthropic import Anthropic
+from anthropic import Anthropic, APIStatusError
 from elevenlabs import ElevenLabs
 import PyPDF2
 import docx
@@ -2293,7 +2293,24 @@ async def process_user_message(
                 if active_tools:
                     api_params["tools"] = active_tools
 
-                response = client.messages.create(**api_params)
+                _overloaded = False
+                for _attempt_delay in [None, 2, 4, 8]:
+                    if _attempt_delay is not None:
+                        await asyncio.sleep(_attempt_delay)
+                    try:
+                        response = client.messages.create(**api_params)
+                        _overloaded = False
+                        break
+                    except APIStatusError as e:
+                        if e.status_code != 529:
+                            raise
+                        _overloaded = True
+                if _overloaded:
+                    await channel.send(
+                        "Anthropic's API is currently overloaded. "
+                        "Please try again in a moment."
+                    )
+                    return
 
                 if response.stop_reason == "tool_use":
                     conversation_history[_hist_key].append({
