@@ -240,9 +240,56 @@ def init_db():
         )
     """)
 
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS reasoning_trace (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            user_id TEXT,
+            channel_name TEXT,
+            tool_name TEXT NOT NULL,
+            tool_inputs TEXT,
+            result_summary TEXT,
+            iteration INTEGER
+        )
+    """)
+
     conn.commit()
     conn.close()
     print("Database initialised.")
+
+
+def log_reasoning_trace(
+    user_id: str,
+    channel_name: str,
+    tool_name: str,
+    tool_inputs: dict,
+    result_summary: str,
+    iteration: int
+):
+    """Logs a single tool call trace entry to the reasoning_trace table."""
+    import json as _json
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute(
+            """
+            INSERT INTO reasoning_trace
+            (timestamp, user_id, channel_name, tool_name,
+             tool_inputs, result_summary, iteration)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                datetime.utcnow().isoformat(),
+                user_id,
+                channel_name,
+                tool_name,
+                _json.dumps(tool_inputs)[:500],
+                result_summary[:1000],
+                iteration,
+            )
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # ============================================================

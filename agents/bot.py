@@ -51,6 +51,7 @@ from memory.memory_manager import (
     search_conversations,
     cleanup_old_conversation_log,
     backfill_conversation_log,
+    log_reasoning_trace,
 )
 
 from tools.tool_definitions import (
@@ -74,6 +75,7 @@ client = Anthropic()
 
 MAIN_MODEL = "claude-sonnet-4-6"
 BACKGROUND_MODEL = "claude-haiku-4-5-20251001"
+MAX_REASONING_ITERATIONS = 10  # Maximum while-loop cycles in process_user_message
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "llama3.2"
@@ -814,6 +816,19 @@ async def process_tool_calls(response, guild, tool_call_count, channel_name=None
             })
 
             tool_call_count += 1
+
+            # Fire-and-forget reasoning trace — run in executor to avoid blocking
+            _trace_loop = asyncio.get_running_loop()
+            _trace_loop.run_in_executor(
+                None,
+                log_reasoning_trace,
+                "system",
+                channel_name or "unknown",
+                tool_name,
+                tool_inputs,
+                str(result)[:1000],
+                tool_call_count,
+            )
 
     return tool_results, tool_call_count
 
@@ -2273,7 +2288,18 @@ async def process_user_message(
             else:
                 effective_system = SYSTEM_PROMPT
 
+            _reasoning_iterations = 0
             while True:
+                _reasoning_iterations += 1
+                if _reasoning_iterations > MAX_REASONING_ITERATIONS:
+                    await send_to_channel(
+                        guild,
+                        LOG_CHANNEL,
+                        f"[Safety] Reasoning loop hit MAX_REASONING_ITERATIONS "
+                        f"({MAX_REASONING_ITERATIONS}) — forcing break"
+                    )
+                    break
+
                 _cleaned, _n_stripped = strip_orphaned_tool_results(
                     conversation_history[_hist_key]
                 )
@@ -2286,7 +2312,7 @@ async def process_user_message(
 
                 api_params = {
                     "model": MAIN_MODEL,
-                    "max_tokens": 1024,
+                    "max_tokens": 4096,
                     "system": effective_system,
                     "messages": conversation_history[_hist_key],
                 }
