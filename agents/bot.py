@@ -2551,7 +2551,11 @@ async def process_user_message(
             )
 
             if active_agent_slug and active_agent_slug in AGENT_DEFINITIONS:
-                _agent_tokens = len(AGENT_DEFINITIONS[active_agent_slug]["content"]) // 4
+                _injected_len = min(
+                    len(AGENT_DEFINITIONS[active_agent_slug]["content"]),
+                    AGENT_INJECT_CHAR_LIMIT
+                )
+                _agent_tokens = _injected_len // 4
                 await send_to_channel(
                     guild, LOG_CHANNEL,
                     f"Agent activated | {AGENT_DEFINITIONS[active_agent_slug]['name']} | "
