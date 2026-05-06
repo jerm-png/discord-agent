@@ -98,7 +98,8 @@ def init_db():
             flag_after_days INTEGER DEFAULT 7,
             blockers TEXT,
             dependencies TEXT,
-            channel_name TEXT NOT NULL DEFAULT 'global'
+            channel_name TEXT NOT NULL DEFAULT 'global',
+            confidence REAL NOT NULL DEFAULT 0.7
         )
     """)
 
@@ -191,6 +192,14 @@ def init_db():
             )
         except sqlite3.OperationalError:
             pass
+
+    try:
+        c.execute(
+            "ALTER TABLE operational_memory ADD COLUMN"
+            " confidence REAL NOT NULL DEFAULT 0.7"
+        )
+    except sqlite3.OperationalError:
+        pass
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS health_panels (
@@ -482,6 +491,7 @@ def save_strategic_memory(content, category="general",
     meta = {
         "category": category,
         "confidence": confidence,
+        "created_at": now,
         "channel_name": channel_name,
     }
     if project_tag:
@@ -523,6 +533,8 @@ def save_operational_memory(content, project_name="general",
     meta = {
         "project": project_name,
         "priority": priority,
+        "confidence": 0.7,
+        "created_at": now,
         "channel_name": channel_name,
     }
     if project_tag:
@@ -570,6 +582,7 @@ def save_analytical_memory(pattern, observation="",
         "pattern_type": pattern_type,
         "confidence": confidence,
         "trigger_conditions": trigger_conditions,
+        "created_at": now,
         "channel_name": channel_name,
     }
     if project_tag:
@@ -718,8 +731,16 @@ def get_relevant_memories(query, max_results=TOP_N_MEMORIES,
                 )
                 docs = search_results["documents"][0]
                 metas = search_results["metadatas"][0]
+                pairs = sorted(
+                    zip(docs, metas),
+                    key=lambda p: (
+                        float((p[1] or {}).get("confidence", 0.0)),
+                        (p[1] or {}).get("created_at", "")
+                    ),
+                    reverse=True
+                )
                 filtered = []
-                for doc, meta in zip(docs, metas):
+                for doc, meta in pairs:
                     doc_channel = (
                         meta.get("channel_name") if meta else None
                     ) or "global"
@@ -745,9 +766,16 @@ def get_relevant_memories(query, max_results=TOP_N_MEMORIES,
                 )
                 docs = search_results["documents"][0]
                 metas = search_results["metadatas"][0]
-
+                pairs = sorted(
+                    zip(docs, metas),
+                    key=lambda p: (
+                        float((p[1] or {}).get("confidence", 0.0)),
+                        (p[1] or {}).get("created_at", "")
+                    ),
+                    reverse=True
+                )
                 filtered = []
-                for doc, meta in zip(docs, metas):
+                for doc, meta in pairs:
                     doc_tag = (
                         meta.get("project_tag") if meta else None
                     )
@@ -1412,8 +1440,7 @@ def get_consolidation_candidates(layer: str,
         "status = 'active'" if only_active else "status != 'active'"
     )
 
-    # Confidence column exists in strategic and analytical but not operational
-    conf_expr = "confidence" if layer != "operational" else "0.7"
+    conf_expr = "confidence"
 
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
