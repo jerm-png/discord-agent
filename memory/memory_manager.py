@@ -1555,7 +1555,7 @@ def memory_stats() -> dict:
     return result
 
 
-def _cluster_by_similarity(memories: list, threshold: float = 0.85) -> list:
+def _cluster_by_similarity(memories: list, threshold: float = 0.72) -> list:
     """
     Groups a list of memory dicts into clusters using cosine similarity.
     Each dict must have an "embedding" key (list of floats).
@@ -1712,10 +1712,16 @@ def get_consolidation_candidates(layer: str,
             by_tag[tag] = []
         by_tag[tag].append(m)
 
+    large_layer = len(memories) > 400
+
     all_clusters = []
     for tag_group in by_tag.values():
         if len(tag_group) >= 3:
             all_clusters.extend(_cluster_by_similarity(tag_group))
+            if large_layer:
+                all_clusters.extend(
+                    _cluster_by_similarity(tag_group, threshold=0.65)
+                )
 
     return all_clusters
 
