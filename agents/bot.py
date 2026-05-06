@@ -256,6 +256,7 @@ def _is_confabulation_check(text: str) -> bool:
 pending_goals: dict = {}
 execution_context: dict = {}
 gate_pending: dict = {}
+thread_agent_pins: dict = {}  # keyed by context_id (thread ID)
 
 # Gate frequency: "smart" | "always" | "minimal"
 # smart   = gate when results are surprising, low quality, or last search before synthesis
@@ -2611,12 +2612,14 @@ async def _load_agent_definitions():
                 )
 
 
-def select_agent(message_text: str, channel_name: str) -> tuple:
+def select_agent(message_text: str, channel_name: str,
+                 context_id: int = 0) -> tuple:
     """
     Returns (agent_slug, trigger_type) for auto-detection.
-    trigger_type: "channel" | "keyword" | "explicit" | "none"
+    trigger_type: "channel" | "keyword" | "explicit" | "pinned" | "none"
 
     Priority order:
+    0. Thread pin — if context_id is in thread_agent_pins, return that slug.
     1. Health-tracking hard rule — always returns health-researcher (cannot be
        overridden by keywords; use !agent explicitly to bypass).
     2. Sandbox — never activates any agent.
@@ -2630,6 +2633,9 @@ def select_agent(message_text: str, channel_name: str) -> tuple:
     """
     if not AGENT_DEFINITIONS:
         return None, "none"
+
+    if context_id and context_id in thread_agent_pins:
+        return thread_agent_pins[context_id], "pinned"
 
     # Hard rule: health-tracking always uses health-researcher
     if channel_name == "health-tracking":
@@ -2806,7 +2812,7 @@ async def on_message(message):
             return
 
         await message.channel.send(f"Heard: {transcription}")
-        _va_slug, _va_trigger = select_agent(transcription, channel_name)
+        _va_slug, _va_trigger = select_agent(transcription, channel_name, context_id)
         _va_channel, context_id = await _resolve_response_channel(
             message, channel_name, transcription
         )
@@ -2914,7 +2920,7 @@ async def on_message(message):
 
         if not raw_text.startswith("!"):
             # Plain-text question with files — run pipeline directly
-            _fa_slug, _fa_trigger = select_agent(raw_text, channel_name)
+            _fa_slug, _fa_trigger = select_agent(raw_text, channel_name, context_id)
             _fa_channel, context_id = await _resolve_response_channel(
                 message, channel_name, raw_text
             )
@@ -3072,12 +3078,48 @@ async def on_message(message):
                 "No agent definitions loaded — check startup logs."
             )
             return
+        _current_pin = thread_agent_pins.get(context_id)
         lines = ["**Available Specialist Agents**\n"]
         for _slug in sorted(AGENT_DEFINITIONS.keys()):
             _ag = AGENT_DEFINITIONS[_slug]
             _desc = _ag["description"][:120] if _ag["description"] else "No description."
-            lines.append(f"`{_slug}` — **{_ag['name']}**: {_desc}")
+            _pin_marker = " 📌" if _current_pin == _slug else ""
+            lines.append(f"`{_slug}`{_pin_marker} — **{_ag['name']}**: {_desc}")
+        if _current_pin and _current_pin in AGENT_DEFINITIONS:
+            lines.append(
+                f"\n📌 **{AGENT_DEFINITIONS[_current_pin]['name']}** is pinned "
+                f"for this thread. Use `!use default` to clear."
+            )
         await send_long_message(message.channel, "\n".join(lines))
+        return
+
+    # !use [slug] or !use default: pin an agent for this thread (or clear the pin)
+    if is_prefix and user_message.lower().startswith("use "):
+        _use_arg = user_message[4:].strip().lower()
+        if _use_arg == "default":
+            thread_agent_pins.pop(context_id, None)
+            await message.channel.send(
+                "📌 Agent pin cleared — auto-selection resumed"
+            )
+            return
+        _use_slug = None
+        if _use_arg in AGENT_DEFINITIONS:
+            _use_slug = _use_arg
+        else:
+            for _s, _a in AGENT_DEFINITIONS.items():
+                if _use_arg == _a["name"].lower() or _use_arg in _s:
+                    _use_slug = _s
+                    break
+        if not _use_slug:
+            _available = ", ".join(f"`{s}`" for s in sorted(AGENT_DEFINITIONS.keys()))
+            await message.channel.send(
+                f"Unknown agent `{_use_arg}`. Available: {_available}"
+            )
+            return
+        thread_agent_pins[context_id] = _use_slug
+        await message.channel.send(
+            f"📌 **{AGENT_DEFINITIONS[_use_slug]['name']}** pinned for this thread"
+        )
         return
 
     # !agent [slug-or-name] [message]: manually activate one agent for one response
@@ -3115,12 +3157,19 @@ async def on_message(message):
             )
             return
 
-        await message.channel.send(
-            f"🤖 Using **{AGENT_DEFINITIONS[_found_slug]['name']}**"
-        )
         _ag_channel, context_id = await _resolve_response_channel(
             message, channel_name, _rest
         )
+        if isinstance(message.channel, discord.Thread):
+            thread_agent_pins[context_id] = _found_slug
+            await message.channel.send(
+                f"🤖 Using **{AGENT_DEFINITIONS[_found_slug]['name']}** "
+                f"— 📌 pinned for this thread"
+            )
+        else:
+            await message.channel.send(
+                f"🤖 Using **{AGENT_DEFINITIONS[_found_slug]['name']}**"
+            )
         await process_user_message(
             _rest, uid, message.author.display_name,
             message.guild, _ag_channel,
@@ -3220,11 +3269,16 @@ async def on_message(message):
         _, stripped = strip_orphaned_tool_results(old_history)
         conversation_history[_clear_key] = []
         cleared_files = len(attached_files.pop(uid, []))
+        cleared_pin = thread_agent_pins.pop(context_id, None)
         note_parts = []
         if stripped:
             note_parts.append(f"{stripped} orphaned tool block(s) cleaned")
         if cleared_files:
             note_parts.append(f"{cleared_files} attached file(s) removed")
+        if cleared_pin and cleared_pin in AGENT_DEFINITIONS:
+            note_parts.append(
+                f"{AGENT_DEFINITIONS[cleared_pin]['name']} pin cleared"
+            )
         note = f" ({', '.join(note_parts)})" if note_parts else ""
         await message.channel.send(
             f"Conversation history cleared for this channel. "
@@ -3253,7 +3307,7 @@ async def on_message(message):
         if not original_message:
             await message.channel.send("No previous message to retry.")
             return
-        _retry_slug, _retry_trigger = select_agent(original_message, channel_name)
+        _retry_slug, _retry_trigger = select_agent(original_message, channel_name, context_id)
         await process_user_message(
             original_message,
             uid,
@@ -3304,7 +3358,7 @@ async def on_message(message):
         )
         return
 
-    _auto_slug, _auto_trigger = select_agent(user_message, channel_name)
+    _auto_slug, _auto_trigger = select_agent(user_message, channel_name, context_id)
     _auto_channel, context_id = await _resolve_response_channel(
         message, channel_name, user_message
     )
