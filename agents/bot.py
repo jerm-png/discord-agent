@@ -53,6 +53,7 @@ from memory.memory_manager import (
     backfill_conversation_log,
     log_reasoning_trace,
     check_operational_duplicate,
+    get_unresolved_high_priority_flags,
 )
 
 from tools.tool_definitions import (
@@ -934,6 +935,57 @@ async def run_reflection_loop(guild, experiences):
             LOG_CHANNEL,
             f"Reflection loop error: {str(e)}"
         )
+
+
+async def run_proactive_flag_surfacing(guild):
+    """
+    Scheduled background task. Fires once on startup after a 60-second
+    delay, then repeats every 24 hours. Pulls active HIGH priority review
+    flags from operational_memory and posts a digest to #chief-of-staff.
+    Skips silently if no flags exist or channel is unavailable.
+    """
+    await asyncio.sleep(60)  # allow bot to fully connect before first run
+    while True:
+        try:
+            loop = asyncio.get_running_loop()
+            flags = await loop.run_in_executor(
+                None, get_unresolved_high_priority_flags
+            )
+            if flags:
+                cos_channel = discord.utils.get(
+                    guild.channels, name="chief-of-staff"
+                )
+                if cos_channel:
+                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+                    lines = [
+                        f"📋 Daily Flag Review — {timestamp}",
+                        f"{len(flags)} unresolved HIGH priority flag(s) require attention:\n",
+                    ]
+                    for f in flags:
+                        try:
+                            age_days = (
+                                datetime.utcnow() -
+                                datetime.fromisoformat(f["created"])
+                            ).days
+                        except Exception:
+                            age_days = "?"
+                        source = f.get("channel_name") or "unknown channel"
+                        lines.append(
+                            f"🔴 [{age_days}d old | #{source}]\n"
+                            f"{f['content'][:400]}"
+                        )
+                    await send_long_message(cos_channel, "\n\n".join(lines))
+                    await send_to_channel(
+                        guild, LOG_CHANNEL,
+                        f"Proactive flag surfacing | "
+                        f"{len(flags)} HIGH flag(s) posted to #chief-of-staff"
+                    )
+        except Exception as e:
+            await send_to_channel(
+                guild, LOG_CHANNEL,
+                f"Proactive flag surfacing error: {str(e)}"
+            )
+        await asyncio.sleep(86400)  # 24 hours
 
 
 async def extract_and_store_memories(

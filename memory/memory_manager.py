@@ -1353,6 +1353,35 @@ def get_handoff_memories():
     }
 
 
+def get_unresolved_high_priority_flags() -> list:
+    """
+    Returns all active HIGH priority review flags for the scheduled
+    proactive surfacing job. Queries operational_memory directly.
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.execute(
+            """
+            SELECT id, content, priority, created, channel_name
+            FROM operational_memory
+            WHERE project_name = 'review_flags'
+              AND status = 'active'
+              AND priority = 'high'
+            ORDER BY created ASC
+            """
+        )
+        rows = cursor.fetchall()
+    return [
+        {
+            "id": row[0],
+            "content": row[1],
+            "priority": row[2],
+            "created": row[3],
+            "channel_name": row[4],
+        }
+        for row in rows
+    ]
+
+
 # ============================================================
 # HEALTH TRACKING FUNCTIONS
 # ============================================================
