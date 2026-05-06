@@ -378,7 +378,7 @@ def handle_update_user_model(inputs):
     )
 
 
-def handle_flag_for_review(inputs):
+def handle_flag_for_review(inputs, channel_name: str = 'global'):
     """
     Saves a flag to the operational layer for
     future review. This is the self-nudging mechanism.
@@ -396,7 +396,8 @@ def handle_flag_for_review(inputs):
     save_operational_memory(
         content=content,
         project_name="review_flags",
-        priority=priority
+        priority=priority,
+        channel_name=channel_name
     )
 
     return (
@@ -486,7 +487,7 @@ def execute_tool(tool_name, tool_inputs, channel_name=None):
         if tool_name == "update_user_model":
             return handle_update_user_model(tool_inputs)
         if tool_name == "flag_for_review":
-            return handle_flag_for_review(tool_inputs)
+            return handle_flag_for_review(tool_inputs, channel_name=channel_name)
         if tool_name == "web_search":
             return handle_web_search(tool_inputs)
         if tool_name == "calculate_confidence":
