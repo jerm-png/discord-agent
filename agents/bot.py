@@ -76,6 +76,7 @@ client = Anthropic()
 MAIN_MODEL = "claude-sonnet-4-6"
 BACKGROUND_MODEL = "claude-haiku-4-5-20251001"
 MAX_REASONING_ITERATIONS = 10  # Maximum while-loop cycles in process_user_message
+AGENT_INJECT_CHAR_LIMIT = 1500
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "llama3.2"
@@ -2281,10 +2282,16 @@ async def process_user_message(
 
             if active_agent_slug and active_agent_slug in AGENT_DEFINITIONS:
                 _adef = AGENT_DEFINITIONS[active_agent_slug]
+                _agent_content = _adef["content"]
+                if len(_agent_content) > AGENT_INJECT_CHAR_LIMIT:
+                    _agent_content = (
+                        _agent_content[:AGENT_INJECT_CHAR_LIMIT]
+                        + "\n[Agent definition truncated for token efficiency]"
+                    )
                 effective_system = (
                     SYSTEM_PROMPT
                     + f"\n\n---\nACTIVE SPECIALIST AGENT: {_adef['name']}\n"
-                    + _adef["content"]
+                    + _agent_content
                 )
             else:
                 effective_system = SYSTEM_PROMPT
@@ -2321,21 +2328,42 @@ async def process_user_message(
                     api_params["tools"] = active_tools
 
                 _overloaded = False
+                _rate_limited = False
                 for _attempt_delay in [None, 2, 4, 8]:
                     if _attempt_delay is not None:
                         await asyncio.sleep(_attempt_delay)
                     try:
                         response = client.messages.create(**api_params)
                         _overloaded = False
+                        _rate_limited = False
                         break
                     except APIStatusError as e:
-                        if e.status_code != 529:
+                        if e.status_code == 529:
+                            _overloaded = True
+                        elif e.status_code == 429 and not _rate_limited:
+                            _rate_limited = True
+                            await asyncio.sleep(60)
+                            try:
+                                response = client.messages.create(**api_params)
+                                _rate_limited = False
+                                break
+                            except APIStatusError as _e2:
+                                if _e2.status_code == 429:
+                                    pass
+                                else:
+                                    raise
+                        else:
                             raise
-                        _overloaded = True
                 if _overloaded:
                     await channel.send(
                         "Anthropic's API is currently overloaded. "
                         "Please try again in a moment."
+                    )
+                    return
+                if _rate_limited:
+                    await channel.send(
+                        "Rate limit hit — please wait a moment "
+                        "before sending another message."
                     )
                     return
 
