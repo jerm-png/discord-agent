@@ -2713,7 +2713,9 @@ async def on_message(message):
     voice_attachment = next(
         (
             a for a in message.attachments
-            if a.content_type and a.content_type.startswith("audio/")
+            if a.content_type
+            and a.content_type.startswith("audio/")
+            and not a.filename.lower().endswith(".txt")
         ),
         None
     )
@@ -2768,7 +2770,11 @@ async def on_message(message):
     # ── FILE ATTACHMENTS (non-audio) ──────────────────────
     non_audio_attachments = [
         a for a in message.attachments
-        if not (a.content_type and a.content_type.startswith("audio/"))
+        if not (
+            a.content_type
+            and a.content_type.startswith("audio/")
+            and not a.filename.lower().endswith(".txt")
+        )
     ]
 
     if non_audio_attachments:
@@ -2776,7 +2782,11 @@ async def on_message(message):
         loop = asyncio.get_running_loop()
         for attachment in non_audio_attachments:
             ext = os.path.splitext(attachment.filename)[1].lower()
-            if ext not in SUPPORTED_EXTENSIONS:
+            _is_txt = (
+                attachment.filename.lower().endswith(".txt")
+                or "text/plain" in (attachment.content_type or "")
+            )
+            if ext not in SUPPORTED_EXTENSIONS and not _is_txt:
                 await message.channel.send(
                     f"⚠️ {attachment.filename} — file type not supported. "
                     f"Supported: PDF, DOCX, TXT, MD, CSV, PNG, JPG, WEBP"
