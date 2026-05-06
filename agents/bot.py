@@ -55,7 +55,8 @@ from memory.memory_manager import (
 
 from tools.tool_definitions import (
     TOOL_DEFINITIONS,
-    execute_tool
+    execute_tool,
+    drain_escalation_queue,
 )
 
 from voice_input import transcribe_attachment
@@ -2320,6 +2321,21 @@ async def process_user_message(
                     "content": final_response_text
                 })
                 break
+
+            # Drain escalation queue and post high-priority flags to #chief-of-staff
+            pending_escalations = drain_escalation_queue()
+            for item in pending_escalations:
+                cos_channel = discord.utils.get(
+                    guild.channels, name="chief-of-staff"
+                )
+                if cos_channel:
+                    await send_to_channel(
+                        guild,
+                        cos_channel.name,
+                        f"🚨 High-priority flag escalated from #{item['source_channel']}\n"
+                        f"Topic: {item['topic']}\n"
+                        f"Reason: {item['reason']}"
+                    )
 
             if final_response_text:
                 log_conversation_turn(

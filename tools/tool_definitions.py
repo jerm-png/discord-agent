@@ -19,6 +19,16 @@ from memory.memory_manager import (
     update_memory_confidence,
 )
 
+_escalation_queue: list = []
+
+
+def drain_escalation_queue() -> list:
+    """Return all pending escalation items and clear the queue."""
+    items = list(_escalation_queue)
+    _escalation_queue.clear()
+    return items
+
+
 # ============================================================
 # TOOL DEFINITIONS
 # These get sent to Claude with every request so it knows
@@ -399,6 +409,13 @@ def handle_flag_for_review(inputs, channel_name: str = 'global'):
         priority=priority,
         channel_name=channel_name
     )
+
+    if priority == "high" and channel_name and channel_name != "chief-of-staff":
+        _escalation_queue.append({
+            "topic": topic,
+            "reason": reason,
+            "source_channel": channel_name
+        })
 
     return (
         f"Flagged for review — topic: {topic} | "
