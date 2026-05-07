@@ -54,6 +54,10 @@ from memory.memory_manager import (
     log_reasoning_trace,
     check_operational_duplicate,
     get_unresolved_high_priority_flags,
+    drain_rubric_rejection_log,
+    record_rubric_rejection,
+    evaluate_memory_rubric,
+    get_top_similar_memories,
 )
 
 from tools.tool_definitions import (
@@ -990,7 +994,8 @@ async def run_proactive_flag_surfacing(guild):
 
 async def extract_and_store_memories(
     user_message, bot_reply, guild, task_completed,
-    project_tag=None, channel_name="unknown", memory_mode="global"
+    project_tag=None, channel_name="unknown", memory_mode="global",
+    background_model_fn=None
 ):
     """
     Extracts anything worth storing in long term memory
@@ -1043,8 +1048,50 @@ Return empty arrays if nothing meaningful to store."""
 
         for item in extracted.get("strategic", []):
             if item:
+                content = item
+                layer_name = "strategic"
+                # ── Rubric gate ──────────────────────────────────────────
+                if background_model_fn is not None:
+                    similarity_score, similar_memory_texts = \
+                        get_top_similar_memories(content, layer_name)
+                    if similarity_score > 0.88:
+                        log_reasoning_trace(
+                            "memory_extraction", channel_name,
+                            "rubric_rejected",
+                            {"content": content[:100]},
+                            f"similarity_duplicate | {content[:50]}",
+                            0
+                        )
+                        record_rubric_rejection(
+                            score=0, layer=layer_name,
+                            content=content[:50],
+                            reason="similarity duplicate (>0.88)"
+                        )
+                        continue
+                    rubric_result = await evaluate_memory_rubric(
+                        content=content,
+                        similar_memories=similar_memory_texts,
+                        background_model_fn=background_model_fn
+                    )
+                    if not rubric_result["pass"]:
+                        log_reasoning_trace(
+                            "memory_extraction", channel_name,
+                            "rubric_rejected",
+                            {"content": content[:100]},
+                            f"Score: {rubric_result['score']}/12 | "
+                            f"{rubric_result['reason']} | {content[:50]}",
+                            0
+                        )
+                        record_rubric_rejection(
+                            score=rubric_result["score"],
+                            layer=layer_name,
+                            content=content[:50],
+                            reason=rubric_result["reason"]
+                        )
+                        continue
+                # ── End rubric gate ──────────────────────────────────────
                 save_strategic_memory(
-                    content=item,
+                    content=content,
                     category="conversation",
                     source="auto_extraction",
                     project_tag=project_tag
@@ -1063,8 +1110,50 @@ Return empty arrays if nothing meaningful to store."""
                         f" id={dup_id}"
                     )
                     continue
+                content = item
+                layer_name = "operational"
+                # ── Rubric gate ──────────────────────────────────────────
+                if background_model_fn is not None:
+                    similarity_score, similar_memory_texts = \
+                        get_top_similar_memories(content, layer_name)
+                    if similarity_score > 0.88:
+                        log_reasoning_trace(
+                            "memory_extraction", channel_name,
+                            "rubric_rejected",
+                            {"content": content[:100]},
+                            f"similarity_duplicate | {content[:50]}",
+                            0
+                        )
+                        record_rubric_rejection(
+                            score=0, layer=layer_name,
+                            content=content[:50],
+                            reason="similarity duplicate (>0.88)"
+                        )
+                        continue
+                    rubric_result = await evaluate_memory_rubric(
+                        content=content,
+                        similar_memories=similar_memory_texts,
+                        background_model_fn=background_model_fn
+                    )
+                    if not rubric_result["pass"]:
+                        log_reasoning_trace(
+                            "memory_extraction", channel_name,
+                            "rubric_rejected",
+                            {"content": content[:100]},
+                            f"Score: {rubric_result['score']}/12 | "
+                            f"{rubric_result['reason']} | {content[:50]}",
+                            0
+                        )
+                        record_rubric_rejection(
+                            score=rubric_result["score"],
+                            layer=layer_name,
+                            content=content[:50],
+                            reason=rubric_result["reason"]
+                        )
+                        continue
+                # ── End rubric gate ──────────────────────────────────────
                 save_operational_memory(
-                    content=item,
+                    content=content,
                     project_name="general",
                     project_tag=project_tag
                 )
@@ -1761,8 +1850,18 @@ async def execute_goal(
             goal, output_for_memory, guild, True,
             project_tag=project_tag,
             channel_name=channel_name,
-            memory_mode=memory_mode
+            memory_mode=memory_mode,
+            background_model_fn=call_background_model
         )
+        rejections = drain_rubric_rejection_log()
+        for rejection in rejections:
+            await send_to_channel(
+                guild, LOG_CHANNEL,
+                f"🚫 Memory rejected by rubric | "
+                f"Score: {rejection['score']}/12 | "
+                f"Layer: {rejection['layer']} | "
+                f"Content: {rejection['content']}..."
+            )
 
     pending_goals.pop(user_id, None)
     execution_context.pop(user_id, None)
@@ -2500,8 +2599,18 @@ async def process_user_message(
                     task_completed,
                     project_tag=project_tag,
                     channel_name=effective_channel_name,
-                    memory_mode=memory_mode
+                    memory_mode=memory_mode,
+                    background_model_fn=call_background_model
                 )
+                rejections = drain_rubric_rejection_log()
+                for rejection in rejections:
+                    await send_to_channel(
+                        guild, LOG_CHANNEL,
+                        f"🚫 Memory rejected by rubric | "
+                        f"Score: {rejection['score']}/12 | "
+                        f"Layer: {rejection['layer']} | "
+                        f"Content: {rejection['content']}..."
+                    )
 
                 if task_completed:
                     experiences = get_recent_experiences(

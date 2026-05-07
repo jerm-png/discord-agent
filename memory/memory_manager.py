@@ -66,6 +66,9 @@ analytical_collection = chroma_client.get_or_create_collection(
     "analytical"
 )
 
+# ── Rubric rejection queue ────────────────────────────────────
+_rubric_rejection_log: list = []
+
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -291,6 +294,121 @@ def log_reasoning_trace(
         conn.commit()
     finally:
         conn.close()
+
+
+def drain_rubric_rejection_log() -> list:
+    """
+    Returns all pending rubric rejections and clears the queue.
+    Called from bot.py after extract_and_store_memories() returns.
+    Each item: {"score": int, "layer": str, "content": str, "reason": str}
+    """
+    global _rubric_rejection_log
+    items = list(_rubric_rejection_log)
+    _rubric_rejection_log.clear()
+    return items
+
+
+def record_rubric_rejection(score: int, layer: str,
+                             content: str, reason: str) -> None:
+    """Appends a rejection entry to the module-level queue."""
+    _rubric_rejection_log.append({
+        "score": score,
+        "layer": layer,
+        "content": content,
+        "reason": reason,
+    })
+
+
+async def evaluate_memory_rubric(
+    content: str,
+    similar_memories: list,
+    background_model_fn
+) -> dict:
+    """
+    Score proposed memory content using a 4-criterion rubric via Haiku.
+    (Criterion 5 — save type appropriateness — is NOT scored here.)
+    Returns {"score": int, "pass": bool, "reason": str}.
+    Fails open on any error — never blocks a save.
+    """
+    similar_block = (
+        "\n".join(f"- {m[:150]}" for m in similar_memories[:3])
+        if similar_memories else "None"
+    )
+
+    prompt = (
+        f"Score this memory (1-3 each, max 12 for criteria 1-4,"
+        f" skip criterion 5):\n"
+        f"Specificity: concrete/actionable vs vague paraphrase\n"
+        f"Non-redundancy: adds new info vs restates existing\n"
+        f"Durability: true in 2+ weeks vs session-specific noise\n"
+        f"Attribution: clear project/context vs orphaned\n"
+        f"Proposed: {content[:300]}\n\n"
+        f"Most similar existing memories:\n{similar_block}\n\n"
+        f"Reply with exactly: SCORE:<n>/12 REASON:<one sentence>"
+    )
+
+    try:
+        response = await background_model_fn(prompt)
+        match = re.search(r'SCORE:(\d+)/12', response)
+        if not match:
+            return {
+                "score": 12,
+                "pass": True,
+                "reason": "parse_failed_fail_open",
+            }
+        score = int(match.group(1))
+        reason_match = re.search(r'REASON:(.+)', response)
+        reason = (
+            reason_match.group(1).strip()
+            if reason_match else "no reason returned"
+        )
+        # Threshold 8/12 — proportionally equivalent to 10/15 with
+        # 4 active criteria (criterion 5 excluded, max is 12).
+        return {"score": score, "pass": score >= 8, "reason": reason}
+    except Exception as e:
+        return {
+            "score": 12,
+            "pass": True,
+            "reason": f"rubric_unavailable: {e}",
+        }
+
+
+def get_top_similar_memories(content: str, layer: str,
+                              n: int = 3) -> tuple:
+    """
+    Returns (max_cosine_similarity, [top_n_texts]) for content against
+    the given ChromaDB layer collection.
+    For unit-normalized embeddings: cosine_sim = 1 - (L2^2 / 2).
+    Returns (0.0, []) on empty collection or error.
+    """
+    collection_map = {
+        "strategic":   strategic_collection,
+        "operational": operational_collection,
+        "analytical":  analytical_collection,
+    }
+    collection = collection_map.get(layer)
+    if not collection:
+        return (0.0, [])
+    try:
+        count = collection.count()
+        if count == 0:
+            return (0.0, [])
+        embedding = embedding_model.encode(content).tolist()
+        results = collection.query(
+            query_embeddings=[embedding],
+            n_results=min(n, count),
+            include=["documents", "distances"]
+        )
+        distances = results.get("distances", [[]])[0]
+        documents = results.get("documents", [[]])[0]
+        if not distances:
+            return (0.0, documents)
+        similarities = [
+            max(0.0, 1.0 - (d * d) / 2.0) for d in distances
+        ]
+        return (max(similarities), documents)
+    except Exception:
+        return (0.0, [])
 
 
 # ============================================================
