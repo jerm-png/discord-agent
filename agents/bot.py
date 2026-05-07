@@ -1749,9 +1749,67 @@ async def execute_goal(
                                 "Synthesize the above into a concise analysis."
                             )}]
                         )
+                        analyze_output = r.content[0].text.strip()
+
+                        # ── Analyze Step Critique Loop ────────────────────────
+                        # Only runs when GOAL_GATE_MODE != "minimal" — preserves
+                        # lightweight intent of minimal mode. Uses
+                        # call_background_model() (Haiku) not Sonnet.
+                        # One retry max. Never blocks execution.
+
+                        if GOAL_GATE_MODE != "minimal":
+                            critique_prompt = (
+                                "Review this analysis for gaps, unsupported "
+                                "claims, or missed angles. "
+                                "Be specific. "
+                                "If solid, respond with just: PASS\n"
+                                "If not, list specific improvements needed "
+                                "in 2-3 sentences.\n\n"
+                                f"Analysis:\n{analyze_output}"
+                            )
+                            critique = await call_background_model(
+                                critique_prompt
+                            )
+
+                            if critique.strip().upper().startswith("PASS"):
+                                final_analyze_output = analyze_output
+                            else:
+                                retry_messages = [
+                                    {
+                                        "role": "user",
+                                        "content": (
+                                            f"Previous analysis attempt:\n"
+                                            f"{analyze_output}\n\n"
+                                            f"Critique:\n{critique}\n\n"
+                                            "Revise the analysis addressing "
+                                            "the critique."
+                                        )
+                                    }
+                                ]
+                                retry_r = client.messages.create(
+                                    model=MAIN_MODEL,
+                                    max_tokens=2048,
+                                    messages=retry_messages
+                                )
+                                final_analyze_output = (
+                                    retry_r.content[0].text.strip()
+                                )
+                                goal_preview = (
+                                    goal[:30] if len(goal) >= 30 else goal
+                                )
+                                await send_to_channel(
+                                    guild, LOG_CHANNEL,
+                                    f"🔍 Analyze critique fired | "
+                                    f"Step {step_num}/{total} | "
+                                    f"Revised | Goal: {goal_preview}..."
+                                )
+                        else:
+                            final_analyze_output = analyze_output
+                        # ── End Analyze Step Critique Loop ───────────────────
+
                         execution_context[user_id].append({
                             "step": step_num, "type": "analyze",
-                            "content": r.content[0].text.strip()
+                            "content": final_analyze_output
                         })
 
                     elif step_type == "draft":
