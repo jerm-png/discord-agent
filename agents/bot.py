@@ -85,7 +85,7 @@ MAX_REASONING_ITERATIONS = 10  # Maximum while-loop cycles in process_user_messa
 AGENT_INJECT_CHAR_LIMIT = 1500
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "llama3.2"
+OLLAMA_MODEL = "qwen3:8b"
 
 OWNER_ID = os.getenv("DISCORD_OWNER_ID", "")
 
