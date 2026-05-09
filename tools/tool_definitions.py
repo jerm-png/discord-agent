@@ -625,6 +625,8 @@ def handle_search_codebase(inputs):
             return f"Search failed: {stderr[:200]}"
         if not output:
             return "No results found for that query."
+        if len(output) > 3000:
+            output = output[:3000] + "\n[Results truncated at 3000 chars to reduce token cost. Use a more specific query to narrow results.]"
         return output
     except subprocess.TimeoutExpired:
         return "Search timed out after 15 seconds."

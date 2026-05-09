@@ -252,7 +252,7 @@ CHANNEL_PURPOSE = {
 }
 
 # Maximum tool calls per response to prevent runaway loops
-MAX_TOOL_CALLS = 20
+MAX_TOOL_CALLS = 10
 
 conversation_history = {}
 attached_files: defaultdict = defaultdict(list)
