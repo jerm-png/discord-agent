@@ -418,7 +418,9 @@ HELP_TEXT = """**PerMyLastBot — Commands**
 
 `!pin <id>` — Pin a memory by ID so it is never auto-archived or consolidated.
 
-`!unpin <id>` — Remove pin from a memory."""
+`!unpin <id>` — Remove pin from a memory.
+
+`!save-verbatim [layer] <content>` — Write content directly to memory, bypassing AI extraction. Layer is `strategic` (default), `operational`, or `analytical`. Replies with the assigned memory ID."""
 
 
 # ============================================================
@@ -3651,6 +3653,48 @@ async def on_message(message):
             await message.channel.send(f"Memory {_unpin_id} unpinned.")
         else:
             await message.channel.send(f"Memory {_unpin_id} not found.")
+        return
+
+    # !save-verbatim [layer] <content>: write directly to memory, bypassing AI extraction
+    if is_prefix and user_message.lower().startswith("save-verbatim"):
+        _sv_body = user_message[len("save-verbatim"):].strip()
+        _sv_valid_layers = ("strategic", "operational", "analytical")
+        _sv_parts = _sv_body.split(None, 1)
+        if _sv_parts and _sv_parts[0].lower() in _sv_valid_layers:
+            _sv_layer = _sv_parts[0].lower()
+            _sv_content = _sv_parts[1].strip() if len(_sv_parts) > 1 else ""
+        else:
+            _sv_layer = "strategic"
+            _sv_content = _sv_body
+        if not _sv_content:
+            await message.channel.send("Usage: `!save-verbatim [strategic|operational|analytical] <content>`")
+            return
+        if _sv_layer == "strategic":
+            _sv_id = save_strategic_memory(
+                content=_sv_content,
+                category="manual",
+                source="!save-verbatim",
+                channel_name=channel_name,
+                project_tag=project_tag,
+            )
+        elif _sv_layer == "operational":
+            _sv_id = save_operational_memory(
+                content=_sv_content,
+                project_name="manual",
+                channel_name=channel_name,
+                project_tag=project_tag,
+            )
+        else:
+            _sv_id = save_analytical_memory(
+                pattern=_sv_content,
+                pattern_type="manual",
+                channel_name=channel_name,
+                project_tag=project_tag,
+            )
+        if _sv_id:
+            await message.channel.send(f"Saved to {_sv_layer} memory (ID: {_sv_id}).")
+        else:
+            await message.channel.send(f"Saved to {_sv_layer} memory.")
         return
 
     # !consolidate: manually trigger memory consolidation for this channel scope
