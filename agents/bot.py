@@ -3311,7 +3311,23 @@ async def on_message(message):
         gate_type = gate["type"]
         if is_prefix:
             lm = user_message.lower()
+
+            def _capture_gate_decision(action: str, changes: str = ""):
+                _pg = pending_goals.get(uid, {})
+                _goal_desc = _pg.get("goal", "unknown goal")
+                _step = gate.get("step_num", gate.get("step_index", 0) + 1)
+                _pt = _pg.get("project_tag") or project_tag
+                save_experience(
+                    request_summary=f"Gate decision on: {_goal_desc[:100]}",
+                    approach_used=f"!{action} at step {_step}" + (f" — changes: {changes[:80]}" if changes else ""),
+                    outcome="in_progress",
+                    lesson=f"User chose '!{action}' at execution gate (step {_step}).",
+                    task_completed=False,
+                    project_tag=_pt
+                )
+
             if lm == "continue":
+                _capture_gate_decision("continue")
                 asyncio.create_task(
                     resume_goal_from_gate(
                         uid, message.author.display_name, "continue"
@@ -3321,6 +3337,7 @@ async def on_message(message):
             if lm.startswith("adjust "):
                 changes = user_message[7:].strip()
                 if changes:
+                    _capture_gate_decision("adjust", changes)
                     asyncio.create_task(
                         resume_goal_from_gate(
                             uid, message.author.display_name, "adjust", changes
@@ -3328,6 +3345,7 @@ async def on_message(message):
                     )
                 return
             if lm == "skip" and gate_type == "step_failure":
+                _capture_gate_decision("skip")
                 asyncio.create_task(
                     resume_goal_from_gate(
                         uid, message.author.display_name, "skip"
@@ -3335,6 +3353,7 @@ async def on_message(message):
                 )
                 return
             if lm == "retry" and gate_type == "step_failure":
+                _capture_gate_decision("retry")
                 asyncio.create_task(
                     resume_goal_from_gate(
                         uid, message.author.display_name, "retry"
@@ -3372,12 +3391,37 @@ async def on_message(message):
                     pg["status"] = "executing"
                     pg["current_step"] = 0
                     execution_context[uid] = []
+                    # Decision-as-memory capture
+                    _goal_desc = pg.get("goal", "unknown goal")
+                    _step_count = len(pg.get("steps", []))
+                    _pt = pg.get("project_tag") or project_tag
+                    save_experience(
+                        request_summary=f"Goal approved: {_goal_desc[:120]}",
+                        approach_used=f"!approve — {_step_count}-step plan queued for execution",
+                        outcome="pending",
+                        lesson="User approved goal execution. Outcome to be captured on completion.",
+                        task_completed=False,
+                        project_tag=_pt
+                    )
                     await message.channel.send("✅ Executing plan...")
                     asyncio.create_task(
                         execute_goal(uid, message.author.display_name)
                     )
                 return
             if lm == "cancel":
+                # Decision-as-memory capture
+                _goal_desc = pg.get("goal", "unknown goal")
+                _steps_done = pg.get("current_step", 0)
+                _total_steps = len(pg.get("steps", []))
+                _pt = pg.get("project_tag") or project_tag
+                save_experience(
+                    request_summary=f"Goal cancelled: {_goal_desc[:120]}",
+                    approach_used=f"!cancel at step {_steps_done}/{_total_steps}",
+                    outcome="cancelled",
+                    lesson=f"Goal was cancelled after {_steps_done} of {_total_steps} steps.",
+                    task_completed=False,
+                    project_tag=_pt
+                )
                 pending_goals.pop(uid, None)
                 execution_context.pop(uid, None)
                 await message.channel.send("❌ Goal cancelled.")
