@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import contextlib
 import discord
 import io
 import os
@@ -2505,7 +2506,12 @@ async def process_user_message(
             memory_mode
         )
 
-    async with channel.typing():
+    async with contextlib.AsyncExitStack() as _typing_stack:
+        try:
+            await _typing_stack.enter_async_context(channel.typing())
+        except discord.errors.HTTPException as _e:
+            if _e.status != 429:
+                raise
         try:
             tool_call_count = 0
             final_response_text = ""
