@@ -250,7 +250,7 @@ CHANNEL_PURPOSE = {
 }
 
 # Maximum tool calls per response to prevent runaway loops
-MAX_TOOL_CALLS = 5
+MAX_TOOL_CALLS = 20
 
 conversation_history = {}
 attached_files: defaultdict = defaultdict(list)
@@ -1708,10 +1708,10 @@ async def execute_goal(
                 try:
                     if step_type == "web_search":
                         search_count = pg.get("web_search_count", 0)
-                        if search_count >= 5:
+                        if search_count >= 20:
                             execution_context[user_id].append({
                                 "step": step_num, "type": step_type,
-                                "content": "[Skipped — web search limit of 5 reached]"
+                                "content": "[Skipped — web search limit of 20 reached]"
                             })
                             continue
 
