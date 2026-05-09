@@ -1054,6 +1054,41 @@ async def run_proactive_flag_surfacing(guild):
         await asyncio.sleep(86400)  # 24 hours
 
 
+async def run_scheduled_consolidation(guild):
+    """
+    Scheduled background task. Fires once on startup after a 90-second
+    delay, then repeats every 72 hours. Calls consolidate_all_layers()
+    with trigger="scheduled". Posts a one-line summary to #chief-of-staff
+    if any merges occurred. Skips silently if consolidation returns zeros
+    or channel is unavailable.
+    """
+    await asyncio.sleep(90)  # stagger startup relative to flag surfacing (60s)
+    while True:
+        try:
+            totals = await consolidate_all_layers(
+                guild, channel_name=None, trigger="scheduled"
+            )
+            if totals and totals.get("merged", 0) > 0:
+                cos_channel = discord.utils.get(
+                    guild.channels, name="chief-of-staff"
+                )
+                if cos_channel:
+                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+                    skipped_str = (
+                        f", {totals['skipped']} cluster(s) skipped"
+                        if totals.get("skipped") else ""
+                    )
+                    await cos_channel.send(
+                        f"🧠 Scheduled consolidation [{timestamp}] — "
+                        f"{totals['merged']} memories merged, "
+                        f"{totals['archived']} archived"
+                        + skipped_str
+                    )
+        except Exception as e:
+            print(f"[ScheduledConsolidation] Error: {e}")
+        await asyncio.sleep(72 * 3600)  # 72 hours
+
+
 async def extract_and_store_memories(
     user_message, bot_reply, guild, task_completed,
     project_tag=None, channel_name="unknown", memory_mode="global",
@@ -3083,6 +3118,8 @@ async def on_ready():
             "PerMyLastBot is online — "
             "memory system and tools active."
         )
+        asyncio.create_task(run_proactive_flag_surfacing(guild))
+        asyncio.create_task(run_scheduled_consolidation(guild))
 
 
 @bot.event
