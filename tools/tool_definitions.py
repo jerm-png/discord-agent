@@ -22,7 +22,6 @@ from memory.memory_manager import (
 )
 
 _escalation_queue: list = []
-_web_fetch_count: dict = {}  # keyed by channel_name, reset each message
 
 
 def drain_escalation_queue() -> list:
@@ -30,11 +29,6 @@ def drain_escalation_queue() -> list:
     items = list(_escalation_queue)
     _escalation_queue.clear()
     return items
-
-
-def reset_web_fetch_count(channel_name: str) -> None:
-    """Reset the per-response web fetch counter for a channel."""
-    _web_fetch_count.pop(channel_name, None)
 
 
 # ============================================================
@@ -685,14 +679,6 @@ def execute_tool(tool_name, tool_inputs, channel_name=None):
         if tool_name == "web_search":
             return handle_web_search(tool_inputs)
         if tool_name == "web_fetch":
-            count = _web_fetch_count.get(channel_name, 0)
-            if count >= 3:
-                return (
-                    "Web fetch limit reached for this response "
-                    "(3 fetches max). Synthesize from content "
-                    "already gathered."
-                )
-            _web_fetch_count[channel_name] = count + 1
             return handle_web_fetch(tool_inputs)
         if tool_name == "search_codebase":
             return handle_search_codebase(tool_inputs)

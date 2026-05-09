@@ -65,7 +65,6 @@ from tools.tool_definitions import (
     TOOL_DEFINITIONS,
     execute_tool,
     drain_escalation_queue,
-    reset_web_fetch_count,
 )
 
 from voice_input import transcribe_attachment
@@ -2372,7 +2371,6 @@ async def process_user_message(
     """
     global stale_warned_this_session
     effective_channel_name = channel_name or channel.name
-    reset_web_fetch_count(effective_channel_name)
     _hist_key = (user_id, context_id)
     if _hist_key not in conversation_history:
         conversation_history[_hist_key] = []
