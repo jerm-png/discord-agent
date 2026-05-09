@@ -4,6 +4,7 @@ import subprocess
 import sys
 from datetime import datetime
 from ddgs import DDGS
+import requests
 
 # Add project root to path
 project_root = os.path.dirname(os.path.dirname(
@@ -21,6 +22,7 @@ from memory.memory_manager import (
 )
 
 _escalation_queue: list = []
+_web_fetch_count: dict = {}  # keyed by channel_name, reset each message
 
 
 def drain_escalation_queue() -> list:
@@ -28,6 +30,11 @@ def drain_escalation_queue() -> list:
     items = list(_escalation_queue)
     _escalation_queue.clear()
     return items
+
+
+def reset_web_fetch_count(channel_name: str) -> None:
+    """Reset the per-response web fetch counter for a channel."""
+    _web_fetch_count.pop(channel_name, None)
 
 
 # ============================================================
@@ -236,6 +243,39 @@ TOOL_DEFINITIONS = [
                 }
             },
             "required": ["query"]
+        }
+    },
+    {
+        "name": "web_fetch",
+        "description": (
+            "Fetch and read the full content of a specific URL. "
+            "Use this after web_search returns promising URLs to read "
+            "complete content such as GitHub READMEs, HuggingFace model "
+            "cards, documentation, blog posts, and research papers. "
+            "Returns plain text stripped of HTML. Always use web_search "
+            "first to find URLs, then web_fetch to read them fully. "
+            "In health-tracking channel, prefer PubMed, NIH, and clinical "
+            "sources over general web content."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": (
+                        "The full URL to fetch including https://"
+                    )
+                },
+                "max_chars": {
+                    "type": "integer",
+                    "description": (
+                        "Maximum characters to return. "
+                        "Default 5000, max 10000."
+                    ),
+                    "default": 5000
+                }
+            },
+            "required": ["url"]
         }
     },
     {
@@ -495,6 +535,71 @@ def handle_web_search(inputs):
         return "Web search unavailable — answering from training knowledge."
 
 
+def handle_web_fetch(inputs):
+    """
+    Fetches a URL and returns its plain-text content with HTML stripped.
+    Blocks local network addresses. Capped at 10000 chars.
+    """
+    url = inputs.get("url", "").strip()
+    max_chars = min(inputs.get("max_chars", 5000), 10000)
+
+    if not url.startswith("http"):
+        return "Error: URL must start with http:// or https://"
+
+    blocked = ["localhost", "127.0.0.1", "192.168.", "10.0.", "172.16."]
+    if any(b in url for b in blocked):
+        return "Error: Local network URLs not allowed"
+
+    try:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (compatible; PerMyLastBot/1.0; +research)"
+            )
+        }
+        response = requests.get(
+            url,
+            headers=headers,
+            timeout=15,
+            allow_redirects=True
+        )
+        response.raise_for_status()
+
+        content_type = response.headers.get("content-type", "").lower()
+
+        if "text/html" in content_type:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(response.text, "html.parser")
+            for tag in soup(["script", "style", "nav", "footer",
+                             "header", "aside"]):
+                tag.decompose()
+            text = soup.get_text(separator="\n", strip=True)
+            lines = [l for l in text.splitlines() if l.strip()]
+            text = "\n".join(lines)
+        else:
+            text = response.text
+
+        if len(text) > max_chars:
+            text = (
+                text[:max_chars]
+                + f"\n\n[Truncated at {max_chars} chars"
+                f" — full page is {len(text)} chars]"
+            )
+
+        if not text.strip():
+            return "Page fetched but no readable content found."
+
+        return f"[Fetched: {url}]\n\n{text}"
+
+    except requests.exceptions.Timeout:
+        return f"Timeout fetching {url} after 15s."
+    except requests.exceptions.ConnectionError:
+        return f"Could not connect to {url}."
+    except requests.exceptions.HTTPError as e:
+        return f"HTTP error {e.response.status_code} fetching {url}."
+    except Exception as e:
+        return f"Error fetching {url}: {str(e)}"
+
+
 def handle_search_codebase(inputs):
     """
     Runs a semantic codebase search via CocoIndex-Code CLI and returns
@@ -579,6 +684,16 @@ def execute_tool(tool_name, tool_inputs, channel_name=None):
             return handle_flag_for_review(tool_inputs, channel_name=channel_name)
         if tool_name == "web_search":
             return handle_web_search(tool_inputs)
+        if tool_name == "web_fetch":
+            count = _web_fetch_count.get(channel_name, 0)
+            if count >= 3:
+                return (
+                    "Web fetch limit reached for this response "
+                    "(3 fetches max). Synthesize from content "
+                    "already gathered."
+                )
+            _web_fetch_count[channel_name] = count + 1
+            return handle_web_fetch(tool_inputs)
         if tool_name == "search_codebase":
             return handle_search_codebase(tool_inputs)
         if tool_name == "calculate_confidence":

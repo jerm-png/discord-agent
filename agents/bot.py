@@ -65,6 +65,7 @@ from tools.tool_definitions import (
     TOOL_DEFINITIONS,
     execute_tool,
     drain_escalation_queue,
+    reset_web_fetch_count,
 )
 
 from voice_input import transcribe_attachment
@@ -168,7 +169,7 @@ CHANNEL_TOOL_MODE = {
     "health-tracking":        "full",
 }
 
-SEARCH_ONLY_TOOL_NAMES = {"web_search", "query_memory", "search_codebase"}
+SEARCH_ONLY_TOOL_NAMES = {"web_search", "web_fetch", "query_memory", "search_codebase"}
 
 # Channels that receive full tools but must NOT get search_codebase —
 # health-tracking is isolated/non-technical; chief-of-staff and
@@ -817,6 +818,13 @@ async def process_tool_calls(response, guild, tool_call_count, channel_name=None
             # Status before execution — dedicated messages for specific tools
             if tool_name == "web_search":
                 await post_status(guild, "🔍 Searching the web...", memory_mode)
+            elif tool_name == "web_fetch":
+                _fetch_domain = (
+                    tool_inputs.get("url", "").split("/")[2]
+                    if "//" in tool_inputs.get("url", "")
+                    else tool_inputs.get("url", "")
+                )
+                await post_status(guild, f"🌐 Reading {_fetch_domain}...", memory_mode)
             elif tool_name == "search_codebase":
                 await post_status(guild, "🔎 Searching codebase...", memory_mode)
             else:
@@ -836,6 +844,29 @@ async def process_tool_calls(response, guild, tool_call_count, channel_name=None
             })
 
             tool_call_count += 1
+
+            if tool_name == "web_fetch":
+                _fetch_url = tool_inputs.get("url", "")
+                _fetch_domain = (
+                    _fetch_url.split("/")[2]
+                    if "//" in _fetch_url
+                    else _fetch_url
+                )
+                _fetch_chars = len(str(result))
+                await send_to_channel(
+                    guild, LOG_CHANNEL,
+                    f"Web fetch | URL: {_fetch_url[:60]} | "
+                    f"Content: {_fetch_chars} chars | "
+                    f"Channel: #{channel_name}"
+                )
+                _fetch_tokens = _fetch_chars // 4
+                if _fetch_tokens > 2000:
+                    await send_to_channel(
+                        guild, LOG_CHANNEL,
+                        f"Web fetch large | ~{_fetch_tokens} tokens | "
+                        f"URL: {_fetch_domain} | "
+                        f"Consider reducing max_chars"
+                    )
 
             if tool_name == "search_codebase":
                 await send_to_channel(
@@ -2341,6 +2372,7 @@ async def process_user_message(
     """
     global stale_warned_this_session
     effective_channel_name = channel_name or channel.name
+    reset_web_fetch_count(effective_channel_name)
     _hist_key = (user_id, context_id)
     if _hist_key not in conversation_history:
         conversation_history[_hist_key] = []
