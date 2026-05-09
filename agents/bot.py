@@ -167,7 +167,16 @@ CHANNEL_TOOL_MODE = {
     "health-tracking":        "full",
 }
 
-SEARCH_ONLY_TOOL_NAMES = {"web_search", "query_memory"}
+SEARCH_ONLY_TOOL_NAMES = {"web_search", "query_memory", "search_codebase"}
+
+# Channels that receive full tools but must NOT get search_codebase —
+# health-tracking is isolated/non-technical; chief-of-staff and
+# director-workspace are strategic/leadership channels with no code context.
+CODEBASE_SEARCH_EXCLUDED_CHANNELS = {
+    "health-tracking",
+    "chief-of-staff",
+    "director-workspace",
+}
 
 # ── CONSOLIDATION THRESHOLDS ──────────────────────────────────
 # Auto-consolidation triggers when a layer's non-health count
@@ -804,9 +813,11 @@ async def process_tool_calls(response, guild, tool_call_count, channel_name=None
                 f"Inputs: {json.dumps(tool_inputs)[:200]}"
             )
 
-            # Status before execution — web search gets a dedicated message
+            # Status before execution — dedicated messages for specific tools
             if tool_name == "web_search":
                 await post_status(guild, "🔍 Searching the web...", memory_mode)
+            elif tool_name == "search_codebase":
+                await post_status(guild, "🔎 Searching codebase...", memory_mode)
             else:
                 await post_status(guild, f"🔧 Using tool: {tool_name}", memory_mode)
 
@@ -824,6 +835,15 @@ async def process_tool_calls(response, guild, tool_call_count, channel_name=None
             })
 
             tool_call_count += 1
+
+            if tool_name == "search_codebase":
+                await send_to_channel(
+                    guild, LOG_CHANNEL,
+                    f"Codebase search | "
+                    f"Query: {tool_inputs.get('query', '')[:40]} | "
+                    f"Results: {len(str(result))} chars | "
+                    f"Channel: #{channel_name}"
+                )
 
             # Fire-and-forget reasoning trace — run in executor to avoid blocking
             _trace_loop = asyncio.get_running_loop()
@@ -2491,7 +2511,13 @@ async def process_user_message(
             final_response_text = ""
             tool_mode = CHANNEL_TOOL_MODE.get(effective_channel_name, "none")
             if tool_mode == "full":
-                active_tools = TOOL_DEFINITIONS
+                if effective_channel_name in CODEBASE_SEARCH_EXCLUDED_CHANNELS:
+                    active_tools = [
+                        t for t in TOOL_DEFINITIONS
+                        if t["name"] != "search_codebase"
+                    ]
+                else:
+                    active_tools = TOOL_DEFINITIONS
             elif tool_mode == "search_only":
                 active_tools = [
                     t for t in TOOL_DEFINITIONS

@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import sys
 from datetime import datetime
 from ddgs import DDGS
@@ -238,6 +239,39 @@ TOOL_DEFINITIONS = [
         }
     },
     {
+        "name": "search_codebase",
+        "description": (
+            "Search the PerMyLastBot codebase for relevant functions, "
+            "constants, or code sections by semantic query. Use this when "
+            "you need to see how something is currently implemented before "
+            "suggesting changes or additions. Returns exact code sections "
+            "with file paths and line numbers."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "What to search for — function name, concept, or "
+                        "description of what you need to see. Examples: "
+                        "'memory isolation health-tracking', "
+                        "'execute_goal analyze step', "
+                        "'channel routing logic'"
+                    )
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        "Number of results to return. Default 5, max 10."
+                    ),
+                    "default": 5
+                }
+            },
+            "required": ["query"]
+        }
+    },
+    {
         "name": "calculate_confidence",
         "description": (
             "Update the confidence score of an existing memory "
@@ -461,6 +495,39 @@ def handle_web_search(inputs):
         return "Web search unavailable — answering from training knowledge."
 
 
+def handle_search_codebase(inputs):
+    """
+    Runs a semantic codebase search via CocoIndex-Code CLI and returns
+    matching code sections with file paths and line numbers.
+    """
+    query = inputs.get("query", "")
+    limit = min(inputs.get("limit", 5), 10)
+    if not query.strip():
+        return "Error: query cannot be empty"
+    try:
+        result = subprocess.run(
+            [
+                r"c:\users\jerm\.local\bin\ccc.exe",
+                "search", query,
+                "--limit", str(limit)
+            ],
+            capture_output=True,
+            text=True,
+            cwd=r"C:\Projects\discord-agent",
+            timeout=15
+        )
+        if result.returncode != 0:
+            return f"Search failed: {result.stderr[:200]}"
+        output = result.stdout.strip()
+        if not output:
+            return "No results found for that query."
+        return output
+    except subprocess.TimeoutExpired:
+        return "Search timed out after 15 seconds."
+    except Exception as e:
+        return f"Search error: {str(e)}"
+
+
 def handle_calculate_confidence(inputs):
     """
     Updates the confidence score of an existing memory
@@ -507,6 +574,8 @@ def execute_tool(tool_name, tool_inputs, channel_name=None):
             return handle_flag_for_review(tool_inputs, channel_name=channel_name)
         if tool_name == "web_search":
             return handle_web_search(tool_inputs)
+        if tool_name == "search_codebase":
+            return handle_search_codebase(tool_inputs)
         if tool_name == "calculate_confidence":
             return handle_calculate_confidence(tool_inputs)
         return f"Unknown tool: {tool_name}"
