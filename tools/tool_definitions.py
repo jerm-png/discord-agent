@@ -507,13 +507,14 @@ def handle_search_codebase(inputs):
     try:
         result = subprocess.run(
             [
-                r"c:\users\jerm\.local\bin\ccc.exe",
+                r"C:\Users\Jerm\.local\bin\ccc.exe",
                 "search", query,
                 "--limit", str(limit)
             ],
             capture_output=True,
             text=True,
             cwd=r"C:\Projects\discord-agent",
+            env=os.environ.copy(),
             timeout=15
         )
         if result.returncode != 0:
