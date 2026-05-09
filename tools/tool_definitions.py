@@ -511,15 +511,16 @@ def handle_search_codebase(inputs):
                 "search", query,
                 "--limit", str(limit)
             ],
-            capture_output=True,
-            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             cwd=r"C:\Projects\discord-agent",
             env=os.environ.copy(),
             timeout=15
         )
+        output = result.stdout.decode('utf-8', errors='replace').strip()
+        stderr = result.stderr.decode('utf-8', errors='replace').strip()
         if result.returncode != 0:
-            return f"Search failed: {result.stderr[:200]}"
-        output = result.stdout.strip()
+            return f"Search failed: {stderr[:200]}"
         if not output:
             return "No results found for that query."
         return output
