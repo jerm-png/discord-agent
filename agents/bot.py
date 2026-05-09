@@ -53,6 +53,7 @@ from memory.memory_manager import (
     cleanup_old_conversation_log,
     backfill_conversation_log,
     log_reasoning_trace,
+    get_reasoning_trace,
     check_operational_duplicate,
     get_unresolved_high_priority_flags,
     drain_rubric_rejection_log,
@@ -409,7 +410,9 @@ HELP_TEXT = """**PerMyLastBot — Commands**
 
 `!agents` — List all available specialist agents with their slugs and descriptions.
 
-`!search [query]` — Full-text search of your past conversations. Scans the permanent archive and summarises matching exchanges. Respects channel isolation — `#health-tracking` searches only health conversations."""
+`!search [query]` — Full-text search of your past conversations. Scans the permanent archive and summarises matching exchanges. Respects channel isolation — `#health-tracking` searches only health conversations.
+
+`!trace [N]` — Show last N reasoning steps (tool calls, inputs, results) for this channel. Default 10, max 25."""
 
 
 # ============================================================
@@ -3565,6 +3568,53 @@ async def on_message(message):
             message.channel,
             f"{_summary}\n\n---\n*Found {len(_hits)} relevant exchange(s).*"
         )
+        return
+
+    # !trace [N]: display recent reasoning trace entries for this channel
+    if is_prefix and (
+        user_message.lower() == "trace"
+        or user_message.lower().startswith("trace ")
+    ):
+        _trace_arg = user_message[6:].strip() if " " in user_message else ""
+        _trace_limit = 10
+        if _trace_arg:
+            try:
+                _trace_limit = min(int(_trace_arg), 25)
+            except ValueError:
+                _trace_limit = 10
+        _traces = get_reasoning_trace(uid, channel_name, _trace_limit)
+        if not _traces:
+            await message.channel.send(
+                "No reasoning trace found for this channel in the current session."
+            )
+            return
+        _trace_lines = []
+        for _t in _traces:
+            _ts = _t["timestamp"][:19].replace("T", " ") if _t["timestamp"] else "?"
+            _summary = _t["result_summary"] or ""
+            if len(_summary) > 120:
+                _summary = _summary[:120] + "…"
+            _trace_lines.append(
+                f"[{_ts} UTC] iter={_t['iteration']} tool={_t['tool_name']}\n"
+                f"→ {_summary}"
+            )
+        # Split into ≤1900-char chunks so each fits in one code block message
+        _chunks = []
+        _cur: list = []
+        _cur_len = 0
+        for _entry in _trace_lines:
+            _entry_len = len(_entry) + 2  # +2 for the "\n\n" separator
+            if _cur and _cur_len + _entry_len > 1900:
+                _chunks.append("\n\n".join(_cur))
+                _cur = [_entry]
+                _cur_len = len(_entry)
+            else:
+                _cur.append(_entry)
+                _cur_len += _entry_len
+        if _cur:
+            _chunks.append("\n\n".join(_cur))
+        for _chunk in _chunks:
+            await message.channel.send(f"```\n{_chunk}\n```")
         return
 
     # !consolidate: manually trigger memory consolidation for this channel scope

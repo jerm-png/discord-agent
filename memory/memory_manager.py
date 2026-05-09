@@ -296,6 +296,37 @@ def log_reasoning_trace(
         conn.close()
 
 
+def get_reasoning_trace(
+    user_id: str, channel_name: str, limit: int = 10
+) -> list[dict]:
+    """Returns the most recent reasoning trace entries for a user/channel pair."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cursor = conn.execute(
+            """
+            SELECT timestamp, tool_name, tool_inputs, result_summary, iteration
+            FROM reasoning_trace
+            WHERE user_id = ? AND channel_name = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+            """,
+            (user_id, channel_name, limit)
+        )
+        rows = cursor.fetchall()
+        return [
+            {
+                "timestamp": row[0],
+                "tool_name": row[1],
+                "tool_inputs": row[2],
+                "result_summary": row[3],
+                "iteration": row[4],
+            }
+            for row in rows
+        ]
+    finally:
+        conn.close()
+
+
 def drain_rubric_rejection_log() -> list:
     """
     Returns all pending rubric rejections and clears the queue.
