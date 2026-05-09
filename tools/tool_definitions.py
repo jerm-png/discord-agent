@@ -505,6 +505,9 @@ def handle_search_codebase(inputs):
     if not query.strip():
         return "Error: query cannot be empty"
     try:
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
         result = subprocess.run(
             [
                 r"C:\Users\Jerm\.local\bin\ccc.exe",
@@ -514,7 +517,7 @@ def handle_search_codebase(inputs):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=r"C:\Projects\discord-agent",
-            env=os.environ.copy(),
+            env=env,
             timeout=15
         )
         output = result.stdout.decode('utf-8', errors='replace').strip()
