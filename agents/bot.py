@@ -54,6 +54,8 @@ from memory.memory_manager import (
     backfill_conversation_log,
     log_reasoning_trace,
     get_reasoning_trace,
+    pin_memory,
+    unpin_memory,
     check_operational_duplicate,
     get_unresolved_high_priority_flags,
     drain_rubric_rejection_log,
@@ -412,7 +414,11 @@ HELP_TEXT = """**PerMyLastBot — Commands**
 
 `!search [query]` — Full-text search of your past conversations. Scans the permanent archive and summarises matching exchanges. Respects channel isolation — `#health-tracking` searches only health conversations.
 
-`!trace [N]` — Show last N reasoning steps (tool calls, inputs, results) for this channel. Default 10, max 25."""
+`!trace [N]` — Show last N reasoning steps (tool calls, inputs, results) for this channel. Default 10, max 25.
+
+`!pin <id>` — Pin a memory by ID so it is never auto-archived or consolidated.
+
+`!unpin <id>` — Remove pin from a memory."""
 
 
 # ============================================================
@@ -3615,6 +3621,36 @@ async def on_message(message):
             _chunks.append("\n\n".join(_cur))
         for _chunk in _chunks:
             await message.channel.send(f"```\n{_chunk}\n```")
+        return
+
+    # !pin <id>: pin an operational memory so it is never auto-archived or consolidated
+    if is_prefix and user_message.lower().startswith("pin "):
+        _pin_arg = user_message[4:].strip()
+        try:
+            _pin_id = int(_pin_arg)
+        except ValueError:
+            await message.channel.send("Usage: `!pin <memory_id>`")
+            return
+        if pin_memory(_pin_id):
+            await message.channel.send(
+                f"📌 Memory {_pin_id} pinned — it will not be archived or consolidated."
+            )
+        else:
+            await message.channel.send(f"Memory {_pin_id} not found.")
+        return
+
+    # !unpin <id>: remove pin from an operational memory
+    if is_prefix and user_message.lower().startswith("unpin "):
+        _unpin_arg = user_message[6:].strip()
+        try:
+            _unpin_id = int(_unpin_arg)
+        except ValueError:
+            await message.channel.send("Usage: `!unpin <memory_id>`")
+            return
+        if unpin_memory(_unpin_id):
+            await message.channel.send(f"Memory {_unpin_id} unpinned.")
+        else:
+            await message.channel.send(f"Memory {_unpin_id} not found.")
         return
 
     # !consolidate: manually trigger memory consolidation for this channel scope

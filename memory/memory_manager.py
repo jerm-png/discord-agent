@@ -103,7 +103,8 @@ def init_db():
             blockers TEXT,
             dependencies TEXT,
             channel_name TEXT NOT NULL DEFAULT 'global',
-            confidence REAL NOT NULL DEFAULT 0.7
+            confidence REAL NOT NULL DEFAULT 0.7,
+            pinned INTEGER DEFAULT 0
         )
     """)
 
@@ -201,6 +202,13 @@ def init_db():
         c.execute(
             "ALTER TABLE operational_memory ADD COLUMN"
             " confidence REAL NOT NULL DEFAULT 0.7"
+        )
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        c.execute(
+            "ALTER TABLE operational_memory ADD COLUMN pinned INTEGER DEFAULT 0"
         )
     except sqlite3.OperationalError:
         pass
@@ -323,6 +331,34 @@ def get_reasoning_trace(
             }
             for row in rows
         ]
+    finally:
+        conn.close()
+
+
+def pin_memory(memory_id: int) -> bool:
+    """Sets pinned=1 on the given operational_memory row. Returns True if a row was updated."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cursor = conn.execute(
+            "UPDATE operational_memory SET pinned = 1 WHERE id = ?",
+            (memory_id,)
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def unpin_memory(memory_id: int) -> bool:
+    """Sets pinned=0 on the given operational_memory row. Returns True if a row was updated."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cursor = conn.execute(
+            "UPDATE operational_memory SET pinned = 0 WHERE id = ?",
+            (memory_id,)
+        )
+        conn.commit()
+        return cursor.rowcount > 0
     finally:
         conn.close()
 
@@ -1091,6 +1127,7 @@ def auto_archive_stale_operational() -> int:
         SELECT id, content, last_updated, project_tag
         FROM operational_memory
         WHERE status = 'active'
+          AND (pinned IS NULL OR pinned = 0)
           AND (project_tag IS NULL OR project_tag != 'health-tracking')
           AND (
               content LIKE '%clarify%'
@@ -1789,6 +1826,10 @@ def get_consolidation_candidates(layer: str,
     status_clause = (
         "status = 'active'" if only_active else "status != 'active'"
     )
+    pinned_clause = (
+        "AND (pinned IS NULL OR pinned = 0)"
+        if layer == "operational" else ""
+    )
 
     conf_expr = "confidence"
 
@@ -1800,6 +1841,7 @@ def get_consolidation_candidates(layer: str,
             SELECT id, {content_col}, {conf_expr}, project_tag, created
             FROM {table}
             WHERE {status_clause}
+              {pinned_clause}
               AND project_tag = ?
               AND created < ?
         """, (channel_name, cutoff))
@@ -1809,6 +1851,7 @@ def get_consolidation_candidates(layer: str,
             SELECT id, {content_col}, {conf_expr}, project_tag, created
             FROM {table}
             WHERE {status_clause}
+              {pinned_clause}
               AND (project_tag IS NULL
                    OR project_tag NOT IN ({placeholders}))
               AND created < ?
