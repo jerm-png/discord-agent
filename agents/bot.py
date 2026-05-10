@@ -2479,7 +2479,7 @@ async def process_user_message(
 
     # ── FILE INJECTION ────────────────────────────────────────
     file_injection_chars = 0
-    all_user_files = list(attached_files.get(user_id, []))
+    all_user_files = list(attached_files.get((user_id, context_id), []))
     is_isolated_channel = effective_channel_name in MEMORY_ISOLATED_CHANNELS
 
     if all_user_files:
@@ -3248,7 +3248,7 @@ async def on_message(message):
                 continue
 
             file_data["channel_name"] = channel_name
-            attached_files[uid].append(file_data)
+            attached_files[(uid, context_id)].append(file_data)
 
             ct = file_data["content_type"]
             if ct == "document":
@@ -3803,7 +3803,7 @@ async def on_message(message):
         old_history = conversation_history.get(_clear_key, [])
         _, stripped = strip_orphaned_tool_results(old_history)
         conversation_history[_clear_key] = []
-        cleared_files = len(attached_files.pop(uid, []))
+        cleared_files = len(attached_files.pop((uid, context_id), []))
         cleared_pin = thread_agent_pins.pop(context_id, None)
         note_parts = []
         if stripped:
