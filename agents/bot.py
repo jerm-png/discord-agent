@@ -2348,12 +2348,24 @@ OPEN REVIEW FLAGS:
 
     in_tokens = response.usage.input_tokens
     out_tokens = response.usage.output_tokens
-    est_cost = (in_tokens / 1_000_000 * 3.00) + (out_tokens / 1_000_000 * 15.00)
+    cache_write_tokens = getattr(response.usage, 'cache_creation_input_tokens', 0)
+    cache_read_tokens = getattr(response.usage, 'cache_read_input_tokens', 0)
+    est_cost = (
+        (in_tokens / 1_000_000 * 3.00) +
+        (out_tokens / 1_000_000 * 15.00) +
+        (cache_write_tokens / 1_000_000 * 3.75) +
+        (cache_read_tokens / 1_000_000 * 0.30)
+    )
+    cache_note = (
+        f" | cache_write: {cache_write_tokens:,} | cache_read: {cache_read_tokens:,}"
+        if cache_write_tokens or cache_read_tokens else ""
+    )
     await send_to_channel(
         guild, LOG_CHANNEL,
         f"Handoff generated | Channel: #{channel_name} | "
-        f"Tokens — in: {in_tokens:,} | out: {out_tokens:,} | "
-        f"est. cost: ${est_cost:.4f}"
+        f"Tokens — in: {in_tokens:,} | out: {out_tokens:,}"
+        + cache_note
+        + f" | est. cost: ${est_cost:.4f}"
     )
 
 
@@ -2761,6 +2773,10 @@ async def process_user_message(
                 effective_system = SYSTEM_PROMPT
 
             _reasoning_iterations = 0
+            total_in_tokens = 0
+            total_out_tokens = 0
+            total_cache_write_tokens = 0
+            total_cache_read_tokens = 0
             while True:
                 _reasoning_iterations += 1
                 if _reasoning_iterations > MAX_REASONING_ITERATIONS:
@@ -2830,6 +2846,15 @@ async def process_user_message(
                         "before sending another message."
                     )
                     return
+
+                total_in_tokens += response.usage.input_tokens
+                total_out_tokens += response.usage.output_tokens
+                total_cache_write_tokens += getattr(
+                    response.usage, 'cache_creation_input_tokens', 0
+                )
+                total_cache_read_tokens += getattr(
+                    response.usage, 'cache_read_input_tokens', 0
+                )
 
                 if response.stop_reason == "tool_use":
                     conversation_history[_hist_key].append({
@@ -2933,10 +2958,16 @@ async def process_user_message(
                     )
 
             stale_count = len(memories.get("stale_flags", []))
-            in_tokens = response.usage.input_tokens
-            out_tokens = response.usage.output_tokens
-            est_cost = (in_tokens / 1_000_000 * 3.00) + \
-                       (out_tokens / 1_000_000 * 15.00)
+            in_tokens = total_in_tokens
+            out_tokens = total_out_tokens
+            cache_write_tokens = total_cache_write_tokens
+            cache_read_tokens = total_cache_read_tokens
+            est_cost = (
+                (in_tokens / 1_000_000 * 3.00) +
+                (out_tokens / 1_000_000 * 15.00) +
+                (cache_write_tokens / 1_000_000 * 3.75) +
+                (cache_read_tokens / 1_000_000 * 0.30)
+            )
             _last_token_usage["input"] = in_tokens
             _last_token_usage["output"] = out_tokens
             await send_to_channel(
@@ -2953,12 +2984,16 @@ async def process_user_message(
                 f" | File injection: ~{file_injection_chars // 4:,} tokens"
                 if file_injection_chars else ""
             )
+            cache_note = (
+                f" | cache_write: {cache_write_tokens:,} | cache_read: {cache_read_tokens:,}"
+                if cache_write_tokens or cache_read_tokens else ""
+            )
             await send_to_channel(
                 guild,
                 LOG_CHANNEL,
-                f"Tokens — in: {in_tokens:,} | "
-                f"out: {out_tokens:,} | "
-                f"est. cost: ${est_cost:.4f}{file_token_note}"
+                f"Tokens — in: {in_tokens:,} | out: {out_tokens:,}"
+                + cache_note
+                + f" | est. cost: ${est_cost:.4f}{file_token_note}"
             )
 
             if active_agent_slug and active_agent_slug in AGENT_DEFINITIONS:
