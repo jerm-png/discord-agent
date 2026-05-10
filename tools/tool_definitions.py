@@ -558,31 +558,58 @@ def handle_web_fetch(inputs):
         )
         response.raise_for_status()
 
-        content_type = response.headers.get("content-type", "").lower()
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(response.text, "html.parser")
 
-        if "text/html" in content_type:
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(response.text, "html.parser")
-            for tag in soup(["script", "style", "nav", "footer",
-                             "header", "aside"]):
-                tag.decompose()
-            text = soup.get_text(separator="\n", strip=True)
-            lines = [l for l in text.splitlines() if l.strip()]
-            text = "\n".join(lines)
-        else:
-            text = response.text
+        # Remove noise elements
+        for tag in soup(["script", "style", "nav", "footer",
+                         "header", "aside", "form", "noscript"]):
+            tag.decompose()
 
-        if len(text) > max_chars:
-            text = (
-                text[:max_chars]
-                + f"\n\n[Truncated at {max_chars} chars"
-                f" — full page is {len(text)} chars]"
-            )
+        # Keep only content-bearing elements
+        content_tags = soup.find_all(
+            ["h1", "h2", "h3", "h4", "p", "li", "td", "th", "pre", "code"]
+        )
 
-        if not text.strip():
-            return "Page fetched but no readable content found."
+        # Build compressed text from content tags only
+        lines = []
+        for tag in content_tags:
+            text = tag.get_text(separator=" ", strip=True)
+            if len(text) > 30:  # skip trivially short fragments
+                lines.append(text)
 
-        return f"[Fetched: {url}]\n\n{text}"
+        compressed = "\n".join(lines)
+
+        # Relevance filter — if a query context is available in inputs,
+        # prioritise lines that contain query keywords
+        query_hint = inputs.get("query") or inputs.get("url", "")
+        if query_hint and len(compressed) > 4000:
+            keywords = [
+                w.lower() for w in query_hint.replace("/", " ")
+                .replace("-", " ").split()
+                if len(w) > 3
+            ]
+            if keywords:
+                scored = []
+                for line in lines:
+                    line_lower = line.lower()
+                    score = sum(1 for kw in keywords if kw in line_lower)
+                    scored.append((score, line))
+                # Keep all lines with any keyword match, then fill to cap
+                priority = [l for s, l in scored if s > 0]
+                remainder = [l for s, l in scored if s == 0]
+                compressed = "\n".join(priority + remainder)
+
+        # Hard cap at 4000 chars by default
+        char_limit = int(inputs.get("char_limit", 4000))
+        char_limit = min(char_limit, 10000)  # never exceed original max
+        if len(compressed) > char_limit:
+            compressed = compressed[:char_limit] + "\n[Content truncated]"
+
+        if not compressed.strip():
+            return "No readable content found at that URL."
+
+        return f"[{url}]\n{compressed}"
 
     except requests.exceptions.Timeout:
         return f"Timeout fetching {url} after 15s."
