@@ -19,6 +19,9 @@ from memory.memory_manager import (
     save_operational_memory,
     validate_memory,
     update_memory_confidence,
+    upsert_entity,
+    add_entity_fact,
+    get_entity_profile,
 )
 
 _escalation_queue: list = []
@@ -351,7 +354,75 @@ TOOL_DEFINITIONS = [
                 "reason"
             ]
         }
-    }
+    },
+    {
+        "name": "save_person_fact",
+        "description": (
+            "Save a fact about a specific person to their entity "
+            "profile in director-workspace. Use when the user shares "
+            "new information about a direct report or colleague — "
+            "performance updates, coaching outcomes, development "
+            "goals, behavioral patterns, feedback given or received, "
+            "role changes, or situation updates. "
+            "Set supersede_category=true when the new fact replaces "
+            "an outdated one in the same category (e.g. a performance "
+            "rating changed, a goal was updated, a situation resolved). "
+            "Categories to use: performance, coaching, development, "
+            "feedback, goals, situation, role, pattern, notes."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "person_name": {
+                    "type": "string",
+                    "description": "Full name or common name of the person"
+                },
+                "role": {
+                    "type": "string",
+                    "description": (
+                        "Their role or title if known — "
+                        "only needed first time"
+                    )
+                },
+                "category": {
+                    "type": "string",
+                    "description": (
+                        "Fact category: performance, coaching, "
+                        "development, feedback, goals, situation, "
+                        "role, pattern, or notes"
+                    )
+                },
+                "fact": {
+                    "type": "string",
+                    "description": (
+                        "The fact to record — be specific and "
+                        "include relevant dates or context. "
+                        "Write in third person: "
+                        "'Marcus missed his Q2 call quality target "
+                        "for the second consecutive quarter.'"
+                    )
+                },
+                "supersede_category": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, marks all previous active facts "
+                        "in this category as superseded by this one. "
+                        "Use when the new fact replaces old information "
+                        "rather than adding to it."
+                    )
+                },
+                "confidence": {
+                    "type": "number",
+                    "description": (
+                        "Confidence in this fact 0.0-1.0. "
+                        "Default 0.8. Use lower values for "
+                        "secondhand information or impressions."
+                    )
+                }
+            },
+            "required": ["person_name", "category", "fact"]
+        }
+    },
 ]
 
 
@@ -713,6 +784,47 @@ def execute_tool(tool_name, tool_inputs, channel_name=None):
             return handle_search_codebase(tool_inputs)
         if tool_name == "calculate_confidence":
             return handle_calculate_confidence(tool_inputs)
+        elif tool_name == "save_person_fact":
+            person_name = tool_inputs.get("person_name", "").strip()
+            role = tool_inputs.get("role")
+            category = tool_inputs.get("category", "notes").strip().lower()
+            fact = tool_inputs.get("fact", "").strip()
+            supersede = tool_inputs.get("supersede_category", False)
+            confidence = float(tool_inputs.get("confidence", 0.8))
+
+            if not person_name or not fact:
+                return "Error: person_name and fact are required."
+
+            valid_categories = {
+                "performance", "coaching", "development",
+                "feedback", "goals", "situation", "role",
+                "pattern", "notes"
+            }
+            if category not in valid_categories:
+                category = "notes"
+
+            try:
+                entity_id = upsert_entity(
+                    person_name, "person", role, None
+                )
+                fact_id = add_entity_fact(
+                    entity_id,
+                    category,
+                    fact,
+                    channel_name or "director-workspace",
+                    confidence,
+                    supersede,
+                )
+                supersede_note = (
+                    " Previous facts in this category marked superseded."
+                    if supersede else ""
+                )
+                return (
+                    f"Saved [{category}] fact for {person_name} "
+                    f"(fact_id: {fact_id}).{supersede_note}"
+                )
+            except Exception as e:
+                return f"Error saving person fact: {e}"
         return f"Unknown tool: {tool_name}"
     except Exception as e:
         return f"Tool '{tool_name}' encountered an error — continue without this information."

@@ -2879,13 +2879,30 @@ async def process_user_message(
             final_response_text = ""
             tool_mode = CHANNEL_TOOL_MODE.get(effective_channel_name, "none")
             if tool_mode == "full":
-                if effective_channel_name in CODEBASE_SEARCH_EXCLUDED_CHANNELS:
+                if effective_channel_name == "director-workspace":
+                    # director-workspace gets all tools including
+                    # save_person_fact but not search_codebase
                     active_tools = [
                         t for t in TOOL_DEFINITIONS
                         if t["name"] != "search_codebase"
                     ]
+                elif effective_channel_name in CODEBASE_SEARCH_EXCLUDED_CHANNELS:
+                    # Other excluded channels get full tools minus
+                    # search_codebase and minus save_person_fact
+                    active_tools = [
+                        t for t in TOOL_DEFINITIONS
+                        if t["name"] not in (
+                            "search_codebase", "save_person_fact"
+                        )
+                    ]
                 else:
-                    active_tools = TOOL_DEFINITIONS
+                    # All other full channels get everything except
+                    # save_person_fact (person tracking is
+                    # director-workspace only)
+                    active_tools = [
+                        t for t in TOOL_DEFINITIONS
+                        if t["name"] != "save_person_fact"
+                    ]
             elif tool_mode == "search_only":
                 active_tools = [
                     t for t in TOOL_DEFINITIONS
