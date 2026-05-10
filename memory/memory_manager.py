@@ -1502,14 +1502,14 @@ def get_handoff_memories():
             "blockers": r[6] or ""
         })
 
-    # Top 5 analytical by confidence then times observed
+    # Top 3 analytical by confidence then times observed
     c.execute("""
         SELECT id, pattern, confidence,
                trigger_conditions, pattern_type
         FROM analytical_memory
         WHERE status = 'active'
         ORDER BY confidence DESC, times_observed DESC
-        LIMIT 5
+        LIMIT 3
     """)
     analytical = [
         {
