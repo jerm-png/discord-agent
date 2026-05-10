@@ -64,6 +64,11 @@ from memory.memory_manager import (
     get_top_similar_memories,
     extract_and_save_health_protocols,
     _health_protocol_log,
+    upsert_entity,
+    add_entity_fact,
+    get_entity_profile,
+    list_entities,
+    format_entity_profile_for_prompt,
 )
 
 from tools.tool_definitions import (
@@ -458,7 +463,10 @@ HELP_TEXT = """**PerMyLastBot — Commands**
 
 `!unpin <id>` — Remove pin from a memory.
 
-`!save-verbatim [layer] <content>` — Write content directly to memory, bypassing AI extraction. Layer is `strategic` (default), `operational`, or `analytical`. Replies with the assigned memory ID."""
+`!save-verbatim [layer] <content>` — Write content directly to memory, bypassing AI extraction. Layer is `strategic` (default), `operational`, or `analytical`. Replies with the assigned memory ID.
+
+`!roster` — List all people tracked in entity memory
+`!profile [name]` — View full profile and fact history for a person"""
 
 
 # ============================================================
@@ -2682,6 +2690,29 @@ async def process_user_message(
     )
     memory_context = format_memory_for_prompt(memories)
     memory_context_chars = len(memory_context) if memory_context else 0
+
+    # ── Entity profile injection (director-workspace only) ────
+    _entity_context = ""
+    if effective_channel_name == "director-workspace":
+        _known = list_entities(entity_type="person")
+        _known_names = [e["name"].lower() for e in _known]
+        _msg_lower = user_message.lower()
+        _matched = [
+            e["name"] for e in _known
+            if e["name"].lower() in _msg_lower
+        ]
+        if _matched:
+            _profile_blocks = []
+            for _person_name in _matched[:3]:  # cap at 3 per message
+                _block = format_entity_profile_for_prompt(_person_name)
+                if _block:
+                    _profile_blocks.append(_block)
+            if _profile_blocks:
+                _entity_context = (
+                    "[PEOPLE CONTEXT — retrieved from entity memory]\n"
+                    + "\n\n".join(_profile_blocks)
+                    + "\n"
+                )
     _mem_count = sum(
         len(memories.get(k, [])) for k in ("strategic", "operational", "analytical")
     )
@@ -2725,7 +2756,12 @@ async def process_user_message(
             f"Current message: {user_message}"
         )
 
-    full_message = f"{channel_ctx}\n{_search_context}{full_message}"
+    full_message = (
+        f"{channel_ctx}\n"
+        f"{_entity_context}"
+        f"{_search_context}"
+        f"{full_message}"
+    )
 
     # ── FILE INJECTION ────────────────────────────────────────
     file_injection_chars = 0
@@ -4050,6 +4086,75 @@ async def on_message(message):
             _chunks.append("\n\n".join(_cur))
         for _chunk in _chunks:
             await message.channel.send(f"```\n{_chunk}\n```")
+        return
+
+    # ── !roster ──────────────────────────────────────────────
+    if is_prefix and user_message.lower() == "roster":
+        people = list_entities(entity_type="person")
+        if not people:
+            await channel.send(
+                "No people tracked yet. Mention someone by name "
+                "in director-workspace and use !profile to start "
+                "building their record."
+            )
+            return
+        lines = ["**People tracked in entity memory:**\n"]
+        for p in people:
+            updated = p["updated_at"][:10] if p["updated_at"] else "—"
+            role_str = f" — {p['role']}" if p["role"] else ""
+            lines.append(
+                f"• **{p['name']}**{role_str} "
+                f"| {p['fact_count']} fact(s) "
+                f"| last updated {updated}"
+            )
+        await send_long_message(channel, "\n".join(lines))
+        return
+
+    # ── !profile [name] ──────────────────────────────────────
+    if is_prefix and user_message.lower().startswith("profile"):
+        parts = user_message.split(None, 1)
+        if len(parts) < 2:
+            await channel.send(
+                "Usage: `!profile [name]` — e.g. `!profile Marcus`"
+            )
+            return
+        _pname = parts[1].strip()
+        _prof = get_entity_profile(_pname)
+        if not _prof:
+            await channel.send(
+                f"No profile found for **{_pname}**. "
+                f"They will be added automatically when you "
+                f"discuss them in director-workspace."
+            )
+            return
+        lines = [f"**Profile: {_prof['name']}**"]
+        if _prof["role"]:
+            lines.append(f"Role: {_prof['role']}")
+        if _prof["context"]:
+            lines.append(f"Context: {_prof['context']}")
+        lines.append("")
+        if _prof["facts"]:
+            for cat, facts in _prof["facts"].items():
+                lines.append(f"**{cat.title()}**")
+                for f in facts:
+                    date = f["recorded_at"][:10]
+                    lines.append(f"  • [{date}] {f['fact']}")
+                lines.append("")
+        else:
+            lines.append("No facts recorded yet.")
+        if _prof["history"]:
+            superseded = [
+                h for h in _prof["history"]
+                if h["status"] == "superseded"
+            ]
+            if superseded:
+                lines.append("**History (superseded facts)**")
+                for h in superseded[-5:]:
+                    date = h["recorded_at"][:10]
+                    lines.append(
+                        f"  ~~[{date}] {h['fact']}~~"
+                    )
+        await send_long_message(channel, "\n".join(lines))
         return
 
     # !pin <id>: pin an operational memory so it is never auto-archived or consolidated
