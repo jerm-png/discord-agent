@@ -124,7 +124,16 @@ TOOL_DEFINITIONS = [
                         "Confidence level from 0.0 to 1.0. "
                         "Only save skills you are at least 0.7 confident in."
                     )
-                }
+                },
+                "overwrite": {
+                    "type": "boolean",
+                    "description": (
+                        "Set to true to overwrite an existing skill "
+                        "with the same name. Default false — bot will "
+                        "warn if a skill already exists and ask for "
+                        "confirmation before overwriting."
+                    )
+                },
             },
             "required": [
                 "skill_name",
@@ -470,19 +479,44 @@ def handle_query_memory(inputs, channel_name=None):
 
 
 def handle_save_skill(inputs):
-    """
-    Saves a crystallised skill to the analytical
-    memory layer with high confidence weighting.
-    """
-    skill_name = inputs.get("skill_name", "")
+    skill_name = inputs.get("skill_name", "").strip()
     description = inputs.get("description", "")
     trigger_conditions = inputs.get("trigger_conditions", "")
     confidence = float(inputs.get("confidence", 0.7))
+    overwrite = inputs.get("overwrite", False)
+
+    if not skill_name:
+        return "Skill not saved — skill_name is required."
 
     if confidence < 0.7:
         return (
             "Skill not saved — confidence below 0.7 threshold. "
             "Only save skills you are genuinely confident in."
+        )
+
+    # Check for existing skill with same or similar name
+    existing = get_relevant_memories(
+        f"SKILL: {skill_name}",
+        channel_name="global"
+    )
+    _skill_hits = [
+        m for layer in ("analytical",)
+        for m in existing.get(layer, [])
+        if skill_name.lower() in m.get("pattern", "").lower()
+        or skill_name.lower() in m.get("content", "").lower()
+    ]
+
+    if _skill_hits and not overwrite:
+        _existing_preview = (
+            _skill_hits[0].get("pattern", "")
+            or _skill_hits[0].get("content", "")
+        )[:200]
+        return (
+            f"Skill '{skill_name}' already exists. "
+            f"Existing: {_existing_preview}...\n\n"
+            f"To overwrite, call save_skill again with "
+            f"overwrite=true. To save as a new variant, "
+            f"use a different skill_name."
         )
 
     skill_content = (
@@ -493,16 +527,17 @@ def handle_save_skill(inputs):
 
     save_analytical_memory(
         pattern=skill_content,
-        observation=f"Skill crystallised from repeated patterns",
-        reasoning=f"Pattern observed with sufficient confidence",
+        observation="Skill crystallised from repeated patterns",
+        reasoning="Pattern observed with sufficient confidence",
         outcome="positive",
         confidence=confidence,
         trigger_conditions=trigger_conditions,
         pattern_type="crystallised_skill"
     )
 
+    action = "updated" if (_skill_hits and overwrite) else "saved"
     return (
-        f"Skill '{skill_name}' saved with confidence "
+        f"Skill '{skill_name}' {action} with confidence "
         f"{confidence}. Trigger: {trigger_conditions}"
     )
 
