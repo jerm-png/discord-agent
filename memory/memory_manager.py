@@ -482,6 +482,13 @@ async def evaluate_memory_rubric(
 
     try:
         response = await background_model_fn(prompt)
+        # Strip markdown fences Ollama sometimes wraps around responses
+        raw = response.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        response = raw.strip()
         match = re.search(r'SCORE:(\d+)/12', response)
         if not match:
             return {

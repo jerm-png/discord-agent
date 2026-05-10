@@ -757,9 +757,9 @@ async def _save_session_state_async(
             f"Assistant response (first 600 chars): "
             f"{response_text[:600]}"
         )
-        raw = await call_background_model(prompt)
-        raw = raw.strip().replace("```json", "").replace("```", "")
-        updates = json.loads(raw)
+        updates = await call_background_model_json(prompt)
+        if not updates or not isinstance(updates, dict):
+            raise ValueError("no valid session state update returned")
 
         existing = load_session_state(user_id, int(context_id))
 
@@ -824,6 +824,52 @@ async def call_background_model(prompt: str) -> str:
             messages=[{"role": "user", "content": prompt}]
         )
         return response.content[0].text.strip()
+
+
+async def call_background_model_json(prompt: str) -> dict | list | None:
+    """
+    Like call_background_model but expects and validates
+    a JSON response. Retries with Haiku if Ollama returns
+    malformed JSON. Returns parsed object or None on failure.
+    Never raises — always returns None on unrecoverable failure.
+    """
+    for _attempt, _use_haiku in enumerate([False, True]):
+        try:
+            if _use_haiku:
+                response = client.messages.create(
+                    model=BACKGROUND_MODEL,
+                    max_tokens=1500,
+                    messages=[{"role": "user", "content": prompt}]
+                )
+                raw = response.content[0].text.strip()
+            else:
+                raw = await call_background_model(prompt)
+
+            raw = raw.strip()
+            # Strip markdown code fences if present
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+            raw = raw.strip()
+
+            parsed = json.loads(raw)
+            return parsed
+
+        except json.JSONDecodeError:
+            if _attempt == 0:
+                print(
+                    "[Background] Ollama returned malformed JSON "
+                    "— retrying with Haiku"
+                )
+                continue
+            print("[Background] Haiku also returned malformed JSON — giving up")
+            return None
+        except Exception as e:
+            print(f"[Background] call_background_model_json failed: {e}")
+            return None
+
+    return None
 
 
 async def generate_thread_name(message_text: str, channel_name: str) -> str:
@@ -2125,11 +2171,9 @@ async def execute_goal(
                                 "no explanation.\n\n"
                                 f"Analysis:\n{analyze_output[:1000]}"
                             )
-                            _kf_raw = await call_background_model(_kf_prompt)
-                            _kf_raw = _kf_raw.strip().replace(
-                                "```json", ""
-                            ).replace("```", "")
-                            _kf_list = json.loads(_kf_raw)
+                            _kf_list = await call_background_model_json(_kf_prompt)
+                            if not _kf_list or not isinstance(_kf_list, list):
+                                raise ValueError("no valid key findings returned")
                             for _kf in _kf_list:
                                 if isinstance(_kf, dict) and "finding" in _kf:
                                     execution_context[user_id][
