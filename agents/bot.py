@@ -279,6 +279,7 @@ conversation_history = {}
 attached_files: defaultdict = defaultdict(list)
 BOT_START_TIME = None
 _last_token_usage = {"input": 0, "output": 0}
+_consolidation_cooldown: set = set()
 stale_warned_this_session = False
 
 CONFABULATION_TRIGGERS = (
@@ -2977,9 +2978,12 @@ async def process_user_message(
                     api_params["tools"] = active_tools
 
                 if _reasoning_iterations == 1:
+                    # Measure history excluding current turn to avoid
+                    # double-counting memory context
+                    _prior_turns = conversation_history[_hist_key][:-1]
                     history_chars = sum(
                         len(str(m.get("content", "")))
-                        for m in conversation_history[_hist_key]
+                        for m in _prior_turns
                     )
                     tool_schema_chars = sum(len(str(t)) for t in active_tools)
 
@@ -3153,7 +3157,11 @@ async def process_user_message(
 
                 # Fire auto-consolidation in background if thresholds exceeded
                 current_stats = memory_stats()
-                if _should_consolidate(current_stats, effective_channel_name):
+                _cooldown_key = (effective_channel_name,
+                                 datetime.utcnow().strftime("%Y-%m-%d-%H"))
+                if (_should_consolidate(current_stats, effective_channel_name)
+                        and _cooldown_key not in _consolidation_cooldown):
+                    _consolidation_cooldown.add(_cooldown_key)
                     asyncio.create_task(
                         consolidate_all_layers(
                             guild,
@@ -3189,21 +3197,33 @@ async def process_user_message(
                 f" | cache_write: {cache_write_tokens:,} | cache_read: {cache_read_tokens:,}"
                 if cache_write_tokens or cache_read_tokens else ""
             )
-            _attr_file = (
-                f" | files: ~{file_injection_chars // 4:,}"
-                if file_injection_chars else ""
+            _attr_total = (
+                system_chars + memory_context_chars
+                + history_chars + tool_schema_chars
+                + file_injection_chars
             )
+            if _attr_total > 0:
+                _scale = in_tokens / (_attr_total / 4)
+            else:
+                _scale = 1.0
+
+            system_tokens_est = int((system_chars / 4) * _scale)
+            memory_tokens_est = int((memory_context_chars / 4) * _scale)
+            history_tokens_est = int((history_chars / 4) * _scale)
+            tool_tokens_est = int((tool_schema_chars / 4) * _scale)
+            file_tokens_est = int((file_injection_chars / 4) * _scale)
+
             await send_to_channel(
                 guild,
                 LOG_CHANNEL,
                 f"Tokens — in: {in_tokens:,} | out: {out_tokens:,}"
                 + cache_note
                 + f" | est. cost: ${est_cost:.4f}\n"
-                + f"Attribution — system: ~{system_chars // 4:,}"
-                + f" | memory: ~{memory_context_chars // 4:,}"
-                + f" | history: ~{history_chars // 4:,}"
-                + f" | tools: ~{tool_schema_chars // 4:,}"
-                + _attr_file
+                + f"  ↳ system: ~{system_tokens_est:,}"
+                + f" | memory: ~{memory_tokens_est:,}"
+                + f" | history: ~{history_tokens_est:,}"
+                + f" | tools: ~{tool_tokens_est:,}"
+                + (f" | files: ~{file_tokens_est:,}" if file_injection_chars else "")
             )
 
             if active_agent_slug and active_agent_slug in AGENT_DEFINITIONS:
