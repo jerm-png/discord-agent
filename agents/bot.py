@@ -125,19 +125,27 @@ LANGFUSE_HOST = os.getenv(
 )
 
 _langfuse = None
-if LANGFUSE_SECRET_KEY and LANGFUSE_PUBLIC_KEY:
-    try:
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY")
+    LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY")
+    LANGFUSE_HOST = os.getenv(
+        "LANGFUSE_HOST", "https://us.cloud.langfuse.com"
+    )
+    if LANGFUSE_SECRET_KEY and LANGFUSE_PUBLIC_KEY:
         from langfuse import Langfuse
         _langfuse = Langfuse(
             secret_key=LANGFUSE_SECRET_KEY,
             public_key=LANGFUSE_PUBLIC_KEY,
             host=LANGFUSE_HOST,
+            debug=True,
         )
         print("[Langfuse] Observability active")
-    except Exception as _lf_err:
-        print(f"[Langfuse] Init failed — tracing disabled: {_lf_err}")
-else:
-    print("[Langfuse] No keys found — tracing disabled")
+    else:
+        print("[Langfuse] No keys found — tracing disabled")
+except Exception as _lf_err:
+    print(f"[Langfuse] Init failed — tracing disabled: {_lf_err}")
 
 COMMAND_CHANNEL = "bot-commands"
 STATUS_CHANNEL = "bot-status"
