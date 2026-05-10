@@ -2915,7 +2915,6 @@ async def process_user_message(
                 },
                 input=user_message[:500],
             )
-            print(f"[Langfuse] Trace created: {_lf_trace.id}")
         except Exception as _lf_e:
             print(f"[Langfuse] Trace creation failed: {_lf_e}")
             _lf_trace = None
