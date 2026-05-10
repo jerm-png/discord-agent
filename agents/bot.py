@@ -4137,7 +4137,7 @@ async def on_message(message):
     if is_prefix and user_message.lower() == "roster":
         people = list_entities(entity_type="person")
         if not people:
-            await channel.send(
+            await message.channel.send(
                 "No people tracked yet. Mention someone by name "
                 "in director-workspace and use !profile to start "
                 "building their record."
@@ -4152,21 +4152,21 @@ async def on_message(message):
                 f"| {p['fact_count']} fact(s) "
                 f"| last updated {updated}"
             )
-        await send_long_message(channel, "\n".join(lines))
+        await send_long_message(message.channel, "\n".join(lines))
         return
 
     # ── !profile [name] ──────────────────────────────────────
     if is_prefix and user_message.lower().startswith("profile"):
         parts = user_message.split(None, 1)
         if len(parts) < 2:
-            await channel.send(
+            await message.channel.send(
                 "Usage: `!profile [name]` — e.g. `!profile Marcus`"
             )
             return
         _pname = parts[1].strip()
         _prof = get_entity_profile(_pname)
         if not _prof:
-            await channel.send(
+            await message.channel.send(
                 f"No profile found for **{_pname}**. "
                 f"They will be added automatically when you "
                 f"discuss them in director-workspace."
@@ -4199,7 +4199,7 @@ async def on_message(message):
                     lines.append(
                         f"  ~~[{date}] {h['fact']}~~"
                     )
-        await send_long_message(channel, "\n".join(lines))
+        await send_long_message(message.channel, "\n".join(lines))
         return
 
     # !pin <id>: pin an operational memory so it is never auto-archived or consolidated
