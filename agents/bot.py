@@ -117,6 +117,28 @@ OWNER_ID = os.getenv("DISCORD_OWNER_ID", "")
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "")
 
+# ── Langfuse observability ───────────────────────────
+LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY")
+LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY")
+LANGFUSE_HOST = os.getenv(
+    "LANGFUSE_HOST", "https://us.cloud.langfuse.com"
+)
+
+_langfuse = None
+if LANGFUSE_SECRET_KEY and LANGFUSE_PUBLIC_KEY:
+    try:
+        from langfuse import Langfuse
+        _langfuse = Langfuse(
+            secret_key=LANGFUSE_SECRET_KEY,
+            public_key=LANGFUSE_PUBLIC_KEY,
+            host=LANGFUSE_HOST,
+        )
+        print("[Langfuse] Observability active")
+    except Exception as _lf_err:
+        print(f"[Langfuse] Init failed — tracing disabled: {_lf_err}")
+else:
+    print("[Langfuse] No keys found — tracing disabled")
+
 COMMAND_CHANNEL = "bot-commands"
 STATUS_CHANNEL = "bot-status"
 LOG_CHANNEL = "bot-logs"
@@ -2869,6 +2891,26 @@ async def process_user_message(
     """
     global stale_warned_this_session
     effective_channel_name = channel_name or channel.name
+
+    # ── Langfuse trace ───────────────────────────────────
+    _lf_trace = None
+    if _langfuse:
+        try:
+            _lf_trace = _langfuse.trace(
+                name="process_user_message",
+                user_id=str(user_id),
+                session_id=str(context_id),
+                metadata={
+                    "channel": effective_channel_name,
+                    "agent": active_agent_slug or "none",
+                    "memory_mode": memory_mode,
+                    "project_tag": project_tag or "none",
+                },
+                input=user_message[:500],
+            )
+        except Exception:
+            _lf_trace = None
+
     _hist_key = (user_id, context_id)
     system_chars = 0
     memory_context_chars = 0
@@ -3187,6 +3229,17 @@ async def process_user_message(
                         len(json.dumps(t)) for t in active_tools
                     )
 
+                _lf_generation = None
+                if _lf_trace:
+                    try:
+                        _lf_generation = _lf_trace.generation(
+                            name=f"claude_call_{_reasoning_iterations}",
+                            model=MAIN_MODEL,
+                            input=conversation_history[_hist_key][-3:],
+                        )
+                    except Exception:
+                        _lf_generation = None
+
                 _overloaded = False
                 _rate_limited = False
                 for _attempt_delay in [None, 2, 4, 8]:
@@ -3226,6 +3279,21 @@ async def process_user_message(
                         "before sending another message."
                     )
                     return
+
+                if _lf_generation:
+                    try:
+                        _lf_generation.end(
+                            output=response.content[0].text
+                            if response.content and
+                            hasattr(response.content[0], "text")
+                            else "",
+                            usage={
+                                "input": response.usage.input_tokens,
+                                "output": response.usage.output_tokens,
+                            }
+                        )
+                    except Exception:
+                        pass
 
                 total_in_tokens += response.usage.input_tokens
                 total_out_tokens += response.usage.output_tokens
@@ -3496,6 +3564,25 @@ async def process_user_message(
                 f"Response delivered to {author_display_name}. Ready.",
                 memory_mode
             )
+
+            if _lf_trace:
+                try:
+                    _lf_trace.update(
+                        output=final_response_text[:500],
+                        metadata={
+                            "tools_used": tool_call_count,
+                            "in_tokens": total_in_tokens,
+                            "out_tokens": total_out_tokens,
+                            "est_cost": round(est_cost, 6),
+                            "cache_read_tokens": total_cache_read_tokens,
+                            "cache_write_tokens": total_cache_write_tokens,
+                            "agent": active_agent_slug or "none",
+                            "task_complete": task_completed,
+                        }
+                    )
+                    _langfuse.flush()
+                except Exception:
+                    pass
 
             if stale_count and not stale_warned_this_session:
                 stale_warned_this_session = True
