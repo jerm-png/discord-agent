@@ -1507,27 +1507,37 @@ async def _consolidate_layer(
         consolidated_tag = next(iter(tags)) if len(tags) == 1 else None
         avg_conf = sum(m["confidence"] for m in cluster) / len(cluster)
 
+        _new_id = None
         try:
             if layer == "strategic":
-                save_strategic_memory(
-                    content=consolidated_text,
-                    category="consolidation",
-                    confidence=avg_conf,
-                    source="consolidation",
-                    project_tag=consolidated_tag,
+                _new_id = await loop.run_in_executor(
+                    None,
+                    lambda: save_strategic_memory(
+                        content=consolidated_text,
+                        category="consolidation",
+                        confidence=avg_conf,
+                        source="consolidation",
+                        project_tag=consolidated_tag,
+                    )
                 )
             elif layer == "operational":
-                save_operational_memory(
-                    content=consolidated_text,
-                    project_name="consolidation",
-                    project_tag=consolidated_tag,
+                _new_id = await loop.run_in_executor(
+                    None,
+                    lambda: save_operational_memory(
+                        content=consolidated_text,
+                        project_name="consolidation",
+                        project_tag=consolidated_tag,
+                    )
                 )
             elif layer == "analytical":
-                save_analytical_memory(
-                    pattern=consolidated_text,
-                    confidence=avg_conf,
-                    pattern_type="consolidation",
-                    project_tag=consolidated_tag,
+                _new_id = await loop.run_in_executor(
+                    None,
+                    lambda: save_analytical_memory(
+                        pattern=consolidated_text,
+                        confidence=avg_conf,
+                        pattern_type="consolidation",
+                        project_tag=consolidated_tag,
+                    )
                 )
         except Exception as e:
             skipped += 1
@@ -1540,7 +1550,12 @@ async def _consolidate_layer(
 
         archived_count = sum(
             1 for m in cluster
-            if archive_memory(layer, m["id"], "consolidated")
+            if archive_memory(
+                layer,
+                m["id"],
+                f"consolidated into {layer}:{_new_id}",
+                superseded_by=str(_new_id) if _new_id else None
+            )
         )
         merged += 1
         archived += archived_count
