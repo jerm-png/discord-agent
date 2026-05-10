@@ -5,6 +5,7 @@ import discord
 import io
 import os
 import shutil
+import sqlite3
 import sys
 import json
 import tempfile
@@ -467,7 +468,8 @@ HELP_TEXT = """**PerMyLastBot — Commands**
 `!save-verbatim [layer] <content>` — Write content directly to memory, bypassing AI extraction. Layer is `strategic` (default), `operational`, or `analytical`. Replies with the assigned memory ID.
 
 `!roster` — List all people tracked in entity memory
-`!profile [name]` — View full profile and fact history for a person"""
+`!profile [name]` — View full profile and fact history for a person
+`!profile-delete <id>` — Delete a wrong fact by ID. Find IDs with `!profile [name]`"""
 
 
 # ============================================================
@@ -4183,23 +4185,62 @@ async def on_message(message):
                 lines.append(f"**{cat.title()}**")
                 for f in facts:
                     date = f["recorded_at"][:10]
-                    lines.append(f"  • [{date}] {f['fact']}")
+                    lines.append(
+                        f"  • ID:{f['id']} [{date}] {f['fact']}"
+                    )
                 lines.append("")
         else:
             lines.append("No facts recorded yet.")
-        if _prof["history"]:
-            superseded = [
-                h for h in _prof["history"]
-                if h["status"] == "superseded"
-            ]
-            if superseded:
-                lines.append("**History (superseded facts)**")
-                for h in superseded[-5:]:
-                    date = h["recorded_at"][:10]
-                    lines.append(
-                        f"  ~~[{date}] {h['fact']}~~"
-                    )
         await send_long_message(message.channel, "\n".join(lines))
+        return
+
+    # ── !profile-delete <id> ────────────────────────────
+    if is_prefix and user_message.lower().startswith(
+            "profile-delete"):
+        parts = user_message.split(None, 1)
+        if len(parts) < 2 or not parts[1].strip().isdigit():
+            await message.channel.send(
+                "Usage: `!profile-delete <id>` — "
+                "find IDs with `!profile [name]`"
+            )
+            return
+        _fact_id = int(parts[1].strip())
+        try:
+            conn = sqlite3.connect(
+                os.path.join(
+                    os.path.dirname(__file__),
+                    "..", "memory", "database.db"
+                )
+            )
+            cursor = conn.execute(
+                "SELECT f.category, f.fact, e.name "
+                "FROM entity_facts f "
+                "JOIN entities e ON e.id = f.entity_id "
+                "WHERE f.id = ?",
+                (_fact_id,)
+            )
+            row = cursor.fetchone()
+            if not row:
+                await message.channel.send(
+                    f"No fact found with ID {_fact_id}."
+                )
+                conn.close()
+                return
+            _cat, _fact_text, _person = row
+            conn.execute(
+                "DELETE FROM entity_facts WHERE id = ?",
+                (_fact_id,)
+            )
+            conn.commit()
+            conn.close()
+            await message.channel.send(
+                f"Deleted [{_cat}] fact (ID:{_fact_id}) "
+                f"for {_person}."
+            )
+        except Exception as e:
+            await message.channel.send(
+                f"Error deleting fact: {e}"
+            )
         return
 
     # !pin <id>: pin an operational memory so it is never auto-archived or consolidated

@@ -2179,15 +2179,12 @@ def add_entity_fact(
 
         if supersede_category:
             conn.execute(
-                """UPDATE entity_facts
-                   SET status = 'superseded',
-                       superseded_by = ?,
-                       updated_at = ?
+                """DELETE FROM entity_facts
                    WHERE entity_id = ?
                      AND category = ?
                      AND status = 'active'
                      AND id != ?""",
-                (new_id, now, entity_id, category, new_id)
+                (entity_id, category, new_id)
             )
         conn.commit()
         return new_id
@@ -2229,16 +2226,17 @@ def get_entity_profile(name: str) -> dict:
 
         # Active facts grouped by category
         facts_cursor = conn.execute(
-            """SELECT category, fact, recorded_at, confidence
+            """SELECT id, category, fact, recorded_at, confidence
                FROM entity_facts
                WHERE entity_id = ? AND status = 'active'
                ORDER BY category, recorded_at DESC""",
             (entity_id,)
         )
-        for cat, fact, recorded_at, confidence in facts_cursor:
+        for fid, cat, fact, recorded_at, confidence in facts_cursor:
             if cat not in profile["facts"]:
                 profile["facts"][cat] = []
             profile["facts"][cat].append({
+                "id": fid,
                 "fact": fact,
                 "recorded_at": recorded_at,
                 "confidence": confidence,
