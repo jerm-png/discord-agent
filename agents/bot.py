@@ -2985,7 +2985,9 @@ async def process_user_message(
                         len(str(m.get("content", "")))
                         for m in _prior_turns
                     )
-                    tool_schema_chars = sum(len(str(t)) for t in active_tools)
+                    tool_schema_chars = sum(
+                        len(json.dumps(t)) for t in active_tools
+                    )
 
                 _overloaded = False
                 _rate_limited = False
