@@ -367,6 +367,23 @@ For each step specify:
 
 Return ONLY a JSON array of steps, no other text."""
 
+CREW_GOAL_PLANNER_SYSTEM_PROMPT = """You are a planning agent running in crew mode. Break down the following goal into 3-8 specific executable steps. Each step should be one of these types:
+- web_search: search for specific information
+- query_memory: check existing memory for context
+- analyze: synthesize information gathered so far
+- draft: write a structured output or report
+- save_memory: persist a specific finding or conclusion to long-term memory
+- call_agent: invoke a specialist agent by name to handle a step requiring domain expertise
+
+For each step specify:
+- step_number
+- type (from list above)
+- description (what to do)
+- query (the specific search query or memory query if applicable)
+- agent (REQUIRED for every step — assign the most appropriate specialist slug from the available agents listed in the user message; choose the most general-purpose agent if no specialist clearly fits)
+
+Return ONLY a JSON array of steps, no other text."""
+
 HANDOFF_SYSTEM_PROMPT = """You are generating a dense, structured handoff document from live memory snapshots.
 Your output will be pasted directly into a new AI session as context. Write for an AI reader, not a human one.
 Be maximally information-dense. No filler, no headers beyond what is specified, no pleasantries.
@@ -410,6 +427,8 @@ HELP_TEXT = """**PerMyLastBot — Commands**
 `!consolidate` — Manually trigger memory consolidation for the current channel scope. Groups similar memories, merges them via AI, archives originals. Respects isolation — `#health-tracking` only consolidates health memories.
 
 `!goal [description]` — Decompose a goal into an approved step plan, then execute it. Also `!plan` and `!research`. Reply `!approve` to run, `!cancel` to abort, `!modify [changes]` to revise the plan before running. During execution: `!continue` resumes a paused gate, `!adjust [changes]` replans remaining steps, `!retry` retries a failed step, `!skip` skips it.
+
+`!crew [description]` — Like `!goal`, but every step is assigned to a specialist agent. The planner selects the best agent per step based on available agents. Same approval and gate flow as `!goal`.
 
 `!agent [slug] [message]` — Activate a specific specialist agent for one response. Example: `!agent health-researcher what peptides help with EBV reactivation`. Reverts to default after the response.
 
@@ -1557,7 +1576,8 @@ async def _summarize_search_results(goal: str, result_str: str) -> str:
 
 async def run_goal_planning(
     goal_text: str, user_id: str, author_display_name: str,
-    guild, channel, memory_mode: str, project_tag
+    guild, channel, memory_mode: str, project_tag,
+    planner_prompt: str = None, crew_mode: bool = False
 ):
     """
     Calls the planner model to decompose a goal into steps, validates
@@ -1567,7 +1587,7 @@ async def run_goal_planning(
         response = client.messages.create(
             model=MAIN_MODEL,
             max_tokens=1024,
-            system=GOAL_PLANNER_SYSTEM_PROMPT,
+            system=planner_prompt or GOAL_PLANNER_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": goal_text}]
         )
         raw = response.content[0].text.strip()
@@ -1611,6 +1631,7 @@ async def run_goal_planning(
         "status": "awaiting_approval",
         "current_step": 0,
         "web_search_count": 0,
+        "crew_mode": crew_mode,
     }
     execution_context.pop(user_id, None)
 
@@ -1721,6 +1742,22 @@ async def execute_goal(
                 step_type = step.get("type", "analyze")
                 step_desc = step.get("description", "")
                 step_query = step.get("query", step_desc)
+
+                # Crew mode: resolve per-step agent system prompt and label
+                _crew_system = None
+                _crew_label = ""
+                if pg.get("crew_mode"):
+                    _crew_slug = step.get("agent", "").strip()
+                    if _crew_slug and _crew_slug in AGENT_DEFINITIONS:
+                        _crew_def = AGENT_DEFINITIONS[_crew_slug]
+                        _crew_content = _crew_def["content"]
+                        if len(_crew_content) > AGENT_INJECT_CHAR_LIMIT:
+                            _crew_content = (
+                                _crew_content[:AGENT_INJECT_CHAR_LIMIT]
+                                + "\n[Agent definition truncated]"
+                            )
+                        _crew_system = _crew_content
+                        _crew_label = f"🤖 [{_crew_def['name']}] — "
 
                 # ── DRAFT GATE: always pause before draft steps ──────────────
                 if step_type == "draft" and i != skip_gate_for_step:
@@ -1839,9 +1876,17 @@ async def execute_goal(
                         ctx = _format_execution_context(
                             execution_context[user_id]
                         )
+                        if _crew_label:
+                            await channel.send(
+                                f"{_crew_label}Step {step_num}: analyzing..."
+                            )
+                        _analyze_kwargs = (
+                            {"system": _crew_system} if _crew_system else {}
+                        )
                         r = client.messages.create(
                             model=MAIN_MODEL,
                             max_tokens=2048,
+                            **_analyze_kwargs,
                             messages=[{"role": "user", "content": (
                                 f"Goal: {goal}\n\n"
                                 f"Information gathered:\n{ctx}\n\n"
@@ -1916,9 +1961,17 @@ async def execute_goal(
                         ctx = _format_execution_context(
                             execution_context[user_id]
                         )
+                        if _crew_label:
+                            await channel.send(
+                                f"{_crew_label}Step {step_num}: drafting..."
+                            )
+                        _draft_kwargs = (
+                            {"system": _crew_system} if _crew_system else {}
+                        )
                         r = client.messages.create(
                             model=MAIN_MODEL,
                             max_tokens=4096,
+                            **_draft_kwargs,
                             messages=[{"role": "user", "content": (
                                 f"Goal: {goal}\n\n"
                                 f"Research and analysis:\n{ctx}\n\n"
@@ -1927,6 +1980,8 @@ async def execute_goal(
                             )}]
                         )
                         final_output = r.content[0].text.strip()
+                        if _crew_label:
+                            final_output = _crew_label + final_output
                         execution_context[user_id].append({
                             "step": step_num, "type": "draft",
                             "content": final_output
@@ -3422,6 +3477,29 @@ async def on_message(message):
                 )
             )
             return
+
+    # !crew — crew mode: every step assigned to a specialist agent by the planner
+    if is_prefix and user_message.lower().startswith("crew "):
+        _crew_goal_text = user_message[5:].strip()
+        if _crew_goal_text:
+            _agent_slugs = ", ".join(sorted(AGENT_DEFINITIONS.keys())) or "none loaded"
+            _crew_planner_prompt = CREW_GOAL_PLANNER_SYSTEM_PROMPT
+            _crew_user_content = (
+                f"Available agent slugs: {_agent_slugs}\n\n"
+                f"Goal: {_crew_goal_text}"
+            )
+            asyncio.create_task(
+                run_goal_planning(
+                    _crew_user_content, uid, message.author.display_name,
+                    message.guild, message.channel, memory_mode, project_tag,
+                    planner_prompt=_crew_planner_prompt, crew_mode=True
+                )
+            )
+        else:
+            await message.channel.send(
+                "Usage: `!crew [goal description]`"
+            )
+        return
 
     # Gate commands — mid-execution pauses awaiting !continue/!adjust/!retry/!skip
     if uid in gate_pending:
