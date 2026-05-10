@@ -1,0 +1,6 @@
+@echo off
+echo Starting Ollama service...
+ollama serve > ollama_log.txt 2>&1
+echo Ollama stopped unexpectedly — restarting in 5 seconds...
+timeout /t 5 /nobreak
+goto :eof
