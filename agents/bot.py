@@ -355,12 +355,15 @@ GOAL_PLANNER_SYSTEM_PROMPT = """You are a planning agent. Break down the followi
 - query_memory: check existing memory for context
 - analyze: synthesize information gathered so far
 - draft: write a structured output or report
+- save_memory: persist a specific finding or conclusion to long-term memory
+- call_agent: invoke a specialist agent by name to handle a step requiring domain expertise
 
 For each step specify:
 - step_number
 - type (from list above)
 - description (what to do)
 - query (the specific search query or memory query if applicable)
+- agent (required only for call_agent steps — the slug name of the specialist agent to invoke, e.g. "ai_engineer", "health_advisor")
 
 Return ONLY a JSON array of steps, no other text."""
 
@@ -1928,6 +1931,84 @@ async def execute_goal(
                             "step": step_num, "type": "draft",
                             "content": final_output
                         })
+
+                    elif step_type == "save_memory":
+                        content_to_save = step_query if step_query != step_desc else step_desc
+                        await extract_and_store_memories(
+                            user_message=content_to_save,
+                            bot_reply="",
+                            guild=guild,
+                            task_completed=True,
+                            project_tag=project_tag,
+                            channel_name=channel_name,
+                            memory_mode=memory_mode,
+                            background_model_fn=call_background_model
+                        )
+                        execution_context[user_id].append({
+                            "step": step_num, "type": "save_memory",
+                            "content": f"Saved to memory: {content_to_save[:100]}"
+                        })
+                        await channel.send(
+                            f"💾 Saved to memory: {content_to_save[:80]}"
+                        )
+
+                    elif step_type == "call_agent":
+                        agent_slug = step.get("agent", "").strip()
+                        if not agent_slug or agent_slug not in AGENT_DEFINITIONS:
+                            await send_to_channel(
+                                guild, LOG_CHANNEL,
+                                f"call_agent step missing valid slug | "
+                                f"step={step_num} | got={agent_slug!r} | "
+                                f"falling back to analyze"
+                            )
+                            ctx = _format_execution_context(
+                                execution_context[user_id]
+                            )
+                            r = client.messages.create(
+                                model=MAIN_MODEL,
+                                max_tokens=2048,
+                                messages=[{"role": "user", "content": (
+                                    f"Goal: {goal}\n\n"
+                                    f"Information gathered:\n{ctx}\n\n"
+                                    f"Task: {step_desc}\n\n"
+                                    "Synthesize the above into a concise analysis."
+                                )}]
+                            )
+                            agent_response = r.content[0].text.strip()
+                            execution_context[user_id].append({
+                                "step": step_num, "type": "call_agent",
+                                "content": agent_response
+                            })
+                            await channel.send(agent_response)
+                        else:
+                            agent_name = AGENT_DEFINITIONS[agent_slug]["name"]
+                            agent_system = AGENT_DEFINITIONS[agent_slug]["content"]
+                            if len(agent_system) > AGENT_INJECT_CHAR_LIMIT:
+                                agent_system = (
+                                    agent_system[:AGENT_INJECT_CHAR_LIMIT]
+                                    + "\n[Agent definition truncated]"
+                                )
+                            ctx = _format_execution_context(
+                                execution_context[user_id]
+                            )
+                            r = client.messages.create(
+                                model=MAIN_MODEL,
+                                max_tokens=2048,
+                                system=agent_system,
+                                messages=[{"role": "user", "content": (
+                                    f"Goal context: {goal}\n\n"
+                                    f"Information gathered:\n{ctx}\n\n"
+                                    f"Task: {step_desc}"
+                                )}]
+                            )
+                            agent_response = r.content[0].text.strip()
+                            execution_context[user_id].append({
+                                "step": step_num, "type": "call_agent",
+                                "content": f"[{agent_name}]: {agent_response}"
+                            })
+                            await channel.send(
+                                f"🤖 [{agent_name}]: {agent_response}"
+                            )
 
                 except Exception as e:
                     # ── STEP FAILURE GATE ────────────────────────────────────
