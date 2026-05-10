@@ -105,6 +105,10 @@ BACKGROUND_MODEL = "claude-haiku-4-5-20251001"
 MAX_REASONING_ITERATIONS = 10  # Maximum while-loop cycles in process_user_message
 AGENT_INJECT_CHAR_LIMIT = 1500
 
+# Sliding window history settings
+HISTORY_RAW_WINDOW = 6      # raw turns kept in memory
+HISTORY_SUMMARY_ROLE = "user"  # role used for summary injection
+
 OLLAMA_URL = "http://localhost:11434/api/generate"
 OLLAMA_MODEL = "qwen3:8b"
 
@@ -870,6 +874,57 @@ async def call_background_model_json(prompt: str) -> dict | list | None:
             return None
 
     return None
+
+
+async def _summarize_history_tail(
+    history: list,
+    context_hint: str = ""
+) -> str:
+    """
+    Summarizes the older portion of conversation history
+    that is about to be compressed out of the raw window.
+    Returns a compact summary string.
+    Falls back to a simple truncated log if model fails.
+    """
+    if not history:
+        return ""
+
+    lines = []
+    for m in history:
+        role = m.get("role", "unknown")
+        content = m.get("content", "")
+        if isinstance(content, list):
+            content = " ".join(
+                b.get("text", "") for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+        if isinstance(content, str) and content.strip():
+            prefix = "User" if role == "user" else "Assistant"
+            lines.append(f"{prefix}: {content[:400]}")
+
+    if not lines:
+        return ""
+
+    transcript = "\n\n".join(lines)
+    prompt = (
+        "Summarize this conversation excerpt into a compact "
+        "factual record of what was discussed, decided, and "
+        "accomplished. Focus on: tasks worked on, decisions "
+        "made, code written or changed, problems solved. "
+        "Write in past tense, third person. "
+        "Maximum 300 words. No filler.\n\n"
+        + (f"Context: {context_hint}\n\n" if context_hint else "")
+        + f"Conversation:\n{transcript}"
+    )
+
+    try:
+        summary = await call_background_model(prompt)
+        return summary.strip()
+    except Exception:
+        return (
+            f"[Previous conversation — {len(lines)} turns]:\n"
+            + "\n".join(lines[-3:])
+        )
 
 
 async def generate_thread_name(message_text: str, channel_name: str) -> str:
@@ -3229,8 +3284,61 @@ async def process_user_message(
                     "assistant", final_response_text, project_tag=project_tag
                 )
 
-            conversation_history[_hist_key] = \
-                conversation_history[_hist_key][-20:]
+            # ── SLIDING WINDOW HISTORY ───────────────────────────
+            _full_history = conversation_history[_hist_key]
+            _is_isolated = effective_channel_name in MEMORY_ISOLATED_CHANNELS
+
+            if (len(_full_history) > HISTORY_RAW_WINDOW
+                    and not _is_isolated
+                    and memory_mode != "ephemeral"):
+                _raw_tail = _full_history[-HISTORY_RAW_WINDOW:]
+                _head = _full_history[:-HISTORY_RAW_WINDOW]
+
+                _existing_summary = ""
+                _head_to_summarize = _head
+                if (_head
+                        and _head[0].get("role") == HISTORY_SUMMARY_ROLE
+                        and isinstance(_head[0].get("content"), str)
+                        and _head[0]["content"].startswith(
+                            "[CONVERSATION SUMMARY]"
+                        )):
+                    _existing_summary = _head[0]["content"]
+                    _head_to_summarize = _head[1:]
+
+                if _head_to_summarize:
+                    _new_summary_text = await _summarize_history_tail(
+                        _head_to_summarize,
+                        context_hint=effective_channel_name
+                    )
+
+                    if _existing_summary:
+                        _merged = (
+                            _existing_summary
+                            + "\n\n[More recent — now summarized]:\n"
+                            + _new_summary_text
+                        )
+                    else:
+                        _merged = (
+                            "[CONVERSATION SUMMARY — earlier context]\n"
+                            + _new_summary_text
+                        )
+
+                    if len(_merged) > 800:
+                        _merged = _merged[-800:]
+
+                    conversation_history[_hist_key] = [
+                        {
+                            "role": HISTORY_SUMMARY_ROLE,
+                            "content": _merged,
+                        }
+                    ] + _raw_tail
+                else:
+                    conversation_history[_hist_key] = (
+                        [_head[0]] + _raw_tail
+                        if _head else _raw_tail
+                    )
+            else:
+                conversation_history[_hist_key] = _full_history[-20:]
 
             if final_response_text and memory_mode != "ephemeral":
                 _action_summary = (
