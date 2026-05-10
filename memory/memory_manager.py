@@ -272,6 +272,53 @@ def init_db():
     """)
 
     c.execute("""
+        CREATE TABLE IF NOT EXISTS entities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            entity_type TEXT NOT NULL DEFAULT 'person',
+            role TEXT,
+            context TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS entity_facts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_id INTEGER NOT NULL REFERENCES entities(id),
+            category TEXT NOT NULL,
+            fact TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            superseded_by INTEGER REFERENCES entity_facts(id),
+            recorded_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            source_channel TEXT,
+            confidence REAL DEFAULT 0.8
+        )
+    """)
+
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_entity_facts_entity_id
+        ON entity_facts(entity_id)
+    """)
+
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_entity_facts_status
+        ON entity_facts(status, entity_id)
+    """)
+
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_entity_facts_category
+        ON entity_facts(category, entity_id)
+    """)
+
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_entities_name
+        ON entities(name)
+    """)
+
+    c.execute("""
         CREATE TABLE IF NOT EXISTS reasoning_trace (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp TEXT NOT NULL,
@@ -2058,6 +2105,229 @@ def get_consolidation_candidates(layer: str,
 
 
 # ============================================================
+# ============================================================
+# ENTITY MEMORY — person-keyed longitudinal tracking
+# ============================================================
+
+def upsert_entity(
+    name: str,
+    entity_type: str = "person",
+    role: str = None,
+    context: str = None,
+) -> int:
+    """
+    Creates or updates an entity. Returns the entity's id.
+    Name is the unique key — case-insensitive match.
+    """
+    now = datetime.utcnow().isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cursor = conn.execute(
+            "SELECT id FROM entities WHERE LOWER(name) = LOWER(?)",
+            (name,)
+        )
+        row = cursor.fetchone()
+        if row:
+            entity_id = row[0]
+            conn.execute(
+                """UPDATE entities SET role = COALESCE(?, role),
+                   context = COALESCE(?, context),
+                   updated_at = ?
+                   WHERE id = ?""",
+                (role, context, now, entity_id)
+            )
+        else:
+            cursor = conn.execute(
+                """INSERT INTO entities
+                   (name, entity_type, role, context,
+                    created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (name, entity_type, role, context, now, now)
+            )
+            entity_id = cursor.lastrowid
+        conn.commit()
+        return entity_id
+    finally:
+        conn.close()
+
+
+def add_entity_fact(
+    entity_id: int,
+    category: str,
+    fact: str,
+    source_channel: str = "director-workspace",
+    confidence: float = 0.8,
+    supersede_category: bool = False,
+) -> int:
+    """
+    Adds a new fact for an entity. If supersede_category=True,
+    marks all previous active facts in this category as superseded
+    by the new one. Returns the new fact's id.
+    """
+    now = datetime.utcnow().isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cursor = conn.execute(
+            """INSERT INTO entity_facts
+               (entity_id, category, fact, status,
+                recorded_at, updated_at, source_channel, confidence)
+               VALUES (?, ?, ?, 'active', ?, ?, ?, ?)""",
+            (entity_id, category, fact, now, now,
+             source_channel, confidence)
+        )
+        new_id = cursor.lastrowid
+
+        if supersede_category:
+            conn.execute(
+                """UPDATE entity_facts
+                   SET status = 'superseded',
+                       superseded_by = ?,
+                       updated_at = ?
+                   WHERE entity_id = ?
+                     AND category = ?
+                     AND status = 'active'
+                     AND id != ?""",
+                (new_id, now, entity_id, category, new_id)
+            )
+        conn.commit()
+        return new_id
+    finally:
+        conn.close()
+
+
+def get_entity_profile(name: str) -> dict:
+    """
+    Returns a full profile for an entity by name.
+    Includes all active facts grouped by category,
+    plus superseded facts for timeline view.
+    Returns empty dict if entity not found.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cursor = conn.execute(
+            "SELECT id, name, entity_type, role, context, "
+            "created_at, updated_at "
+            "FROM entities WHERE LOWER(name) = LOWER(?)",
+            (name,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return {}
+
+        entity_id = row[0]
+        profile = {
+            "id": entity_id,
+            "name": row[1],
+            "entity_type": row[2],
+            "role": row[3],
+            "context": row[4],
+            "created_at": row[5],
+            "updated_at": row[6],
+            "facts": {},
+            "history": [],
+        }
+
+        # Active facts grouped by category
+        facts_cursor = conn.execute(
+            """SELECT category, fact, recorded_at, confidence
+               FROM entity_facts
+               WHERE entity_id = ? AND status = 'active'
+               ORDER BY category, recorded_at DESC""",
+            (entity_id,)
+        )
+        for cat, fact, recorded_at, confidence in facts_cursor:
+            if cat not in profile["facts"]:
+                profile["facts"][cat] = []
+            profile["facts"][cat].append({
+                "fact": fact,
+                "recorded_at": recorded_at,
+                "confidence": confidence,
+            })
+
+        # Timeline — all facts including superseded
+        history_cursor = conn.execute(
+            """SELECT category, fact, status, recorded_at
+               FROM entity_facts
+               WHERE entity_id = ?
+               ORDER BY recorded_at ASC""",
+            (entity_id,)
+        )
+        profile["history"] = [
+            {
+                "category": r[0],
+                "fact": r[1],
+                "status": r[2],
+                "recorded_at": r[3],
+            }
+            for r in history_cursor
+        ]
+
+        return profile
+    finally:
+        conn.close()
+
+
+def list_entities(entity_type: str = "person") -> list:
+    """
+    Returns all entities of a given type with their
+    active fact counts. Used for !roster or similar commands.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cursor = conn.execute(
+            """SELECT e.id, e.name, e.role,
+                      COUNT(f.id) as fact_count,
+                      e.updated_at
+               FROM entities e
+               LEFT JOIN entity_facts f
+                 ON f.entity_id = e.id AND f.status = 'active'
+               WHERE e.entity_type = ?
+               GROUP BY e.id
+               ORDER BY e.name""",
+            (entity_type,)
+        )
+        return [
+            {
+                "id": row[0],
+                "name": row[1],
+                "role": row[2],
+                "fact_count": row[3],
+                "updated_at": row[4],
+            }
+            for row in cursor.fetchall()
+        ]
+    finally:
+        conn.close()
+
+
+def format_entity_profile_for_prompt(name: str) -> str:
+    """
+    Returns a compact string representation of an entity profile
+    suitable for injection into a system prompt or message context.
+    Returns empty string if entity not found.
+    """
+    profile = get_entity_profile(name)
+    if not profile:
+        return ""
+
+    lines = [
+        f"[PERSON: {profile['name']}"
+        + (f" | {profile['role']}" if profile['role'] else "")
+        + "]"
+    ]
+
+    if profile["context"]:
+        lines.append(f"Context: {profile['context']}")
+
+    for category, facts in profile["facts"].items():
+        lines.append(f"{category.title()}:")
+        for f in facts[:3]:  # cap at 3 per category
+            date = f["recorded_at"][:10]
+            lines.append(f"  • [{date}] {f['fact']}")
+
+    return "\n".join(lines)
+
+
 # INITIALISE ON IMPORT
 # ============================================================
 
