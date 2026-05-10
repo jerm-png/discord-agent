@@ -48,20 +48,41 @@ def init_session_table() -> None:
         conn.close()
 
 
-def load_session_state(user_id: str, context_id: int) -> dict:
+def load_session_state(
+    user_id: str,
+    context_id: int,
+    channel_name: str = None
+) -> dict:
     """
     Loads session state for a (user_id, context_id) pair.
-    Returns a default empty state if nothing exists yet.
+    Falls back to most recent state for this user if no
+    exact match exists — handles cross-thread continuity.
+    Returns a default empty state if nothing exists.
     """
     key = f"{user_id}:{context_id}"
     conn = sqlite3.connect(DB_PATH)
     try:
+        # Try exact match first
         cursor = conn.execute(
-            "SELECT active_task, build_list, decisions, recent_actions "
+            "SELECT active_task, build_list, decisions, "
+            "recent_actions "
             "FROM session_state WHERE session_key = ?",
             (key,)
         )
         row = cursor.fetchone()
+
+        # Fall back to most recent state for this user
+        if not row:
+            cursor = conn.execute(
+                "SELECT active_task, build_list, decisions, "
+                "recent_actions "
+                "FROM session_state "
+                "WHERE session_key LIKE ? "
+                "ORDER BY updated DESC LIMIT 1",
+                (f"{user_id}:%",)
+            )
+            row = cursor.fetchone()
+
         if not row:
             return {
                 "active_task": None,
@@ -165,7 +186,11 @@ def clear_session_state(user_id: str, context_id: int) -> None:
         conn.close()
 
 
-def format_session_context(user_id: str, context_id: int) -> str:
+def format_session_context(
+    user_id: str,
+    context_id: int,
+    channel_name: str = None
+) -> str:
     """
     Returns a compact string for injection into the system prompt.
     Returns empty string if no meaningful state exists.
