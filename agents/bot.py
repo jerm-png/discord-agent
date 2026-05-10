@@ -139,7 +139,6 @@ try:
             secret_key=LANGFUSE_SECRET_KEY,
             public_key=LANGFUSE_PUBLIC_KEY,
             host=LANGFUSE_HOST,
-            debug=True,
         )
         print("[Langfuse] Observability active")
     else:
@@ -2916,7 +2915,9 @@ async def process_user_message(
                 },
                 input=user_message[:500],
             )
-        except Exception:
+            print(f"[Langfuse] Trace created: {_lf_trace.id}")
+        except Exception as _lf_e:
+            print(f"[Langfuse] Trace creation failed: {_lf_e}")
             _lf_trace = None
 
     _hist_key = (user_id, context_id)
