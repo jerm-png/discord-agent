@@ -1636,14 +1636,39 @@ def _format_plan(goal: str, steps: list) -> str:
     return "\n".join(lines)
 
 
-def _format_execution_context(findings: list) -> str:
-    if not findings:
+def _format_execution_context(
+    findings: list,
+    key_findings: list = None
+) -> str:
+    """
+    Formats execution context for injection into goal prompts.
+    findings: list of raw step outputs
+    key_findings: list of extracted high-confidence insights
+    """
+    if not findings and not key_findings:
         return "No information gathered yet."
-    parts = [
-        f"[Step {f['step']} — {f['type']}]\n{f['content']}"
-        for f in findings
-    ]
-    return "\n\n---\n\n".join(parts)
+
+    parts = []
+
+    if key_findings:
+        kf_lines = ["[KEY FINDINGS — high confidence insights]"]
+        for kf in key_findings:
+            conf = kf.get("confidence", 0.8)
+            source = kf.get("source_step", "?")
+            finding = kf.get("finding", "")
+            kf_lines.append(
+                f"  • [Step {source} | conf: {conf:.1f}] {finding}"
+            )
+        parts.append("\n".join(kf_lines))
+
+    if findings:
+        raw_parts = [
+            f"[Step {f['step']} — {f['type']}]\n{f['content']}"
+            for f in findings
+        ]
+        parts.append("\n\n---\n\n".join(raw_parts))
+
+    return "\n\n===\n\n".join(parts)
 
 
 def _is_last_search_before_synthesis(steps: list, current_idx: int) -> bool:
@@ -1845,7 +1870,10 @@ async def execute_goal(
     total = len(steps)
 
     if user_id not in execution_context:
-        execution_context[user_id] = []
+        execution_context[user_id] = {
+            "steps": [],
+            "key_findings": [],
+        }
 
     loop = asyncio.get_running_loop()
     final_output = ""
@@ -1884,7 +1912,7 @@ async def execute_goal(
 
                 # ── DRAFT GATE: always pause before draft steps ──────────────
                 if step_type == "draft" and i != skip_gate_for_step:
-                    findings = execution_context.get(user_id, [])
+                    findings = execution_context.get(user_id, {}).get("steps", [])
                     bullets = "\n".join(
                         f"• Step {f['step']} ({f['type']}): "
                         f"{f['content'][:120].rstrip()}..."
@@ -1917,7 +1945,7 @@ async def execute_goal(
                     if step_type == "web_search":
                         search_count = pg.get("web_search_count", 0)
                         if search_count >= 20:
-                            execution_context[user_id].append({
+                            execution_context[user_id]["steps"].append({
                                 "step": step_num, "type": step_type,
                                 "content": "[Skipped — web search limit of 20 reached]"
                             })
@@ -1930,7 +1958,7 @@ async def execute_goal(
                             channel_name
                         )
                         result_str = str(result)
-                        execution_context[user_id].append({
+                        execution_context[user_id]["steps"].append({
                             "step": step_num, "type": "web_search",
                             "content": result_str
                         })
@@ -1990,14 +2018,19 @@ async def execute_goal(
                             )
                         )
                         mem_text = format_memory_for_prompt(memories)
-                        execution_context[user_id].append({
+                        execution_context[user_id]["steps"].append({
                             "step": step_num, "type": "query_memory",
                             "content": mem_text or "No relevant memories found."
                         })
 
                     elif step_type == "analyze":
                         ctx = _format_execution_context(
-                            execution_context[user_id]
+                            execution_context.get(
+                                user_id, {}
+                            ).get("steps", []),
+                            key_findings=execution_context.get(
+                                user_id, {}
+                            ).get("key_findings", [])
                         )
                         if _crew_label:
                             await channel.send(
@@ -2075,14 +2108,50 @@ async def execute_goal(
                             final_analyze_output = analyze_output
                         # ── End Analyze Step Critique Loop ───────────────────
 
-                        execution_context[user_id].append({
+                        execution_context[user_id]["steps"].append({
                             "step": step_num, "type": "analyze",
                             "content": final_analyze_output
                         })
 
+                        # Extract key findings from analyze output
+                        # via background model
+                        try:
+                            _kf_prompt = (
+                                "Extract 1-3 key findings from this analysis. "
+                                "Return a JSON array of objects with keys: "
+                                "'finding' (string, one sentence), "
+                                "'confidence' (float 0.0-1.0). "
+                                "Return only valid JSON, no markdown, "
+                                "no explanation.\n\n"
+                                f"Analysis:\n{analyze_output[:1000]}"
+                            )
+                            _kf_raw = await call_background_model(_kf_prompt)
+                            _kf_raw = _kf_raw.strip().replace(
+                                "```json", ""
+                            ).replace("```", "")
+                            _kf_list = json.loads(_kf_raw)
+                            for _kf in _kf_list:
+                                if isinstance(_kf, dict) and "finding" in _kf:
+                                    execution_context[user_id][
+                                        "key_findings"
+                                    ].append({
+                                        "finding": _kf["finding"],
+                                        "confidence": float(
+                                            _kf.get("confidence", 0.8)
+                                        ),
+                                        "source_step": step_num,
+                                    })
+                        except Exception:
+                            pass  # non-fatal — key findings are supplementary
+
                     elif step_type == "draft":
                         ctx = _format_execution_context(
-                            execution_context[user_id]
+                            execution_context.get(
+                                user_id, {}
+                            ).get("steps", []),
+                            key_findings=execution_context.get(
+                                user_id, {}
+                            ).get("key_findings", [])
                         )
                         if _crew_label:
                             await channel.send(
@@ -2105,7 +2174,7 @@ async def execute_goal(
                         final_output = r.content[0].text.strip()
                         if _crew_label:
                             final_output = _crew_label + final_output
-                        execution_context[user_id].append({
+                        execution_context[user_id]["steps"].append({
                             "step": step_num, "type": "draft",
                             "content": final_output
                         })
@@ -2122,7 +2191,7 @@ async def execute_goal(
                             memory_mode=memory_mode,
                             background_model_fn=call_background_model
                         )
-                        execution_context[user_id].append({
+                        execution_context[user_id]["steps"].append({
                             "step": step_num, "type": "save_memory",
                             "content": f"Saved to memory: {content_to_save[:100]}"
                         })
@@ -2140,7 +2209,12 @@ async def execute_goal(
                                 f"falling back to analyze"
                             )
                             ctx = _format_execution_context(
-                                execution_context[user_id]
+                                execution_context.get(
+                                    user_id, {}
+                                ).get("steps", []),
+                                key_findings=execution_context.get(
+                                    user_id, {}
+                                ).get("key_findings", [])
                             )
                             r = client.messages.create(
                                 model=MAIN_MODEL,
@@ -2153,7 +2227,7 @@ async def execute_goal(
                                 )}]
                             )
                             agent_response = r.content[0].text.strip()
-                            execution_context[user_id].append({
+                            execution_context[user_id]["steps"].append({
                                 "step": step_num, "type": "call_agent",
                                 "content": agent_response
                             })
@@ -2167,7 +2241,12 @@ async def execute_goal(
                                     + "\n[Agent definition truncated]"
                                 )
                             ctx = _format_execution_context(
-                                execution_context[user_id]
+                                execution_context.get(
+                                    user_id, {}
+                                ).get("steps", []),
+                                key_findings=execution_context.get(
+                                    user_id, {}
+                                ).get("key_findings", [])
                             )
                             r = client.messages.create(
                                 model=MAIN_MODEL,
@@ -2180,7 +2259,7 @@ async def execute_goal(
                                 )}]
                             )
                             agent_response = r.content[0].text.strip()
-                            execution_context[user_id].append({
+                            execution_context[user_id]["steps"].append({
                                 "step": step_num, "type": "call_agent",
                                 "content": f"[{agent_name}]: {agent_response}"
                             })
@@ -2227,7 +2306,7 @@ async def execute_goal(
     if final_output:
         await send_long_message(channel, final_output)
     else:
-        findings = execution_context.get(user_id, [])
+        findings = execution_context.get(user_id, {}).get("steps", [])
         if findings:
             parts = [f"**Goal complete: {goal}**\n"]
             for f in findings:
@@ -2247,7 +2326,7 @@ async def execute_goal(
 
     web_searches = pg.get("web_search_count", 0)
     mem_queries = sum(
-        1 for f in execution_context.get(user_id, [])
+        1 for f in execution_context.get(user_id, {}).get("steps", [])
         if f["type"] == "query_memory"
     )
     await send_to_channel(
@@ -2300,7 +2379,10 @@ async def _replan_remaining_steps(
         asyncio.create_task(execute_goal(user_id, author_display_name))
         return
 
-    ctx_summary = _format_execution_context(execution_context.get(user_id, []))
+    ctx_summary = _format_execution_context(
+        execution_context.get(user_id, {}).get("steps", []),
+        key_findings=execution_context.get(user_id, {}).get("key_findings", [])
+    )
     mod_prompt = (
         f"Goal: {pg['goal']}\n\n"
         f"Context gathered so far:\n{ctx_summary[:800]}\n\n"
