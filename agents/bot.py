@@ -2964,7 +2964,13 @@ async def process_user_message(
                 api_params = {
                     "model": MAIN_MODEL,
                     "max_tokens": 4096,
-                    "system": effective_system,
+                    "system": [
+                        {
+                            "type": "text",
+                            "text": effective_system,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
                     "messages": conversation_history[_hist_key],
                 }
                 if active_tools:
