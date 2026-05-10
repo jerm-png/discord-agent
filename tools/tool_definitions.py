@@ -6,6 +6,8 @@ from datetime import datetime
 from ddgs import DDGS
 import requests
 
+SERPER_API_KEY = os.getenv("SERPER_API_KEY")
+
 # Add project root to path
 project_root = os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)
@@ -562,6 +564,43 @@ def handle_flag_for_review(inputs, channel_name: str = 'global'):
     )
 
 
+def _search_serper(query: str, num_results: int = 5) -> list:
+    """
+    Searches Google via Serper API.
+    Returns list of dicts with keys: title, link, snippet.
+    Returns empty list if API key missing or request fails.
+    """
+    if not SERPER_API_KEY:
+        return []
+    try:
+        import urllib.request
+        payload = json.dumps({
+            "q": query,
+            "num": num_results
+        }).encode()
+        req = urllib.request.Request(
+            "https://google.serper.dev/search",
+            data=payload,
+            headers={
+                "X-API-KEY": SERPER_API_KEY,
+                "Content-Type": "application/json"
+            }
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        results = []
+        for item in data.get("organic", [])[:num_results]:
+            results.append({
+                "title": item.get("title", ""),
+                "link": item.get("link", ""),
+                "snippet": item.get("snippet", ""),
+            })
+        return results
+    except Exception as e:
+        print(f"[Serper] Search failed: {e}")
+        return []
+
+
 def handle_web_search(inputs):
     """
     Searches the web using DuckDuckGo and returns
@@ -571,33 +610,49 @@ def handle_web_search(inputs):
     query = inputs.get("query", "")
     max_results = min(int(inputs.get("max_results", 3)), 5)
 
+    raw_results = []
+    _ddg_failed = False
     try:
         with DDGS(timeout=10) as ddgs:
             raw_results = list(ddgs.text(
                 query,
                 max_results=max_results
             ))
+    except Exception as _ddg_err:
+        print(f"[Search] DuckDuckGo failed: {_ddg_err}")
+        _ddg_failed = True
 
-        if not raw_results:
-            return f"No results found for: {query}"
+    # Fall back to Serper if DDG failed or returned nothing
+    _used_serper = False
+    if not raw_results:
+        _serper_results = _search_serper(query, num_results=max_results)
+        if _serper_results:
+            _used_serper = True
+            for r in _serper_results:
+                raw_results.append({
+                    "title": r["title"],
+                    "href": r["link"],
+                    "body": r["snippet"],
+                })
 
-        formatted = f"Search results for '{query}':\n\n"
+    if not raw_results:
+        return "No search results found. Both DuckDuckGo and Serper returned nothing."
 
-        for i, result in enumerate(raw_results, 1):
-            title = result.get("title", "No title")
-            url = result.get("href", "No URL")
-            snippet = result.get("body", "No description")
+    _source_note = "[Source: Google via Serper]\n" if _used_serper else ""
+    formatted = _source_note + f"Search results for '{query}':\n\n"
 
-            formatted += (
-                f"{i}. {title}\n"
-                f"   Source: {url}\n"
-                f"   {snippet[:200]}\n\n"
-            )
+    for i, result in enumerate(raw_results, 1):
+        title = result.get("title", "No title")
+        url = result.get("href", "No URL")
+        snippet = result.get("body", "No description")
 
-        return formatted
+        formatted += (
+            f"{i}. {title}\n"
+            f"   Source: {url}\n"
+            f"   {snippet[:200]}\n\n"
+        )
 
-    except Exception as e:
-        return "Web search unavailable — answering from training knowledge."
+    return formatted
 
 
 def handle_web_fetch(inputs):
