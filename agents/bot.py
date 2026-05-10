@@ -225,9 +225,14 @@ CHANNEL_PURPOSE = {
         "values, constraints, who the user is."
     ),
     "director-workspace": (
-        "Professional development, leadership "
-        "thinking, contact center insights, "
-        "career growth."
+        "Private leadership workspace for a Director "
+        "of Customer/Client Experience. Used for "
+        "coaching and development tracking of four "
+        "direct reports, sounding board conversations, "
+        "team trend analysis, difficult people decisions, "
+        "and leadership mentoring. Entity memory tracks "
+        "individuals longitudinally across sessions. "
+        "High-stakes decisions always gate before drafting."
     ),
     "planning": (
         "Strategic planning sessions and "
