@@ -69,6 +69,9 @@ analytical_collection = chroma_client.get_or_create_collection(
 # ── Rubric rejection queue ────────────────────────────────────
 _rubric_rejection_log: list = []
 
+# ── Health protocol notification queue ──────────────────────────
+_health_protocol_log: list = []
+
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -1695,6 +1698,110 @@ def get_active_protocols():
         }
         for r in rows
     ]
+
+
+def get_active_health_protocol(protocol_name: str) -> dict | None:
+    """Returns the active (no end_date) health_protocols row for protocol_name, or None."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        SELECT id, protocol_name, dose, frequency, start_date, notes
+        FROM health_protocols
+        WHERE protocol_name = ? AND end_date IS NULL
+        LIMIT 1
+    """, (protocol_name,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return None
+    return {
+        "id": row[0], "protocol_name": row[1], "dose": row[2],
+        "frequency": row[3], "start_date": row[4], "notes": row[5]
+    }
+
+
+def health_protocol_log_notification(msg: str) -> None:
+    """Appends a notification message to the health protocol log queue."""
+    _health_protocol_log.append(msg)
+
+
+async def extract_health_protocols(
+    bot_reply: str, call_background_model_fn
+) -> list:
+    """
+    Calls the background model to extract supplement/peptide/medication
+    protocols from bot_reply. Returns a list of dicts with keys:
+    protocol_name, dose, frequency, start_date, notes.
+    Returns [] on parse failure or if no protocols found.
+    """
+    prompt = (
+        "You are a clinical data extractor. Read the following text and identify "
+        "any supplement, peptide, or medication protocols that include a specific "
+        "name, dosage, and frequency.\n\n"
+        "Return ONLY a valid JSON array. Each item must have exactly these fields:\n"
+        "\"protocol_name\": string — name of the supplement, peptide, or medication\n"
+        "\"dose\": string — dosage amount and unit (e.g. \"500mg\", \"250mcg\", \"5mg/kg\")\n"
+        "\"frequency\": string — how often taken (e.g. \"daily\", \"twice weekly\", \"as needed\")\n"
+        "\"start_date\": string — use today's date in YYYY-MM-DD format if not explicitly stated\n"
+        "\"notes\": string or null — relevant context such as whether this is a confirmed "
+        "current protocol or a recommendation\n\n"
+        "Rules:\n"
+        "If no protocols with all three of name + dose + frequency are present, return []\n"
+        "Do not hallucinate. Only extract what is explicitly stated in the text.\n"
+        "Return [] for general health discussion with no specific protocols.\n"
+        "Return ONLY the JSON array with no explanation, no markdown, no code fences.\n\n"
+        f"Text to analyze:\n{bot_reply}"
+    )
+    try:
+        raw = await call_background_model_fn(prompt, max_tokens=600)
+        clean = raw.strip().replace("```json", "").replace("```", "").strip()
+        return json.loads(clean)
+    except Exception:
+        return []
+
+
+async def extract_and_save_health_protocols(
+    bot_reply: str, call_background_model_fn
+) -> int:
+    """
+    Extracts clinical protocols from bot_reply, applies dose-aware dedup,
+    writes new/updated records to health_protocols, and queues log messages.
+    Returns the count of records written (new + updated, skips excluded).
+    """
+    protocols = await extract_health_protocols(bot_reply, call_background_model_fn)
+    today = datetime.now().strftime("%Y-%m-%d")
+    written = 0
+
+    for protocol in protocols:
+        name = protocol.get("protocol_name", "").strip()
+        dose = protocol.get("dose", "").strip()
+        frequency = protocol.get("frequency", "").strip()
+        start_date = protocol.get("start_date") or today
+        notes = protocol.get("notes") or None
+
+        if not name or not dose or not frequency:
+            continue
+
+        existing = get_active_health_protocol(name)
+
+        if existing is None:
+            log_health_protocol(name, dose, frequency, start_date, notes)
+            health_protocol_log_notification(
+                f"💊 Protocol captured: {name} | {dose} | {frequency}"
+            )
+            written += 1
+        elif existing["dose"] == dose:
+            continue  # true duplicate — skip
+        else:
+            old_dose = existing["dose"]
+            update_health_protocol_end(name, today)
+            log_health_protocol(name, dose, frequency, start_date, notes)
+            health_protocol_log_notification(
+                f"💊 Protocol updated: {name} | {old_dose} → {dose}"
+            )
+            written += 1
+
+    return written
 
 
 def get_memory_counts() -> dict:

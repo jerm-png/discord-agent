@@ -62,6 +62,8 @@ from memory.memory_manager import (
     record_rubric_rejection,
     evaluate_memory_rubric,
     get_top_similar_memories,
+    extract_and_save_health_protocols,
+    _health_protocol_log,
 )
 
 from tools.tool_definitions import (
@@ -2917,6 +2919,21 @@ async def process_user_message(
                     "trouble forming a response. "
                     "Check bot-logs for details."
                 )
+
+            # ── Auto-detect clinical specifics in #health-tracking ────────────
+            if effective_channel_name == "health-tracking" and final_response_text:
+                saved_count = await extract_and_save_health_protocols(
+                    final_response_text, call_background_model
+                )
+                while _health_protocol_log:
+                    msg = _health_protocol_log.pop(0)
+                    await send_to_channel(guild, LOG_CHANNEL, msg)
+                if saved_count > 0:
+                    await send_to_channel(
+                        guild, LOG_CHANNEL,
+                        f"🏥 {saved_count} health protocol(s) "
+                        f"auto-captured from response"
+                    )
 
             if memory_mode != "ephemeral":
                 await extract_and_store_memories(
