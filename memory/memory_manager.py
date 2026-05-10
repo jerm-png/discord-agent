@@ -256,6 +256,22 @@ def init_db():
     """)
 
     c.execute("""
+        CREATE TABLE IF NOT EXISTS session_state (
+            session_key TEXT PRIMARY KEY,
+            active_task TEXT,
+            build_list TEXT,
+            decisions TEXT,
+            recent_actions TEXT,
+            updated TEXT NOT NULL
+        )
+    """)
+
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_session_updated
+        ON session_state(updated)
+    """)
+
+    c.execute("""
         CREATE TABLE IF NOT EXISTS reasoning_trace (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp TEXT NOT NULL,

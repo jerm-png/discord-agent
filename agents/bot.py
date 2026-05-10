@@ -72,6 +72,15 @@ from tools.tool_definitions import (
     drain_escalation_queue,
 )
 
+from session import (
+    init_session_table,
+    load_session_state,
+    update_session_state,
+    append_recent_action,
+    clear_session_state,
+    format_session_context,
+)
+
 from voice_input import transcribe_attachment
 
 # ============================================================
@@ -690,6 +699,87 @@ def _check_ollama_status() -> tuple:
         return True, OLLAMA_MODEL
     except Exception:
         return False, OLLAMA_MODEL
+
+
+async def _save_session_state_async(
+    user_id: str,
+    context_id: int,
+    action_summary: str,
+    response_text: str,
+) -> None:
+    """
+    Background task — extracts session state updates from the
+    latest exchange and persists them. Fire-and-forget via
+    asyncio.create_task(). Never blocks the response.
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        # Append the action summary to recent_actions
+        await loop.run_in_executor(
+            None,
+            append_recent_action,
+            user_id,
+            context_id,
+            action_summary,
+        )
+
+        # Ask the background model to extract any task or
+        # build list updates from this exchange
+        prompt = (
+            "Extract session state updates from this exchange. "
+            "Return a JSON object with these optional keys:\n"
+            "  active_task: string describing what is being worked "
+            "on right now (null if unclear)\n"
+            "  new_decisions: list of strings, each a concise "
+            "decision made (empty list if none)\n"
+            "  build_list_updates: list of objects with keys "
+            "'label' (string) and 'status' "
+            "('pending'|'in_progress'|'done') — only include items "
+            "that changed or are new\n"
+            "Return only valid JSON, no explanation, no markdown.\n\n"
+            f"User said: {action_summary}\n\n"
+            f"Assistant response (first 600 chars): "
+            f"{response_text[:600]}"
+        )
+        raw = await call_background_model(prompt)
+        raw = raw.strip().replace("```json", "").replace("```", "")
+        updates = json.loads(raw)
+
+        existing = load_session_state(user_id, int(context_id))
+
+        new_decisions = existing["decisions"] + updates.get(
+            "new_decisions", []
+        )
+        new_decisions = new_decisions[-20:]
+
+        bl_updates = {
+            item["label"]: item
+            for item in updates.get("build_list_updates", [])
+            if isinstance(item, dict) and "label" in item
+        }
+        merged_bl = []
+        for item in existing["build_list"]:
+            label = item.get("label", "")
+            if label in bl_updates:
+                merged_bl.append(bl_updates.pop(label))
+            else:
+                merged_bl.append(item)
+        for new_item in bl_updates.values():
+            merged_bl.append(new_item)
+
+        await loop.run_in_executor(
+            None,
+            update_session_state,
+            user_id,
+            int(context_id),
+            updates.get("active_task"),
+            merged_bl,
+            new_decisions,
+            None,
+        )
+
+    except Exception as e:
+        print(f"[Session] State update failed (non-fatal): {e}")
 
 
 async def call_background_model(prompt: str) -> str:
@@ -2568,6 +2658,10 @@ async def process_user_message(
     global stale_warned_this_session
     effective_channel_name = channel_name or channel.name
     _hist_key = (user_id, context_id)
+    system_chars = 0
+    memory_context_chars = 0
+    history_chars = 0
+    tool_schema_chars = 0
     if _hist_key not in conversation_history:
         conversation_history[_hist_key] = []
 
@@ -2582,6 +2676,7 @@ async def process_user_message(
         user_message, channel_name=effective_channel_name
     )
     memory_context = format_memory_for_prompt(memories)
+    memory_context_chars = len(memory_context) if memory_context else 0
     _mem_count = sum(
         len(memories.get(k, [])) for k in ("strategic", "operational", "analytical")
     )
@@ -2774,6 +2869,14 @@ async def process_user_message(
             else:
                 effective_system = SYSTEM_PROMPT
 
+            system_chars = len(effective_system)
+            _session_ctx = format_session_context(str(user_id), context_id)
+            if _session_ctx:
+                effective_system = (
+                    effective_system
+                    + "\n\n---\n"
+                    + _session_ctx
+                )
             _reasoning_iterations = 0
             total_in_tokens = 0
             total_out_tokens = 0
@@ -2808,6 +2911,13 @@ async def process_user_message(
                 }
                 if active_tools:
                     api_params["tools"] = active_tools
+
+                if _reasoning_iterations == 1:
+                    history_chars = sum(
+                        len(str(m.get("content", "")))
+                        for m in conversation_history[_hist_key]
+                    )
+                    tool_schema_chars = sum(len(str(t)) for t in active_tools)
 
                 _overloaded = False
                 _rate_limited = False
@@ -2909,6 +3019,20 @@ async def process_user_message(
             conversation_history[_hist_key] = \
                 conversation_history[_hist_key][-20:]
 
+            if final_response_text and memory_mode != "ephemeral":
+                _action_summary = (
+                    f"[{datetime.utcnow().strftime('%H:%M')}] "
+                    + user_message[:80].replace("\n", " ")
+                )
+                asyncio.create_task(
+                    _save_session_state_async(
+                        str(user_id),
+                        context_id,
+                        _action_summary,
+                        final_response_text,
+                    )
+                )
+
             if final_response_text:
                 await send_long_message(channel, final_response_text)
                 if speak:
@@ -2997,20 +3121,25 @@ async def process_user_message(
                 f"Task complete: {task_completed} | "
                 f"Stale flags: {stale_count}"
             )
-            file_token_note = (
-                f" | File injection: ~{file_injection_chars // 4:,} tokens"
-                if file_injection_chars else ""
-            )
             cache_note = (
                 f" | cache_write: {cache_write_tokens:,} | cache_read: {cache_read_tokens:,}"
                 if cache_write_tokens or cache_read_tokens else ""
+            )
+            _attr_file = (
+                f" | files: ~{file_injection_chars // 4:,}"
+                if file_injection_chars else ""
             )
             await send_to_channel(
                 guild,
                 LOG_CHANNEL,
                 f"Tokens — in: {in_tokens:,} | out: {out_tokens:,}"
                 + cache_note
-                + f" | est. cost: ${est_cost:.4f}{file_token_note}"
+                + f" | est. cost: ${est_cost:.4f}\n"
+                + f"Attribution — system: ~{system_chars // 4:,}"
+                + f" | memory: ~{memory_context_chars // 4:,}"
+                + f" | history: ~{history_chars // 4:,}"
+                + f" | tools: ~{tool_schema_chars // 4:,}"
+                + _attr_file
             )
 
             if active_agent_slug and active_agent_slug in AGENT_DEFINITIONS:
@@ -3257,6 +3386,7 @@ async def on_ready():
     """Runs once when the bot connects to Discord."""
     global BOT_START_TIME
     BOT_START_TIME = datetime.now()
+    init_session_table()
 
     raw_histories = load_all_conversation_histories()
     total_stripped = 0
