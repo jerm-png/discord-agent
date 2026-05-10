@@ -906,6 +906,22 @@ def archive_memory(layer, memory_id, reason,
     """, (memory_id,))
 
     conn.commit()
+
+    # Sync ChromaDB — remove vector entry so archived records
+    # never surface in semantic retrieval
+    collection_map = {
+        "strategic": strategic_collection,
+        "operational": operational_collection,
+        "analytical": analytical_collection,
+    }
+    chroma_collection = collection_map.get(layer)
+    if chroma_collection:
+        chroma_id = f"{layer}_{memory_id}"
+        try:
+            chroma_collection.delete(ids=[chroma_id])
+        except Exception as e:
+            print(f"[archive_memory] ChromaDB delete skipped for {chroma_id}: {e}")
+
     conn.close()
     return True
 
