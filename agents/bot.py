@@ -9,7 +9,6 @@ import sqlite3
 import sys
 import json
 import urllib.request
-from collections import defaultdict
 from datetime import datetime
 from discord import app_commands
 from dotenv import load_dotenv
@@ -113,6 +112,18 @@ from services import (
     send_to_channel,
     send_long_message,
     post_status,
+)
+from state import (
+    conversation_history,
+    attached_files,
+    pending_goals,
+    execution_context,
+    gate_pending,
+    thread_agent_pins,
+    _consolidation_cooldown,
+    _last_token_usage,
+    stale_warned_this_session,
+    BOT_START_TIME,
 )
 
 # ============================================================
@@ -308,12 +319,6 @@ CHANNEL_PURPOSE = {
     ),
 }
 
-conversation_history = {}
-attached_files: defaultdict = defaultdict(list)
-BOT_START_TIME = None
-_last_token_usage = {"input": 0, "output": 0}
-_consolidation_cooldown: set = set()
-stale_warned_this_session = False
 
 CONFABULATION_TRIGGERS = (
     "you said", "you told me", "you mentioned", "did you say",
@@ -327,11 +332,6 @@ def _is_confabulation_check(text: str) -> bool:
     return any(t in lower for t in CONFABULATION_TRIGGERS)
 
 
-# Goal mode state — keyed by user_id, cleared on restart
-pending_goals: dict = {}
-execution_context: dict = {}
-gate_pending: dict = {}
-thread_agent_pins: dict = {}  # keyed by context_id (thread ID)
 
 # Gate frequency: "smart" | "always" | "minimal"
 # smart   = gate when results are surprising, low quality, or last search before synthesis
