@@ -98,6 +98,7 @@ from memory.memory_manager import (
     evaluate_memory_rubric,
     get_unresolved_high_priority_flags,
     get_top_similar_memories,
+    record_rubric_rejection,
 )
 from tools.tool_definitions import (
     TOOL_DEFINITIONS,
