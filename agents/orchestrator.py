@@ -50,6 +50,7 @@ from services import (
     send_long_message,
     post_status,
 )
+import state
 from state import (
     conversation_history,
     attached_files,
@@ -59,12 +60,9 @@ from state import (
     thread_agent_pins,
     _consolidation_cooldown,
     _last_token_usage,
-    stale_warned_this_session,
     BOT_START_TIME,
     AGENT_DEFINITIONS,
     SYSTEM_PROMPT,
-    bot,
-    _langfuse,
 )
 from memory.memory_manager import (
     get_relevant_memories,
@@ -2027,9 +2025,9 @@ async def process_user_message(
 
     # ── Langfuse trace ───────────────────────────────────
     _lf_trace = None
-    if _langfuse:
+    if state._langfuse:
         try:
-            _lf_trace = _langfuse.trace(
+            _lf_trace = state._langfuse.trace(
                 name="process_user_message",
                 user_id=str(user_id),
                 session_id=str(context_id),
@@ -2559,7 +2557,7 @@ async def process_user_message(
             if final_response_text:
                 await send_long_message(channel, final_response_text)
                 if speak:
-                    await speak_response(final_response_text, guild, channel, bot=bot)
+                    await speak_response(final_response_text, guild, channel, bot=state.bot)
             else:
                 await channel.send(
                     "I processed your request but had "
@@ -2714,12 +2712,11 @@ async def process_user_message(
                             "task_complete": task_completed,
                         }
                     )
-                    _langfuse.flush()
+                    state._langfuse.flush()
                 except Exception:
                     pass
 
-            if stale_count and not stale_warned_this_session:
-                import state
+            if stale_count and not state.stale_warned_this_session:
                 state.stale_warned_this_session = True
                 await send_to_channel(
                     guild,

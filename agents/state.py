@@ -34,8 +34,17 @@ BOT_START_TIME = None
 AGENT_DEFINITIONS: dict = {}
 
 # ── System prompt ────────────────────────────────────────────
-# Loaded from SOUL.md at startup
-SYSTEM_PROMPT: str = ""
+# Loaded from SOUL.md at module import time so both
+# bot.py and orchestrator.py see the real content immediately.
+_soul_path = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "SOUL.md",
+)
+try:
+    with open(_soul_path, "r", encoding="utf-8") as _f:
+        SYSTEM_PROMPT: str = _f.read()
+except Exception:
+    SYSTEM_PROMPT: str = ""
 
 # ── Discord bot client ───────────────────────────────────────
 # Set in on_ready() after bot connects
