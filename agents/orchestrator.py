@@ -17,6 +17,7 @@ from datetime import datetime
 from collections import defaultdict
 
 import discord
+from anthropic import APIStatusError
 
 from config import (
     MAIN_MODEL,
