@@ -115,6 +115,7 @@ from orchestrator import (
     strip_orphaned_tool_results,
     _saveable_history,
     tag_owner,
+    CREW_GOAL_PLANNER_SYSTEM_PROMPT,
 )
 
 # ============================================================
@@ -1095,7 +1096,6 @@ async def on_message(message):
     if is_prefix and user_message.lower().startswith("crew "):
         _crew_goal_text = user_message[5:].strip()
         if _crew_goal_text:
-            from orchestrator import CREW_GOAL_PLANNER_SYSTEM_PROMPT
             _agent_slugs = ", ".join(sorted(AGENT_DEFINITIONS.keys())) or "none loaded"
             _crew_planner_prompt = CREW_GOAL_PLANNER_SYSTEM_PROMPT
             _crew_user_content = (
