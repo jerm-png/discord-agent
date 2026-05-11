@@ -27,6 +27,18 @@ from config import (
     HISTORY_SUMMARY_ROLE,
     CONSOLIDATION_THRESHOLDS,
     OWNER_ID,
+    CHANNEL_MEMORY_MODE,
+    CHANNEL_PROJECT_TAG,
+    CHANNEL_IGNORED,
+    THREADED_CHANNELS,
+    CHANNEL_TOOL_MODE,
+    CHANNEL_PURPOSE,
+    SEARCH_ONLY_TOOL_NAMES,
+    CODEBASE_SEARCH_EXCLUDED_CHANNELS,
+    FILE_CONTENT_CHAR_LIMIT,
+    POPPLER_PATH,
+    PDF_VISION_THRESHOLD,
+    PDF_VISION_MAX_PAGES,
 )
 from model import (
     client,
@@ -49,6 +61,10 @@ from state import (
     _last_token_usage,
     stale_warned_this_session,
     BOT_START_TIME,
+    AGENT_DEFINITIONS,
+    SYSTEM_PROMPT,
+    bot,
+    _langfuse,
 )
 from memory.memory_manager import (
     get_relevant_memories,
@@ -70,6 +86,13 @@ from memory.memory_manager import (
     upsert_entity,
     add_entity_fact,
     MEMORY_ISOLATED_CHANNELS,
+    drain_rubric_rejection_log,
+    is_task_completion,
+    get_recent_experiences,
+    extract_and_save_health_protocols,
+    _health_protocol_log,
+    save_conversation_history,
+    evaluate_memory_rubric,
 )
 from tools.tool_definitions import (
     TOOL_DEFINITIONS,
@@ -83,6 +106,137 @@ from session import (
     clear_session_state,
     format_session_context,
 )
+from voice_input import speak_response
+try:
+    from langfuse import Langfuse
+except ImportError:
+    Langfuse = None
+
+
+CONFABULATION_TRIGGERS = (
+    "you said", "you told me", "you mentioned", "did you say",
+    "show me where", "you recommended", "you suggested",
+    "you told", "you wrote", "you claimed",
+)
+
+
+def _is_confabulation_check(text: str) -> bool:
+    lower = text.lower()
+    return any(t in lower for t in CONFABULATION_TRIGGERS)
+
+
+def strip_orphaned_tool_results(history: list) -> tuple:
+    """
+    Removes orphaned tool blocks from conversation history in both directions.
+
+    Pass 1 — tool_result without matching tool_use: strips tool_result blocks
+    from a user message when the preceding assistant message has no tool_use
+    block with the same tool_use_id.
+
+    Pass 2 — tool_use without matching tool_result: strips tool_use blocks
+    from an assistant message when the immediately following user message has
+    no tool_result block with the matching tool_use_id. If an assistant message
+    loses all its content blocks it is removed entirely.
+
+    Handles both SDK objects (.type / .id attributes) and plain dicts.
+    Returns (cleaned_history, count_stripped).
+    """
+    stripped = 0
+
+    def _block_type(block):
+        if isinstance(block, dict):
+            return block.get("type")
+        return getattr(block, "type", None)
+
+    def _block_id(block):
+        if isinstance(block, dict):
+            return block.get("id")
+        return getattr(block, "id", None)
+
+    def _tool_use_id(block):
+        if isinstance(block, dict):
+            return block.get("tool_use_id")
+        return getattr(block, "tool_use_id", None)
+
+    # ── Pass 1: strip orphaned tool_results (user message direction) ──────────
+    pass1 = []
+    for msg in history:
+        content = msg.get("content")
+        role = msg.get("role")
+
+        if role == "user" and isinstance(content, list):
+            valid_ids = set()
+            if pass1:
+                prev = pass1[-1]
+                if prev.get("role") == "assistant":
+                    prev_content = prev.get("content", [])
+                    if isinstance(prev_content, list):
+                        for block in prev_content:
+                            if _block_type(block) == "tool_use":
+                                valid_ids.add(_block_id(block))
+
+            surviving = []
+            for block in content:
+                if _block_type(block) == "tool_result":
+                    if _tool_use_id(block) in valid_ids:
+                        surviving.append(block)
+                    else:
+                        stripped += 1
+                else:
+                    surviving.append(block)
+
+            if surviving:
+                pass1.append({**msg, "content": surviving})
+            # else: entire message was orphaned tool_results — drop it
+        else:
+            pass1.append(msg)
+
+    # ── Pass 2: strip orphaned tool_use blocks (assistant message direction) ───
+    pass2 = []
+    for i, msg in enumerate(pass1):
+        content = msg.get("content")
+        role = msg.get("role")
+
+        if role == "assistant" and isinstance(content, list):
+            # Collect tool_result IDs from the immediately following user message
+            valid_result_ids = set()
+            if i + 1 < len(pass1):
+                next_msg = pass1[i + 1]
+                if next_msg.get("role") == "user":
+                    next_content = next_msg.get("content", [])
+                    if isinstance(next_content, list):
+                        for block in next_content:
+                            if _block_type(block) == "tool_result":
+                                valid_result_ids.add(_tool_use_id(block))
+
+            surviving = []
+            for block in content:
+                if _block_type(block) == "tool_use":
+                    if _block_id(block) in valid_result_ids:
+                        surviving.append(block)
+                    else:
+                        stripped += 1
+                else:
+                    surviving.append(block)
+
+            if surviving:
+                pass2.append({**msg, "content": surviving})
+            # else: all blocks stripped — drop the assistant message entirely
+        else:
+            pass2.append(msg)
+
+    return pass2, stripped
+
+
+def _saveable_history(history: list) -> list:
+    """Returns the last 50 plain-string messages after bidirectional tool-block
+    validation. Strips orphaned tool_use/tool_result blocks before filtering
+    so corrupted exchanges are never written to SQLite."""
+    validated, _ = strip_orphaned_tool_results(history)
+    return [
+        m for m in validated
+        if isinstance(m.get("content"), str)
+    ][-50:]
 
 
 def tag_owner() -> str:
