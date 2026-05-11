@@ -5,6 +5,7 @@
 # ============================================================
 
 from collections import defaultdict
+import os
 
 # ── Conversation state ───────────────────────────────────────
 conversation_history: dict = {}
@@ -27,3 +28,19 @@ _last_token_usage: dict = {"input": 0, "output": 0}
 
 # ── Bot startup time ─────────────────────────────────────────
 BOT_START_TIME = None
+
+# ── Agent definitions ────────────────────────────────────────
+# Populated at startup by _load_agent_definitions()
+AGENT_DEFINITIONS: dict = {}
+
+# ── System prompt ────────────────────────────────────────────
+# Loaded from SOUL.md at startup
+SYSTEM_PROMPT: str = ""
+
+# ── Discord bot client ───────────────────────────────────────
+# Set in on_ready() after bot connects
+bot = None
+
+# ── Langfuse observability client ───────────────────────────
+# Set at startup if keys are present
+_langfuse = None
