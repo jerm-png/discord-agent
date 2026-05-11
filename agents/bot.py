@@ -13,7 +13,7 @@ from collections import defaultdict
 from datetime import datetime
 from discord import app_commands
 from dotenv import load_dotenv
-from anthropic import Anthropic, APIStatusError
+from anthropic import APIStatusError
 import PyPDF2
 import docx
 from pdf2image import convert_from_bytes
@@ -92,7 +92,6 @@ from voice_input import (
 from config import (
     MAIN_MODEL,
     BACKGROUND_MODEL,
-    OLLAMA_URL,
     OLLAMA_MODEL,
     LOG_CHANNEL,
     STATUS_CHANNEL,
@@ -105,6 +104,11 @@ from config import (
     HISTORY_SUMMARY_ROLE,
     CONSOLIDATION_THRESHOLDS,
 )
+from model import (
+    client,
+    call_background_model,
+    call_background_model_json,
+)
 
 # ============================================================
 # CONFIGURATION
@@ -115,7 +119,6 @@ load_dotenv(os.path.join(
     '.env'
 ))
 
-client = Anthropic()
 
 OWNER_ID = os.getenv("DISCORD_OWNER_ID", "")
 
@@ -805,79 +808,6 @@ async def _save_session_state_async(
     except Exception as e:
         print(f"[Session] State update failed (non-fatal): {e}")
 
-
-async def call_background_model(prompt: str) -> str:
-    """Tries Ollama first, falls back to Anthropic Haiku if unavailable."""
-    def _call_ollama():
-        payload = json.dumps({
-            "model": OLLAMA_MODEL,
-            "prompt": prompt,
-            "stream": False
-        }).encode()
-        req = urllib.request.Request(
-            OLLAMA_URL,
-            data=payload,
-            headers={"Content-Type": "application/json"}
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read())["response"]
-
-    loop = asyncio.get_running_loop()
-    try:
-        return await loop.run_in_executor(None, _call_ollama)
-    except Exception:
-        response = client.messages.create(
-            model=BACKGROUND_MODEL,
-            max_tokens=1500,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response.content[0].text.strip()
-
-
-async def call_background_model_json(prompt: str) -> dict | list | None:
-    """
-    Like call_background_model but expects and validates
-    a JSON response. Retries with Haiku if Ollama returns
-    malformed JSON. Returns parsed object or None on failure.
-    Never raises — always returns None on unrecoverable failure.
-    """
-    for _attempt, _use_haiku in enumerate([False, True]):
-        try:
-            if _use_haiku:
-                response = client.messages.create(
-                    model=BACKGROUND_MODEL,
-                    max_tokens=1500,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                raw = response.content[0].text.strip()
-            else:
-                raw = await call_background_model(prompt)
-
-            raw = raw.strip()
-            # Strip markdown code fences if present
-            if raw.startswith("```"):
-                raw = raw.split("```")[1]
-                if raw.startswith("json"):
-                    raw = raw[4:]
-            raw = raw.strip()
-
-            parsed = json.loads(raw)
-            return parsed
-
-        except json.JSONDecodeError:
-            if _attempt == 0:
-                print(
-                    "[Background] Ollama returned malformed JSON "
-                    "— retrying with Haiku"
-                )
-                continue
-            print("[Background] Haiku also returned malformed JSON — giving up")
-            return None
-        except Exception as e:
-            print(f"[Background] call_background_model_json failed: {e}")
-            return None
-
-    return None
 
 
 async def _summarize_history_tail(
