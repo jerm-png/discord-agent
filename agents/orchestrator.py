@@ -99,6 +99,8 @@ from memory.memory_manager import (
     get_unresolved_high_priority_flags,
     get_top_similar_memories,
     record_rubric_rejection,
+    check_operational_duplicate,
+    set_pending_reflection,
 )
 from tools.tool_definitions import (
     TOOL_DEFINITIONS,
