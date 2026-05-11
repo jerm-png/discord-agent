@@ -1085,3 +1085,1395 @@ async def _replan_remaining_steps(
     )
     await channel.send(f"📋 Adjusted plan:\n{step_lines}\n\nContinuing...")
     asyncio.create_task(execute_goal(user_id, author_display_name))
+
+
+async def run_goal_planning(
+    goal_text: str, user_id: str, author_display_name: str,
+    guild, channel, memory_mode: str, project_tag,
+    planner_prompt: str = None, crew_mode: bool = False
+):
+    """
+    Calls the planner model to decompose a goal into steps, validates
+    the plan, stores it in pending_goals, and posts it for approval.
+    """
+    try:
+        response = client.messages.create(
+            model=MAIN_MODEL,
+            max_tokens=1024,
+            system=planner_prompt or GOAL_PLANNER_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": goal_text}]
+        )
+        raw = response.content[0].text.strip()
+        clean = raw.replace("```json", "").replace("```", "").strip()
+        steps = json.loads(clean)
+    except Exception as e:
+        await channel.send(
+            f"Failed to generate a plan: {str(e)[:200]}\n"
+            "Try rephrasing your goal."
+        )
+        return
+
+    if not isinstance(steps, list) or not steps:
+        await channel.send(
+            "I couldn't generate a valid plan for that goal. "
+            "Please try again with more detail."
+        )
+        return
+
+    if len(steps) > 8:
+        steps = steps[:8]
+        await channel.send("⚠️ Plan trimmed to 8 steps (maximum allowed).")
+
+    web_search_steps = sum(
+        1 for s in steps if s.get("type") == "web_search"
+    )
+    if web_search_steps > 5:
+        await channel.send(
+            f"⚠️ Plan has {web_search_steps} web search steps — "
+            "excess searches will be skipped during execution (max 5)."
+        )
+
+    pending_goals[user_id] = {
+        "goal": goal_text,
+        "steps": steps,
+        "channel": channel,
+        "guild": guild,
+        "channel_name": channel.name,
+        "memory_mode": memory_mode,
+        "project_tag": project_tag,
+        "status": "awaiting_approval",
+        "current_step": 0,
+        "web_search_count": 0,
+        "crew_mode": crew_mode,
+    }
+    execution_context.pop(user_id, None)
+
+    await send_long_message(channel, _format_plan(goal_text, steps))
+    await send_to_channel(
+        guild, LOG_CHANNEL,
+        f"Goal plan generated | User: {author_display_name} | "
+        f"Steps: {len(steps)} | Goal: {goal_text[:100]}"
+    )
+
+
+async def execute_goal(
+    user_id: str, author_display_name: str, skip_gate_for_step: int = -1
+):
+    """
+    Executes an approved goal plan step by step as a background task.
+
+    Pauses at gate conditions and stores state in gate_pending so the user
+    can respond with !continue, !adjust, !retry, or !skip. Gates:
+      - DRAFT GATE: always pause before any draft step (unless resuming)
+      - RESEARCH GATE: pause after web_search when mode requires it
+      - STEP FAILURE GATE: pause on any step exception with retry option
+
+    skip_gate_for_step: when resuming after a draft gate, pass the step
+    index so the draft gate is not re-triggered for that step.
+    """
+    pg = pending_goals.get(user_id)
+    if not pg:
+        return
+
+    channel = pg["channel"]
+    guild = pg["guild"]
+    steps = pg["steps"]
+    goal = pg["goal"]
+    channel_name = pg["channel_name"]
+    memory_mode = pg["memory_mode"]
+    project_tag = pg["project_tag"]
+    start_step = pg.get("current_step", 0)
+    total = len(steps)
+
+    if user_id not in execution_context:
+        execution_context[user_id] = {
+            "steps": [],
+            "key_findings": [],
+        }
+
+    loop = asyncio.get_running_loop()
+    final_output = ""
+
+    try:
+        async with channel.typing():
+            for i in range(start_step, total):
+                # Cancellation / external-status check between steps
+                if user_id not in pending_goals:
+                    return
+                pg = pending_goals[user_id]
+                if pg.get("status") != "executing":
+                    return
+
+                step = steps[i]
+                step_num = step.get("step_number", i + 1)
+                step_type = step.get("type", "analyze")
+                step_desc = step.get("description", "")
+                step_query = step.get("query", step_desc)
+
+                # Crew mode: resolve per-step agent system prompt and label
+                _crew_system = None
+                _crew_label = ""
+                if pg.get("crew_mode"):
+                    _crew_slug = step.get("agent", "").strip()
+                    if _crew_slug and _crew_slug in AGENT_DEFINITIONS:
+                        _crew_def = AGENT_DEFINITIONS[_crew_slug]
+                        _crew_content = _crew_def["content"]
+                        if len(_crew_content) > AGENT_INJECT_CHAR_LIMIT:
+                            _crew_content = (
+                                _crew_content[:AGENT_INJECT_CHAR_LIMIT]
+                                + "\n[Agent definition truncated]"
+                            )
+                        _crew_system = _crew_content
+                        _crew_label = f"🤖 [{_crew_def['name']}] — "
+
+                # ── DRAFT GATE: always pause before draft steps ──────────────
+                if step_type == "draft" and i != skip_gate_for_step:
+                    findings = execution_context.get(user_id, {}).get("steps", [])
+                    bullets = "\n".join(
+                        f"• Step {f['step']} ({f['type']}): "
+                        f"{f['content'][:120].rstrip()}..."
+                        for f in findings
+                    ) or "No findings gathered yet."
+
+                    pg["status"] = "gated"
+                    pg["current_step"] = i
+                    gate_pending[user_id] = {
+                        "type": "draft_gate",
+                        "step_index": i,
+                        "step_num": step_num,
+                        "author_display_name": author_display_name,
+                    }
+                    await send_long_message(channel, (
+                        f"📝 Ready to draft the final output based on:\n"
+                        f"{bullets}\n\n"
+                        "Reply `!continue` to generate the draft "
+                        "or `!cancel` to abort."
+                    ))
+                    return
+
+                await post_status(
+                    guild,
+                    f"⚙️ Step {step_num}/{total}: {step_desc}...",
+                    memory_mode
+                )
+
+                try:
+                    if step_type == "web_search":
+                        search_count = pg.get("web_search_count", 0)
+                        if search_count >= 20:
+                            execution_context[user_id]["steps"].append({
+                                "step": step_num, "type": step_type,
+                                "content": "[Skipped — web search limit of 20 reached]"
+                            })
+                            continue
+
+                        result = await loop.run_in_executor(
+                            None, execute_tool,
+                            "web_search",
+                            {"query": step_query, "max_results": 3},
+                            channel_name
+                        )
+                        result_str = str(result)
+                        execution_context[user_id]["steps"].append({
+                            "step": step_num, "type": "web_search",
+                            "content": result_str
+                        })
+                        pg["web_search_count"] = search_count + 1
+
+                        # ── RESEARCH GATE ────────────────────────────────────
+                        should_gate = False
+                        if GOAL_GATE_MODE == "always":
+                            should_gate = True
+                        elif GOAL_GATE_MODE == "smart":
+                            low_quality = _is_low_quality_result(result_str)
+                            last_search = _is_last_search_before_synthesis(
+                                steps, i
+                            )
+                            direction_change = (
+                                await _search_changes_direction(goal, result_str)
+                                if not low_quality else False
+                            )
+                            should_gate = low_quality or last_search or direction_change
+                        # "minimal": no research gate
+
+                        if should_gate:
+                            summary = await _summarize_search_results(
+                                goal, result_str
+                            )
+                            remaining_lines = "\n".join(
+                                f"• Step {s.get('step_number', '?')} "
+                                f"({s.get('type', '?')}): "
+                                f"{s.get('description', '')}"
+                                for s in steps[i + 1:]
+                            ) or "No remaining steps."
+
+                            pg["status"] = "gated"
+                            pg["current_step"] = i + 1
+                            gate_pending[user_id] = {
+                                "type": "research_gate",
+                                "step_index": i + 1,
+                                "step_num": step_num,
+                                "author_display_name": author_display_name,
+                            }
+                            await send_long_message(channel, (
+                                f"🔍 Step {step_num} complete — "
+                                f"here's what I found:\n{summary}\n\n"
+                                f"Remaining steps:\n{remaining_lines}\n\n"
+                                "Does this look right? Reply:\n"
+                                "`!continue` — proceed with remaining steps\n"
+                                "`!adjust [changes]` — modify the remaining plan\n"
+                                "`!cancel` — abort the goal"
+                            ))
+                            return
+
+                    elif step_type == "query_memory":
+                        memories = await loop.run_in_executor(
+                            None,
+                            lambda q=step_query: get_relevant_memories(
+                                q, channel_name=channel_name
+                            )
+                        )
+                        mem_text = format_memory_for_prompt(memories)
+                        execution_context[user_id]["steps"].append({
+                            "step": step_num, "type": "query_memory",
+                            "content": mem_text or "No relevant memories found."
+                        })
+
+                    elif step_type == "analyze":
+                        ctx = _format_execution_context(
+                            execution_context.get(
+                                user_id, {}
+                            ).get("steps", []),
+                            key_findings=execution_context.get(
+                                user_id, {}
+                            ).get("key_findings", [])
+                        )
+                        if _crew_label:
+                            await channel.send(
+                                f"{_crew_label}Step {step_num}: analyzing..."
+                            )
+                        _analyze_kwargs = (
+                            {"system": _crew_system} if _crew_system else {}
+                        )
+                        r = client.messages.create(
+                            model=MAIN_MODEL,
+                            max_tokens=2048,
+                            **_analyze_kwargs,
+                            messages=[{"role": "user", "content": (
+                                f"Goal: {goal}\n\n"
+                                f"Information gathered:\n{ctx}\n\n"
+                                f"Task: {step_desc}\n\n"
+                                "Synthesize the above into a concise analysis."
+                            )}]
+                        )
+                        analyze_output = r.content[0].text.strip()
+
+                        # ── Analyze Step Critique Loop ────────────────────────
+                        # Only runs when GOAL_GATE_MODE != "minimal" — preserves
+                        # lightweight intent of minimal mode. Uses
+                        # call_background_model() (Haiku) not Sonnet.
+                        # One retry max. Never blocks execution.
+
+                        if GOAL_GATE_MODE != "minimal":
+                            critique_prompt = (
+                                "Review this analysis for gaps, unsupported "
+                                "claims, or missed angles. "
+                                "Be specific. "
+                                "If solid, respond with just: PASS\n"
+                                "If not, list specific improvements needed "
+                                "in 2-3 sentences.\n\n"
+                                f"Analysis:\n{analyze_output}"
+                            )
+                            critique = await call_background_model(
+                                critique_prompt
+                            )
+
+                            if critique.strip().upper().startswith("PASS"):
+                                final_analyze_output = analyze_output
+                            else:
+                                retry_messages = [
+                                    {
+                                        "role": "user",
+                                        "content": (
+                                            f"Previous analysis attempt:\n"
+                                            f"{analyze_output}\n\n"
+                                            f"Critique:\n{critique}\n\n"
+                                            "Revise the analysis addressing "
+                                            "the critique."
+                                        )
+                                    }
+                                ]
+                                retry_r = client.messages.create(
+                                    model=MAIN_MODEL,
+                                    max_tokens=2048,
+                                    messages=retry_messages
+                                )
+                                final_analyze_output = (
+                                    retry_r.content[0].text.strip()
+                                )
+                                goal_preview = (
+                                    goal[:30] if len(goal) >= 30 else goal
+                                )
+                                await send_to_channel(
+                                    guild, LOG_CHANNEL,
+                                    f"🔍 Analyze critique fired | "
+                                    f"Step {step_num}/{total} | "
+                                    f"Revised | Goal: {goal_preview}..."
+                                )
+                        else:
+                            final_analyze_output = analyze_output
+                        # ── End Analyze Step Critique Loop ───────────────────
+
+                        execution_context[user_id]["steps"].append({
+                            "step": step_num, "type": "analyze",
+                            "content": final_analyze_output
+                        })
+
+                        # Extract key findings from analyze output
+                        # via background model
+                        try:
+                            _kf_prompt = (
+                                "Extract 1-3 key findings from this analysis. "
+                                "Return a JSON array of objects with keys: "
+                                "'finding' (string, one sentence), "
+                                "'confidence' (float 0.0-1.0). "
+                                "Return only valid JSON, no markdown, "
+                                "no explanation.\n\n"
+                                f"Analysis:\n{analyze_output[:1000]}"
+                            )
+                            _kf_list = await call_background_model_json(_kf_prompt)
+                            if not _kf_list or not isinstance(_kf_list, list):
+                                raise ValueError("no valid key findings returned")
+                            for _kf in _kf_list:
+                                if isinstance(_kf, dict) and "finding" in _kf:
+                                    execution_context[user_id][
+                                        "key_findings"
+                                    ].append({
+                                        "finding": _kf["finding"],
+                                        "confidence": float(
+                                            _kf.get("confidence", 0.8)
+                                        ),
+                                        "source_step": step_num,
+                                    })
+                        except Exception:
+                            pass  # non-fatal — key findings are supplementary
+
+                    elif step_type == "draft":
+                        ctx = _format_execution_context(
+                            execution_context.get(
+                                user_id, {}
+                            ).get("steps", []),
+                            key_findings=execution_context.get(
+                                user_id, {}
+                            ).get("key_findings", [])
+                        )
+                        if _crew_label:
+                            await channel.send(
+                                f"{_crew_label}Step {step_num}: drafting..."
+                            )
+                        _draft_kwargs = (
+                            {"system": _crew_system} if _crew_system else {}
+                        )
+                        r = client.messages.create(
+                            model=MAIN_MODEL,
+                            max_tokens=4096,
+                            **_draft_kwargs,
+                            messages=[{"role": "user", "content": (
+                                f"Goal: {goal}\n\n"
+                                f"Research and analysis:\n{ctx}\n\n"
+                                f"Task: {step_desc}\n\n"
+                                "Produce the final output as requested."
+                            )}]
+                        )
+                        final_output = r.content[0].text.strip()
+                        if _crew_label:
+                            final_output = _crew_label + final_output
+                        execution_context[user_id]["steps"].append({
+                            "step": step_num, "type": "draft",
+                            "content": final_output
+                        })
+
+                    elif step_type == "save_memory":
+                        content_to_save = step_query if step_query != step_desc else step_desc
+                        await extract_and_store_memories(
+                            user_message=content_to_save,
+                            bot_reply="",
+                            guild=guild,
+                            task_completed=True,
+                            project_tag=project_tag,
+                            channel_name=channel_name,
+                            memory_mode=memory_mode,
+                            background_model_fn=call_background_model
+                        )
+                        execution_context[user_id]["steps"].append({
+                            "step": step_num, "type": "save_memory",
+                            "content": f"Saved to memory: {content_to_save[:100]}"
+                        })
+                        await channel.send(
+                            f"💾 Saved to memory: {content_to_save[:80]}"
+                        )
+
+                    elif step_type == "call_agent":
+                        agent_slug = step.get("agent", "").strip()
+                        if not agent_slug or agent_slug not in AGENT_DEFINITIONS:
+                            await send_to_channel(
+                                guild, LOG_CHANNEL,
+                                f"call_agent step missing valid slug | "
+                                f"step={step_num} | got={agent_slug!r} | "
+                                f"falling back to analyze"
+                            )
+                            ctx = _format_execution_context(
+                                execution_context.get(
+                                    user_id, {}
+                                ).get("steps", []),
+                                key_findings=execution_context.get(
+                                    user_id, {}
+                                ).get("key_findings", [])
+                            )
+                            r = client.messages.create(
+                                model=MAIN_MODEL,
+                                max_tokens=2048,
+                                messages=[{"role": "user", "content": (
+                                    f"Goal: {goal}\n\n"
+                                    f"Information gathered:\n{ctx}\n\n"
+                                    f"Task: {step_desc}\n\n"
+                                    "Synthesize the above into a concise analysis."
+                                )}]
+                            )
+                            agent_response = r.content[0].text.strip()
+                            execution_context[user_id]["steps"].append({
+                                "step": step_num, "type": "call_agent",
+                                "content": agent_response
+                            })
+                            await channel.send(agent_response)
+                        else:
+                            agent_name = AGENT_DEFINITIONS[agent_slug]["name"]
+                            agent_system = AGENT_DEFINITIONS[agent_slug]["content"]
+                            if len(agent_system) > AGENT_INJECT_CHAR_LIMIT:
+                                agent_system = (
+                                    agent_system[:AGENT_INJECT_CHAR_LIMIT]
+                                    + "\n[Agent definition truncated]"
+                                )
+                            ctx = _format_execution_context(
+                                execution_context.get(
+                                    user_id, {}
+                                ).get("steps", []),
+                                key_findings=execution_context.get(
+                                    user_id, {}
+                                ).get("key_findings", [])
+                            )
+                            r = client.messages.create(
+                                model=MAIN_MODEL,
+                                max_tokens=2048,
+                                system=agent_system,
+                                messages=[{"role": "user", "content": (
+                                    f"Goal context: {goal}\n\n"
+                                    f"Information gathered:\n{ctx}\n\n"
+                                    f"Task: {step_desc}"
+                                )}]
+                            )
+                            agent_response = r.content[0].text.strip()
+                            execution_context[user_id]["steps"].append({
+                                "step": step_num, "type": "call_agent",
+                                "content": f"[{agent_name}]: {agent_response}"
+                            })
+                            await channel.send(
+                                f"🤖 [{agent_name}]: {agent_response}"
+                            )
+
+                except Exception as e:
+                    # ── STEP FAILURE GATE ────────────────────────────────────
+                    remaining_descs = "\n".join(
+                        f"• Step {s.get('step_number', '?')} "
+                        f"({s.get('type', '?')}): {s.get('description', '')}"
+                        for s in steps[i + 1:]
+                    )
+                    pg["status"] = "gated"
+                    pg["current_step"] = i
+                    gate_pending[user_id] = {
+                        "type": "step_failure",
+                        "step_index": i,
+                        "step_num": step_num,
+                        "author_display_name": author_display_name,
+                    }
+                    await channel.send(
+                        f"⚠️ Step {step_num} failed: {str(e)[:200]}"
+                        + (f"\n\nRemaining steps:\n{remaining_descs}" if remaining_descs else "")
+                        + "\n\nReply:\n"
+                        "`!skip` — skip this step and continue\n"
+                        "`!retry` — try this step again\n"
+                        "`!cancel` — abort the goal"
+                    )
+                    return
+
+    except Exception as e:
+        await send_to_channel(
+            guild, LOG_CHANNEL,
+            f"Goal execution error | User: {author_display_name} | {str(e)}"
+        )
+        pending_goals.pop(user_id, None)
+        execution_context.pop(user_id, None)
+        gate_pending.pop(user_id, None)
+        return
+
+    # ── Deliver output ───────────────────────────────────────────────────────
+    if final_output:
+        await send_long_message(channel, final_output)
+    else:
+        findings = execution_context.get(user_id, {}).get("steps", [])
+        if findings:
+            parts = [f"**Goal complete: {goal}**\n"]
+            for f in findings:
+                parts.append(
+                    f"**Step {f['step']} ({f['type']}):**\n"
+                    f"{f['content'][:600]}"
+                )
+            await send_long_message(channel, "\n\n".join(parts))
+        else:
+            await channel.send(f"Goal complete: {goal}")
+
+    await post_status(
+        guild,
+        f"✅ Goal complete — {total} steps executed",
+        memory_mode
+    )
+
+    web_searches = pg.get("web_search_count", 0)
+    mem_queries = sum(
+        1 for f in execution_context.get(user_id, {}).get("steps", [])
+        if f["type"] == "query_memory"
+    )
+    await send_to_channel(
+        guild, LOG_CHANNEL,
+        f"Goal completed | Steps: {total} | "
+        f"Web searches: {web_searches} | "
+        f"Memory queries: {mem_queries} | "
+        f"Channel: #{channel_name}"
+    )
+
+    output_for_memory = final_output or goal
+    if memory_mode != "ephemeral":
+        await extract_and_store_memories(
+            goal, output_for_memory, guild, True,
+            project_tag=project_tag,
+            channel_name=channel_name,
+            memory_mode=memory_mode,
+            background_model_fn=call_background_model
+        )
+        rejections = drain_rubric_rejection_log()
+        for rejection in rejections:
+            await send_to_channel(
+                guild, LOG_CHANNEL,
+                f"🚫 Memory rejected by rubric | "
+                f"Score: {rejection['score']}/12 | "
+                f"Layer: {rejection['layer']} | "
+                f"Content: {rejection['content']}..."
+            )
+
+    pending_goals.pop(user_id, None)
+    execution_context.pop(user_id, None)
+    gate_pending.pop(user_id, None)
+
+
+async def resume_goal_from_gate(
+    user_id: str, author_display_name: str, action: str, changes: str = ""
+):
+    """
+    Resumes goal execution after a gate pause.
+    action: "continue" | "adjust" | "retry" | "skip"
+    Reads gate_pending[user_id] for context, then dispatches accordingly.
+    """
+    gate = gate_pending.get(user_id)
+    pg = pending_goals.get(user_id)
+    if not gate or not pg:
+        return
+
+    gate_type = gate["type"]
+    step_index = gate["step_index"]
+    channel = pg["channel"]
+
+    gate_pending.pop(user_id, None)
+
+    if action == "skip" and gate_type == "step_failure":
+        pg["current_step"] = step_index + 1
+        pg["status"] = "executing"
+        remaining_count = len(pg["steps"]) - (step_index + 1)
+        await channel.send(
+            f"⏭️ Step skipped — continuing with "
+            f"{remaining_count} remaining step(s)..."
+        )
+        asyncio.create_task(execute_goal(user_id, author_display_name))
+        return
+
+    if action == "retry" and gate_type == "step_failure":
+        pg["current_step"] = step_index
+        pg["status"] = "executing"
+        await channel.send("🔄 Retrying step...")
+        asyncio.create_task(execute_goal(user_id, author_display_name))
+        return
+
+    if action == "continue":
+        pg["status"] = "executing"
+        if gate_type == "draft_gate":
+            pg["current_step"] = step_index
+            await channel.send("✍️ Generating draft...")
+            asyncio.create_task(
+                execute_goal(
+                    user_id, author_display_name,
+                    skip_gate_for_step=step_index
+                )
+            )
+        else:
+            # research_gate: step_index already points to the next step
+            pg["current_step"] = step_index
+            await channel.send("▶️ Continuing execution...")
+            asyncio.create_task(execute_goal(user_id, author_display_name))
+        return
+
+    if action == "adjust":
+        await _replan_remaining_steps(
+            user_id, author_display_name, step_index, changes, channel, pg
+        )
+        return
+
+
+async def process_user_message(
+    user_message, user_id, author_display_name, guild, channel,
+    speak: bool = False, memory_mode: str = "global",
+    project_tag: str = None, active_agent_slug: str = None,
+    agent_trigger: str = "none", context_id: int = 0,
+    channel_name: str = None,
+):
+    """
+    Shared Claude processing pipeline used by on_message and /listen.
+    Handles memory retrieval, the agentic tool loop, memory storage,
+    reflection, and logging.
+
+    context_id: thread.id if responding inside a Discord thread, channel.id
+        otherwise. Used to key conversation_history so each thread gets its
+        own independent history.
+    channel_name: the parent channel name (for routing / memory lookups).
+        Defaults to channel.name if not supplied. Must be the parent channel
+        name when channel is a discord.Thread so that CHANNEL_TOOL_MODE and
+        similar dicts resolve correctly.
+    """
+    global stale_warned_this_session
+    effective_channel_name = channel_name or channel.name
+
+    # ── Langfuse trace ───────────────────────────────────
+    _lf_trace = None
+    if _langfuse:
+        try:
+            _lf_trace = _langfuse.trace(
+                name="process_user_message",
+                user_id=str(user_id),
+                session_id=str(context_id),
+                metadata={
+                    "channel": effective_channel_name,
+                    "agent": active_agent_slug or "none",
+                    "memory_mode": memory_mode,
+                    "project_tag": project_tag or "none",
+                },
+                input=user_message[:500],
+            )
+        except Exception as _lf_e:
+            print(f"[Langfuse] Trace creation failed: {_lf_e}")
+            _lf_trace = None
+
+    _hist_key = (user_id, context_id)
+    system_chars = 0
+    memory_context_chars = 0
+    history_chars = 0
+    tool_schema_chars = 0
+    if _hist_key not in conversation_history:
+        conversation_history[_hist_key] = []
+
+    log_conversation_turn(
+        str(user_id), context_id, effective_channel_name,
+        "user", user_message, project_tag=project_tag
+    )
+
+    task_completed = is_task_completion(user_message)
+
+    memories = get_relevant_memories(
+        user_message, channel_name=effective_channel_name
+    )
+    memory_context = format_memory_for_prompt(memories)
+    memory_context_chars = len(memory_context) if memory_context else 0
+
+    # ── Entity profile injection (director-workspace only) ────
+    _entity_context = ""
+    if effective_channel_name == "director-workspace":
+        _known = list_entities(entity_type="person")
+        _known_names = [e["name"].lower() for e in _known]
+        _msg_lower = user_message.lower()
+        _matched = [
+            e["name"] for e in _known
+            if e["name"].lower() in _msg_lower
+        ]
+        if _matched:
+            _profile_blocks = []
+            for _person_name in _matched[:3]:  # cap at 3 per message
+                _block = format_entity_profile_for_prompt(_person_name)
+                if _block:
+                    _profile_blocks.append(_block)
+            if _profile_blocks:
+                _entity_context = (
+                    "[PEOPLE CONTEXT — retrieved from entity memory]\n"
+                    + "\n\n".join(_profile_blocks)
+                    + "\n"
+                )
+    _mem_count = sum(
+        len(memories.get(k, [])) for k in ("strategic", "operational", "analytical")
+    )
+    if _mem_count > 0:
+        await post_status(guild, "🧠 Memory searched — context loaded", memory_mode)
+
+    channel_purpose = CHANNEL_PURPOSE.get(
+        effective_channel_name, "General"
+    )
+    _agent_label = (
+        f" | Agent: {AGENT_DEFINITIONS[active_agent_slug]['name']}"
+        if active_agent_slug and active_agent_slug in AGENT_DEFINITIONS else ""
+    )
+    channel_ctx = (
+        f"[Channel: #{effective_channel_name} | Purpose: {channel_purpose}{_agent_label}]"
+    )
+
+    _search_context = ""
+    if _is_confabulation_check(user_message):
+        _conv_hits = search_conversations(
+            user_message, effective_channel_name, str(user_id)
+        )
+        if _conv_hits:
+            _lines = []
+            for _h in _conv_hits:
+                _ts = _h["timestamp"][:19].replace("T", " ")
+                _snippet = _h["content"][:300].replace("\n", " ")
+                _lines.append(
+                    f"[{_ts}] #{_h['channel_name']} [{_h['role']}]: {_snippet}"
+                )
+            _search_context = (
+                "[SESSION ARCHIVE — past exchanges matching this query:]\n"
+                + "\n".join(_lines)
+                + "\n[Use these records to verify claims about what you previously said.]\n\n"
+            )
+
+    full_message = user_message
+    if memory_context:
+        full_message = (
+            f"{memory_context}\n\n"
+            f"Current message: {user_message}"
+        )
+
+    full_message = (
+        f"{channel_ctx}\n"
+        f"{_entity_context}"
+        f"{_search_context}"
+        f"{full_message}"
+    )
+
+    # ── FILE INJECTION ────────────────────────────────────────
+    file_injection_chars = 0
+    all_user_files = list(attached_files.get((user_id, context_id), []))
+    is_isolated_channel = effective_channel_name in MEMORY_ISOLATED_CHANNELS
+
+    if all_user_files:
+        if is_isolated_channel:
+            user_files = [
+                f for f in all_user_files
+                if f.get("channel_name") == effective_channel_name
+            ]
+        else:
+            user_files = [
+                f for f in all_user_files
+                if f.get("channel_name") not in MEMORY_ISOLATED_CHANNELS
+            ]
+
+        doc_files       = [f for f in user_files if f["content_type"] == "document"]
+        img_files       = [f for f in user_files if f["content_type"] == "image"]
+        pdf_vision_files = [f for f in user_files if f["content_type"] == "pdf_vision"]
+
+        if user_files:
+            await post_status(guild, "📎 Reading attached file(s)...", memory_mode)
+
+        # Cap total document text — drop oldest files first to stay under limit
+        docs_to_inject = []
+        chars_used = 0
+        omitted = 0
+        for f in reversed(doc_files):
+            flen = len(f["text_content"])
+            if chars_used + flen <= FILE_CONTENT_CHAR_LIMIT:
+                docs_to_inject.insert(0, f)
+                chars_used += flen
+            else:
+                omitted += 1
+        file_injection_chars = chars_used
+
+        if docs_to_inject:
+            file_parts = [
+                f"[Attached file: {f['filename']}]\nContent: {f['text_content']}"
+                for f in docs_to_inject
+            ]
+            truncation_note = (
+                f"\n[{omitted} older file(s) omitted — "
+                f"50,000 character limit reached]"
+                if omitted else ""
+            )
+            full_message = (
+                f"ATTACHED FILES:\n"
+                + "\n\n".join(file_parts)
+                + truncation_note
+                + f"\n\n{full_message}"
+            )
+
+        has_visual = img_files or pdf_vision_files
+        if has_visual:
+            content_blocks = []
+            for img in img_files:
+                content_blocks.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": img["media_type"],
+                        "data": img["base64_data"],
+                    },
+                })
+            for pdf_file in pdf_vision_files:
+                for page in pdf_file["pages"]:
+                    content_blocks.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": page["media_type"],
+                            "data": page["base64_data"],
+                        },
+                    })
+            content_blocks.append({"type": "text", "text": full_message})
+            conversation_history[_hist_key].append({
+                "role": "user",
+                "content": content_blocks,
+            })
+        else:
+            conversation_history[_hist_key].append({
+                "role": "user",
+                "content": full_message,
+            })
+    else:
+        conversation_history[_hist_key].append({
+            "role": "user",
+            "content": full_message,
+        })
+
+    await post_status(
+        guild,
+        f"Processing request from {author_display_name}...",
+        memory_mode
+    )
+
+    if active_agent_slug and active_agent_slug in AGENT_DEFINITIONS:
+        await post_status(
+            guild,
+            f"🤖 {AGENT_DEFINITIONS[active_agent_slug]['name']} activated",
+            memory_mode
+        )
+
+    async with contextlib.AsyncExitStack() as _typing_stack:
+        try:
+            await _typing_stack.enter_async_context(channel.typing())
+        except discord.errors.HTTPException as _e:
+            if _e.status != 429:
+                raise
+        try:
+            tool_call_count = 0
+            final_response_text = ""
+            tool_mode = CHANNEL_TOOL_MODE.get(effective_channel_name, "none")
+            if tool_mode == "full":
+                if effective_channel_name == "director-workspace":
+                    # director-workspace gets all tools including
+                    # save_person_fact but not search_codebase
+                    active_tools = [
+                        t for t in TOOL_DEFINITIONS
+                        if t["name"] != "search_codebase"
+                    ]
+                elif effective_channel_name in CODEBASE_SEARCH_EXCLUDED_CHANNELS:
+                    # Other excluded channels get full tools minus
+                    # search_codebase and minus save_person_fact
+                    active_tools = [
+                        t for t in TOOL_DEFINITIONS
+                        if t["name"] not in (
+                            "search_codebase", "save_person_fact"
+                        )
+                    ]
+                else:
+                    # All other full channels get everything except
+                    # save_person_fact (person tracking is
+                    # director-workspace only)
+                    active_tools = [
+                        t for t in TOOL_DEFINITIONS
+                        if t["name"] != "save_person_fact"
+                    ]
+            elif tool_mode == "search_only":
+                active_tools = [
+                    t for t in TOOL_DEFINITIONS
+                    if t["name"] in SEARCH_ONLY_TOOL_NAMES
+                ]
+            else:
+                active_tools = []
+
+            if active_agent_slug and active_agent_slug in AGENT_DEFINITIONS:
+                _adef = AGENT_DEFINITIONS[active_agent_slug]
+                _agent_content = _adef["content"]
+                if len(_agent_content) > AGENT_INJECT_CHAR_LIMIT:
+                    _agent_content = (
+                        _agent_content[:AGENT_INJECT_CHAR_LIMIT]
+                        + "\n[Agent definition truncated for token efficiency]"
+                    )
+                effective_system = (
+                    SYSTEM_PROMPT
+                    + f"\n\n---\nACTIVE SPECIALIST AGENT: {_adef['name']}\n"
+                    + _agent_content
+                )
+            else:
+                effective_system = SYSTEM_PROMPT
+
+            system_chars = len(effective_system)
+            _session_ctx = format_session_context(str(user_id), context_id)
+            if _session_ctx:
+                effective_system = (
+                    effective_system
+                    + "\n\n---\n"
+                    + _session_ctx
+                )
+            _reasoning_iterations = 0
+            total_in_tokens = 0
+            total_out_tokens = 0
+            total_cache_write_tokens = 0
+            total_cache_read_tokens = 0
+            while True:
+                _reasoning_iterations += 1
+                if _reasoning_iterations > MAX_REASONING_ITERATIONS:
+                    await send_to_channel(
+                        guild,
+                        LOG_CHANNEL,
+                        f"[Safety] Reasoning loop hit MAX_REASONING_ITERATIONS "
+                        f"({MAX_REASONING_ITERATIONS}) — forcing break"
+                    )
+                    break
+
+                _cleaned, _n_stripped = strip_orphaned_tool_results(
+                    conversation_history[_hist_key]
+                )
+                if _n_stripped:
+                    conversation_history[_hist_key] = _cleaned
+                    print(
+                        f"[Safety] Stripped {_n_stripped} orphaned blocks "
+                        f"before API call in thread {context_id}"
+                    )
+
+                api_params = {
+                    "model": MAIN_MODEL,
+                    "max_tokens": 4096,
+                    "system": [
+                        {
+                            "type": "text",
+                            "text": effective_system,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                    "messages": conversation_history[_hist_key],
+                }
+                if active_tools:
+                    api_params["tools"] = active_tools
+
+                if _reasoning_iterations == 1:
+                    # Measure history excluding current turn to avoid
+                    # double-counting memory context
+                    _prior_turns = conversation_history[_hist_key][:-1]
+                    history_chars = sum(
+                        len(str(m.get("content", "")))
+                        for m in _prior_turns
+                    )
+                    tool_schema_chars = sum(
+                        len(json.dumps(t)) for t in active_tools
+                    )
+
+                _lf_generation = None
+                if _lf_trace:
+                    try:
+                        _lf_generation = _lf_trace.generation(
+                            name=f"claude_call_{_reasoning_iterations}",
+                            model=MAIN_MODEL,
+                            input=conversation_history[_hist_key][-3:],
+                        )
+                    except Exception:
+                        _lf_generation = None
+
+                _overloaded = False
+                _rate_limited = False
+                for _attempt_delay in [None, 2, 4, 8]:
+                    if _attempt_delay is not None:
+                        await asyncio.sleep(_attempt_delay)
+                    try:
+                        response = client.messages.create(**api_params)
+                        _overloaded = False
+                        _rate_limited = False
+                        break
+                    except APIStatusError as e:
+                        if e.status_code == 529:
+                            _overloaded = True
+                        elif e.status_code == 429 and not _rate_limited:
+                            _rate_limited = True
+                            await asyncio.sleep(60)
+                            try:
+                                response = client.messages.create(**api_params)
+                                _rate_limited = False
+                                break
+                            except APIStatusError as _e2:
+                                if _e2.status_code == 429:
+                                    pass
+                                else:
+                                    raise
+                        else:
+                            raise
+                if _overloaded:
+                    await channel.send(
+                        "Anthropic's API is currently overloaded. "
+                        "Please try again in a moment."
+                    )
+                    return
+                if _rate_limited:
+                    await channel.send(
+                        "Rate limit hit — please wait a moment "
+                        "before sending another message."
+                    )
+                    return
+
+                if _lf_generation:
+                    try:
+                        _lf_generation.end(
+                            output=response.content[0].text
+                            if response.content and
+                            hasattr(response.content[0], "text")
+                            else "",
+                            usage={
+                                "input": response.usage.input_tokens,
+                                "output": response.usage.output_tokens,
+                            }
+                        )
+                    except Exception:
+                        pass
+
+                total_in_tokens += response.usage.input_tokens
+                total_out_tokens += response.usage.output_tokens
+                total_cache_write_tokens += getattr(
+                    response.usage, 'cache_creation_input_tokens', 0
+                )
+                total_cache_read_tokens += getattr(
+                    response.usage, 'cache_read_input_tokens', 0
+                )
+
+                if response.stop_reason == "tool_use":
+                    conversation_history[_hist_key].append({
+                        "role": "assistant",
+                        "content": response.content
+                    })
+                    tool_results, tool_call_count = \
+                        await process_tool_calls(
+                            response, guild, tool_call_count,
+                            channel_name=effective_channel_name,
+                            memory_mode=memory_mode,
+                        )
+                    conversation_history[_hist_key].append({
+                        "role": "user",
+                        "content": tool_results
+                    })
+                    continue
+
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        final_response_text += block.text
+
+                conversation_history[_hist_key].append({
+                    "role": "assistant",
+                    "content": final_response_text
+                })
+                break
+
+            # Drain escalation queue and post high-priority flags to #chief-of-staff
+            pending_escalations = drain_escalation_queue()
+            for item in pending_escalations:
+                cos_channel = discord.utils.get(
+                    guild.channels, name="chief-of-staff"
+                )
+                if cos_channel:
+                    await send_to_channel(
+                        guild,
+                        cos_channel.name,
+                        f"🚨 High-priority flag escalated from #{item['source_channel']}\n"
+                        f"Topic: {item['topic']}\n"
+                        f"Reason: {item['reason']}"
+                    )
+
+            if final_response_text:
+                log_conversation_turn(
+                    str(user_id), context_id, effective_channel_name,
+                    "assistant", final_response_text, project_tag=project_tag
+                )
+
+            # ── SLIDING WINDOW HISTORY ───────────────────────────
+            _full_history = conversation_history[_hist_key]
+            _is_isolated = effective_channel_name in MEMORY_ISOLATED_CHANNELS
+
+            if (len(_full_history) > HISTORY_RAW_WINDOW
+                    and not _is_isolated
+                    and memory_mode != "ephemeral"):
+                _raw_tail = _full_history[-HISTORY_RAW_WINDOW:]
+                _head = _full_history[:-HISTORY_RAW_WINDOW]
+
+                _existing_summary = ""
+                _head_to_summarize = _head
+                if (_head
+                        and _head[0].get("role") == HISTORY_SUMMARY_ROLE
+                        and isinstance(_head[0].get("content"), str)
+                        and _head[0]["content"].startswith(
+                            "[CONVERSATION SUMMARY]"
+                        )):
+                    _existing_summary = _head[0]["content"]
+                    _head_to_summarize = _head[1:]
+
+                if _head_to_summarize:
+                    _new_summary_text = await _summarize_history_tail(
+                        _head_to_summarize,
+                        context_hint=effective_channel_name
+                    )
+
+                    if _existing_summary:
+                        _merged = (
+                            _existing_summary
+                            + "\n\n[More recent — now summarized]:\n"
+                            + _new_summary_text
+                        )
+                    else:
+                        _merged = (
+                            "[CONVERSATION SUMMARY — earlier context]\n"
+                            + _new_summary_text
+                        )
+
+                    if len(_merged) > 800:
+                        _merged = _merged[-800:]
+
+                    conversation_history[_hist_key] = [
+                        {
+                            "role": HISTORY_SUMMARY_ROLE,
+                            "content": _merged,
+                        }
+                    ] + _raw_tail
+                else:
+                    conversation_history[_hist_key] = (
+                        [_head[0]] + _raw_tail
+                        if _head else _raw_tail
+                    )
+            else:
+                conversation_history[_hist_key] = _full_history[-20:]
+
+            if final_response_text and memory_mode != "ephemeral":
+                _action_summary = (
+                    f"[{datetime.utcnow().strftime('%H:%M')}] "
+                    + user_message[:80].replace("\n", " ")
+                )
+                asyncio.create_task(
+                    _save_session_state_async(
+                        str(user_id),
+                        context_id,
+                        _action_summary,
+                        final_response_text,
+                    )
+                )
+
+            if final_response_text:
+                await send_long_message(channel, final_response_text)
+                if speak:
+                    await speak_response(final_response_text, guild, channel, bot=bot)
+            else:
+                await channel.send(
+                    "I processed your request but had "
+                    "trouble forming a response. "
+                    "Check bot-logs for details."
+                )
+
+            # ── Auto-detect clinical specifics in #health-tracking ────────────
+            if effective_channel_name == "health-tracking" and final_response_text:
+                saved_count = await extract_and_save_health_protocols(
+                    final_response_text, call_background_model
+                )
+                while _health_protocol_log:
+                    msg = _health_protocol_log.pop(0)
+                    await send_to_channel(guild, LOG_CHANNEL, msg)
+                if saved_count > 0:
+                    await send_to_channel(
+                        guild, LOG_CHANNEL,
+                        f"🏥 {saved_count} health protocol(s) "
+                        f"auto-captured from response"
+                    )
+
+            if memory_mode != "ephemeral":
+                await extract_and_store_memories(
+                    user_message,
+                    final_response_text,
+                    guild,
+                    task_completed,
+                    project_tag=project_tag,
+                    channel_name=effective_channel_name,
+                    memory_mode=memory_mode,
+                    background_model_fn=call_background_model
+                )
+                rejections = drain_rubric_rejection_log()
+                for rejection in rejections:
+                    await send_to_channel(
+                        guild, LOG_CHANNEL,
+                        f"🚫 Memory rejected by rubric | "
+                        f"Score: {rejection['score']}/12 | "
+                        f"Layer: {rejection['layer']} | "
+                        f"Content: {rejection['content']}..."
+                    )
+
+                if task_completed:
+                    experiences = get_recent_experiences(
+                        limit=5,
+                        task_completed_only=True
+                    )
+                    await run_reflection_loop(guild, experiences)
+
+                # Fire auto-consolidation in background if thresholds exceeded
+                current_stats = memory_stats()
+                _cooldown_key = (effective_channel_name,
+                                 datetime.utcnow().strftime("%Y-%m-%d-%H"))
+                if (_should_consolidate(current_stats, effective_channel_name)
+                        and _cooldown_key not in _consolidation_cooldown):
+                    _consolidation_cooldown.add(_cooldown_key)
+                    asyncio.create_task(
+                        consolidate_all_layers(
+                            guild,
+                            channel_name=effective_channel_name,
+                            trigger="auto"
+                        )
+                    )
+
+            stale_count = len(memories.get("stale_flags", []))
+            in_tokens = total_in_tokens
+            out_tokens = total_out_tokens
+            cache_write_tokens = total_cache_write_tokens
+            cache_read_tokens = total_cache_read_tokens
+            est_cost = (
+                (in_tokens / 1_000_000 * 3.00) +
+                (out_tokens / 1_000_000 * 15.00) +
+                (cache_write_tokens / 1_000_000 * 3.75) +
+                (cache_read_tokens / 1_000_000 * 0.30)
+            )
+            _last_token_usage["input"] = in_tokens
+            _last_token_usage["output"] = out_tokens
+            await send_to_channel(
+                guild,
+                LOG_CHANNEL,
+                f"Responded to {author_display_name} | "
+                f"Model: {response.model} | "
+                f"Tools loaded: {', '.join(t['name'] for t in active_tools) or 'none'} | "
+                f"Tools used: {tool_call_count} | "
+                f"Task complete: {task_completed} | "
+                f"Stale flags: {stale_count}"
+            )
+            cache_note = (
+                f" | cache_write: {cache_write_tokens:,} | cache_read: {cache_read_tokens:,}"
+                if cache_write_tokens or cache_read_tokens else ""
+            )
+            _attr_total = (
+                system_chars + memory_context_chars
+                + history_chars + tool_schema_chars
+                + file_injection_chars
+            )
+            if _attr_total > 0:
+                _scale = in_tokens / (_attr_total / 4)
+            else:
+                _scale = 1.0
+
+            system_tokens_est = int((system_chars / 4) * _scale)
+            memory_tokens_est = int((memory_context_chars / 4) * _scale)
+            history_tokens_est = int((history_chars / 4) * _scale)
+            tool_tokens_est = int((tool_schema_chars / 4) * _scale)
+            file_tokens_est = int((file_injection_chars / 4) * _scale)
+
+            await send_to_channel(
+                guild,
+                LOG_CHANNEL,
+                f"Tokens — in: {in_tokens:,} | out: {out_tokens:,}"
+                + cache_note
+                + f" | est. cost: ${est_cost:.4f}\n"
+                + f"  ↳ system: ~{system_tokens_est:,}"
+                + f" | memory: ~{memory_tokens_est:,}"
+                + f" | history: ~{history_tokens_est:,}"
+                + f" | tools: ~{tool_tokens_est:,}"
+                + (f" | files: ~{file_tokens_est:,}" if file_injection_chars else "")
+            )
+
+            if active_agent_slug and active_agent_slug in AGENT_DEFINITIONS:
+                _injected_len = min(
+                    len(AGENT_DEFINITIONS[active_agent_slug]["content"]),
+                    AGENT_INJECT_CHAR_LIMIT
+                )
+                _agent_tokens = _injected_len // 4
+                await send_to_channel(
+                    guild, LOG_CHANNEL,
+                    f"Agent activated | {AGENT_DEFINITIONS[active_agent_slug]['name']} | "
+                    f"+~{_agent_tokens:,} tokens | trigger: {agent_trigger}"
+                )
+
+            await post_status(
+                guild,
+                f"Response delivered to {author_display_name}. Ready.",
+                memory_mode
+            )
+
+            if _lf_trace:
+                try:
+                    _lf_trace.update(
+                        output=final_response_text[:500],
+                        metadata={
+                            "tools_used": tool_call_count,
+                            "in_tokens": total_in_tokens,
+                            "out_tokens": total_out_tokens,
+                            "est_cost": round(est_cost, 6),
+                            "cache_read_tokens": total_cache_read_tokens,
+                            "cache_write_tokens": total_cache_write_tokens,
+                            "agent": active_agent_slug or "none",
+                            "task_complete": task_completed,
+                        }
+                    )
+                    _langfuse.flush()
+                except Exception:
+                    pass
+
+            if stale_count and not stale_warned_this_session:
+                stale_warned_this_session = True
+                await send_to_channel(
+                    guild,
+                    STATUS_CHANNEL,
+                    f"{tag_owner()}{stale_count} stale memory "
+                    f"flag(s) detected — review may be needed."
+                )
+
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None,
+                save_conversation_history,
+                f"{user_id}:{context_id}",
+                _saveable_history(conversation_history[_hist_key])
+            )
+
+        except Exception as e:
+            await channel.send("Something went wrong — please try again.")
+            await send_to_channel(
+                guild,
+                LOG_CHANNEL,
+                f"{tag_owner()}Error for {author_display_name}: {str(e)}"
+            )
