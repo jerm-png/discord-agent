@@ -9,7 +9,6 @@ import sqlite3
 import sys
 import json
 import urllib.request
-import urllib.error
 from collections import defaultdict
 from datetime import datetime
 from discord import app_commands
