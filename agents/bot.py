@@ -109,6 +109,11 @@ from model import (
     call_background_model,
     call_background_model_json,
 )
+from services import (
+    send_to_channel,
+    send_long_message,
+    post_status,
+)
 
 # ============================================================
 # CONFIGURATION
@@ -930,30 +935,6 @@ async def _resolve_response_channel(message, channel_name: str, text_hint: str =
         )
         return message.channel, message.channel.id
 
-
-async def send_to_channel(guild, channel_name, message):
-    """Finds a channel by name and sends a message to it."""
-    channel = discord.utils.get(
-        guild.channels, name=channel_name
-    )
-    if channel:
-        await channel.send(message)
-
-
-async def send_long_message(channel, message):
-    """Splits messages exceeding Discord's 2000 char limit."""
-    if len(message) <= 2000:
-        await channel.send(message)
-    else:
-        for i in range(0, len(message), 2000):
-            await channel.send(message[i:i+2000])
-
-
-async def post_status(guild, message: str, memory_mode: str = "global") -> None:
-    """Posts a one-line status to STATUS_CHANNEL. Skips ephemeral channels."""
-    if memory_mode == "ephemeral":
-        return
-    await send_to_channel(guild, STATUS_CHANNEL, message)
 
 
 async def process_tool_calls(response, guild, tool_call_count, channel_name=None, memory_mode: str = "global"):
