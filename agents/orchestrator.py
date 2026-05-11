@@ -1891,6 +1891,118 @@ async def resume_goal_from_gate(
         return
 
 
+async def process_tool_calls(response, guild, tool_call_count, channel_name=None, memory_mode: str = "global"):
+    """
+    Handles tool calls from Claude.
+    Executes the requested tool and returns the result.
+    Enforces the maximum tool call limit.
+    """
+    tool_results = []
+
+    for block in response.content:
+        if block.type == "tool_use":
+
+            # Enforce max tool calls limit
+            if tool_call_count >= MAX_TOOL_CALLS:
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": (
+                        "Tool call limit reached. "
+                        "Please summarise findings so far."
+                    )
+                })
+                continue
+
+            tool_name = block.name
+            tool_inputs = block.input
+
+            # Log the tool call
+            await send_to_channel(
+                guild,
+                LOG_CHANNEL,
+                f"Tool called: {tool_name} | "
+                f"Inputs: {json.dumps(tool_inputs)[:200]}"
+            )
+
+            # Status before execution — dedicated messages for specific tools
+            if tool_name == "web_search":
+                await post_status(guild, "🔍 Searching the web...", memory_mode)
+            elif tool_name == "web_fetch":
+                _fetch_domain = (
+                    tool_inputs.get("url", "").split("/")[2]
+                    if "//" in tool_inputs.get("url", "")
+                    else tool_inputs.get("url", "")
+                )
+                await post_status(guild, f"🌐 Reading {_fetch_domain}...", memory_mode)
+            elif tool_name == "search_codebase":
+                await post_status(guild, "🔎 Searching codebase...", memory_mode)
+            else:
+                await post_status(guild, f"🔧 Using tool: {tool_name}", memory_mode)
+
+            # Execute the tool off the event loop thread — pass channel_name
+            # so query_memory respects isolation for health-tracking and similar channels
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                None, execute_tool, tool_name, tool_inputs, channel_name
+            )
+
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": str(result)
+            })
+
+            tool_call_count += 1
+
+            if tool_name == "web_fetch":
+                _fetch_url = tool_inputs.get("url", "")
+                _fetch_domain = (
+                    _fetch_url.split("/")[2]
+                    if "//" in _fetch_url
+                    else _fetch_url
+                )
+                _fetch_chars = len(str(result))
+                await send_to_channel(
+                    guild, LOG_CHANNEL,
+                    f"Web fetch | URL: {_fetch_url[:60]} | "
+                    f"Content: {_fetch_chars} chars | "
+                    f"Channel: #{channel_name}"
+                )
+                _fetch_tokens = _fetch_chars // 4
+                if _fetch_tokens > 2000:
+                    await send_to_channel(
+                        guild, LOG_CHANNEL,
+                        f"Web fetch large | ~{_fetch_tokens} tokens | "
+                        f"URL: {_fetch_domain} | "
+                        f"Consider reducing max_chars"
+                    )
+
+            if tool_name == "search_codebase":
+                await send_to_channel(
+                    guild, LOG_CHANNEL,
+                    f"Codebase search | "
+                    f"Query: {tool_inputs.get('query', '')[:40]} | "
+                    f"Results: {len(str(result))} chars | "
+                    f"Channel: #{channel_name}"
+                )
+
+            # Fire-and-forget reasoning trace — run in executor to avoid blocking
+            _trace_loop = asyncio.get_running_loop()
+            _trace_loop.run_in_executor(
+                None,
+                log_reasoning_trace,
+                "system",
+                channel_name or "unknown",
+                tool_name,
+                tool_inputs,
+                str(result)[:1000],
+                tool_call_count,
+            )
+
+    return tool_results, tool_call_count
+
+
 async def process_user_message(
     user_message, user_id, author_display_name, guild, channel,
     speak: bool = False, memory_mode: str = "global",
