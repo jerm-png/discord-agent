@@ -89,6 +89,22 @@ from voice_input import (
     check_ffmpeg,
     speak_response,
 )
+from config import (
+    MAIN_MODEL,
+    BACKGROUND_MODEL,
+    OLLAMA_URL,
+    OLLAMA_MODEL,
+    LOG_CHANNEL,
+    STATUS_CHANNEL,
+    COMMAND_CHANNEL,
+    MAX_TOOL_CALLS,
+    MAX_REASONING_ITERATIONS,
+    AGENT_INJECT_CHAR_LIMIT,
+    GOAL_GATE_MODE,
+    HISTORY_RAW_WINDOW,
+    HISTORY_SUMMARY_ROLE,
+    CONSOLIDATION_THRESHOLDS,
+)
 
 # ============================================================
 # CONFIGURATION
@@ -100,18 +116,6 @@ load_dotenv(os.path.join(
 ))
 
 client = Anthropic()
-
-MAIN_MODEL = "claude-sonnet-4-6"
-BACKGROUND_MODEL = "claude-haiku-4-5-20251001"
-MAX_REASONING_ITERATIONS = 10  # Maximum while-loop cycles in process_user_message
-AGENT_INJECT_CHAR_LIMIT = 1500
-
-# Sliding window history settings
-HISTORY_RAW_WINDOW = 6      # raw turns kept in memory
-HISTORY_SUMMARY_ROLE = "user"  # role used for summary injection
-
-OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "qwen3:8b"
 
 OWNER_ID = os.getenv("DISCORD_OWNER_ID", "")
 
@@ -146,10 +150,6 @@ try:
         print("[Langfuse] No keys found — tracing disabled")
 except Exception as _lf_err:
     print(f"[Langfuse] Init failed — tracing disabled: {_lf_err}")
-
-COMMAND_CHANNEL = "bot-commands"
-STATUS_CHANNEL = "bot-status"
-LOG_CHANNEL = "bot-logs"
 
 # ── CHANNEL MEMORY ROUTING ───────────────────────────────────
 # "ephemeral" = respond but skip memory extraction and reflection
@@ -237,13 +237,6 @@ CODEBASE_SEARCH_EXCLUDED_CHANNELS = {
 # Auto-consolidation triggers when a layer's non-health count
 # exceeds the layer threshold, or health-tracking memories
 # across all layers exceed the health threshold.
-CONSOLIDATION_THRESHOLDS = {
-    "strategic":      100,
-    "operational":     50,
-    "analytical":      75,
-    "health_tracking": 150,
-}
-
 # ── MEMORY ISOLATION ──────────────────────────────────────────
 # Channels in MEMORY_ISOLATED_CHANNELS get bidirectional isolation:
 # their memories never surface in other channels, and they never
@@ -307,9 +300,6 @@ CHANNEL_PURPOSE = {
     ),
 }
 
-# Maximum tool calls per response to prevent runaway loops
-MAX_TOOL_CALLS = 10
-
 conversation_history = {}
 attached_files: defaultdict = defaultdict(list)
 BOT_START_TIME = None
@@ -337,10 +327,6 @@ thread_agent_pins: dict = {}  # keyed by context_id (thread ID)
 
 # Gate frequency: "smart" | "always" | "minimal"
 # smart   = gate when results are surprising, low quality, or last search before synthesis
-# always  = gate after every web_search step and always before draft
-# minimal = only gate before draft steps
-GOAL_GATE_MODE = "smart"
-
 # ── AGENT DEFINITIONS ──────────────────────────────────────────
 # Agent .md files are loaded at startup from AGENTS_DIR.
 # Keyword extraction uses the background model once, then caches to disk.
