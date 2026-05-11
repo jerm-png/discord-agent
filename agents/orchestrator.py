@@ -1707,7 +1707,7 @@ async def execute_goal(
                                 "step": step_num, "type": "call_agent",
                                 "content": agent_response
                             })
-                            await channel.send(agent_response)
+                            await send_long_message(channel, agent_response)
                         else:
                             agent_name = AGENT_DEFINITIONS[agent_slug]["name"]
                             agent_system = AGENT_DEFINITIONS[agent_slug]["content"]
@@ -1739,7 +1739,8 @@ async def execute_goal(
                                 "step": step_num, "type": "call_agent",
                                 "content": f"[{agent_name}]: {agent_response}"
                             })
-                            await channel.send(
+                            await send_long_message(
+                                channel,
                                 f"🤖 [{agent_name}]: {agent_response}"
                             )
 
