@@ -8,7 +8,6 @@ import shutil
 import sqlite3
 import sys
 import json
-import tempfile
 import urllib.request
 import urllib.error
 from collections import defaultdict
@@ -16,7 +15,6 @@ from datetime import datetime
 from discord import app_commands
 from dotenv import load_dotenv
 from anthropic import Anthropic, APIStatusError
-from elevenlabs import ElevenLabs
 import PyPDF2
 import docx
 from pdf2image import convert_from_bytes
@@ -87,7 +85,11 @@ from session import (
     format_session_context,
 )
 
-from voice_input import transcribe_attachment
+from voice_input import (
+    transcribe_attachment,
+    check_ffmpeg,
+    speak_response,
+)
 
 # ============================================================
 # CONFIGURATION
@@ -553,19 +555,6 @@ def check_ollama_health() -> None:
         print(
             f"[Ollama] WARNING: not reachable at {target} — "
             f"background tasks will fall back to {BACKGROUND_MODEL}"
-        )
-
-
-def check_ffmpeg() -> None:
-    """Checks whether FFmpeg is on the system PATH at startup."""
-    path = shutil.which("ffmpeg")
-    if path:
-        print(f"[FFmpeg] Found at {path}")
-    else:
-        print(
-            "[FFmpeg] WARNING: ffmpeg not found on PATH — "
-            "TTS voice output will silently fail until FFmpeg "
-            "is installed and added to PATH"
         )
 
 
@@ -2822,61 +2811,6 @@ async def run_status_command(channel, guild):
     await channel.send(report)
 
 
-async def speak_response(text: str, guild, channel=None) -> None:
-    """
-    Converts text to speech via ElevenLabs and plays it in the General
-    voice channel. Disconnects when done. On failure, notifies the user
-    in the originating channel and logs the raw error to bot-logs.
-    """
-    if not ELEVENLABS_API_KEY or not ELEVENLABS_VOICE_ID:
-        return
-
-    voice_channel = discord.utils.get(guild.voice_channels, name="General")
-    if not voice_channel:
-        return
-
-    tmp_path = None
-    voice_client = None
-    try:
-        el_client = ElevenLabs(api_key=ELEVENLABS_API_KEY)
-        audio_iter = el_client.text_to_speech.convert(
-            voice_id=ELEVENLABS_VOICE_ID,
-            text=text,
-            model_id="eleven_monolingual_v1",
-        )
-
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
-            for chunk in audio_iter:
-                tmp.write(chunk)
-            tmp_path = tmp.name
-
-        voice_client = discord.utils.get(bot.voice_clients, guild=guild)
-        if voice_client is None:
-            voice_client = await voice_channel.connect()
-        elif voice_client.channel != voice_channel:
-            await voice_client.move_to(voice_channel)
-
-        source = discord.FFmpegPCMAudio(tmp_path)
-        done = asyncio.Event()
-        voice_client.play(source, after=lambda _: done.set())
-        await done.wait()
-
-    except Exception as e:
-        if channel:
-            await channel.send(
-                "Voice response failed — text response above is complete."
-            )
-        await send_to_channel(
-            guild, LOG_CHANNEL,
-            f"TTS error: {str(e)}"
-        )
-    finally:
-        if voice_client and voice_client.is_connected():
-            await voice_client.disconnect()
-        if tmp_path and os.path.exists(tmp_path):
-            os.remove(tmp_path)
-
-
 async def process_user_message(
     user_message, user_id, author_display_name, guild, channel,
     speak: bool = False, memory_mode: str = "global",
@@ -3434,7 +3368,7 @@ async def process_user_message(
             if final_response_text:
                 await send_long_message(channel, final_response_text)
                 if speak:
-                    await speak_response(final_response_text, guild, channel)
+                    await speak_response(final_response_text, guild, channel, bot=bot)
             else:
                 await channel.send(
                     "I processed your request but had "
