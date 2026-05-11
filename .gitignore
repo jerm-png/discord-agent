@@ -8,3 +8,13 @@ chroma_db/
 # CocoIndex Code (ccc)
 /.cocoindex_code/
 .cocoindex_code/
+
+# Generated logs
+ollama_log.txt
+
+# Claude-generated project docs
+AGENTS.md
+CLAUDE.md
+
+# Claude local settings
+.claude/settings.local.json
