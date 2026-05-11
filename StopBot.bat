@@ -1,11 +1,7 @@
 @echo off
 title Stopping PerMyLastBot
 echo Stopping PerMyLastBot...
-taskkill /F /FI "WINDOWTITLE eq PerMyLastBot" /T
-if %errorlevel% == 0 (
-    echo PerMyLastBot stopped successfully.
-) else (
-    echo No PerMyLastBot process found.
-)
+powershell -Command "Get-WmiObject Win32_Process | Where-Object {$_.Name -eq 'python.exe' -and $_.CommandLine -like '*bot.py*'} | ForEach-Object {Stop-Process -Id $_.ProcessId -Force}"
+echo Done.
 timeout /t 2
 exit

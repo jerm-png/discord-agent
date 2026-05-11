@@ -1,14 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -c \"import sys; print\\(sys.executable\\)\")",
-      "Bash(venv/Scripts/pip install *)",
-      "Bash(venv/Scripts/pip show *)",
-      "Bash(venv/Scripts/python -c ' *)",
-      "PowerShell(\\(Get-Content -Path \"c:\\\\Projects\\\\discord-agent\\\\requirements.txt\" -Encoding Unicode\\) | Where-Object { $_ -notmatch 'audioop-lts' } | Set-Content -Path \"c:\\\\Projects\\\\discord-agent\\\\requirements.txt\" -Encoding Unicode)",
-      "Bash(venv/Scripts/pip uninstall *)",
-      "Bash(c:\\\\Projects\\\\discord-agent\\\\venv\\\\Scripts\\\\pip install *)",
-      "PowerShell(c:\\\\Projects\\\\discord-agent\\\\venv\\\\Scripts\\\\pip install elevenlabs 2>&1)"
-    ]
+      "venv/Scripts/pip*",
+      "venv/Scripts/python*",
+      "python -c ' *",
+      "pip install *",
+      "mcp__sequential-thinking__sequentialthinking"
+    ],
+    "deny": []
   }
 }
