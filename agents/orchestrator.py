@@ -97,6 +97,7 @@ from memory.memory_manager import (
     save_conversation_history,
     evaluate_memory_rubric,
     get_unresolved_high_priority_flags,
+    get_top_similar_memories,
 )
 from tools.tool_definitions import (
     TOOL_DEFINITIONS,
