@@ -502,7 +502,8 @@ HELP_TEXT = """**PerMyLastBot — Commands**
 
 `!roster` — List all people tracked in entity memory
 `!profile [name]` — View full profile and fact history for a person
-`!profile-delete <id>` — Delete a wrong fact by ID. Find IDs with `!profile [name]`"""
+`!profile-delete <id>` — Delete a wrong fact by ID. Find IDs with `!profile [name]`
+`!save-thread` — Summarize and save the current thread to strategic memory. Run inside any thread."""
 
 
 # ============================================================
@@ -4585,6 +4586,134 @@ async def on_message(message):
             await message.channel.send(
                 f"Error deleting fact: {e}"
             )
+        return
+
+    # ── !save-thread ─────────────────────────────────────
+    if is_prefix and user_message.lower() == "save-thread":
+        _st_channel = message.channel
+        _is_thread = isinstance(
+            _st_channel, discord.Thread
+        )
+        if not _is_thread:
+            await message.channel.send(
+                "Use `!save-thread` inside a thread — "
+                "it saves the current thread's conversation "
+                "to memory."
+            )
+            return
+
+        # Fetch thread messages
+        _st_messages = []
+        async for _msg in _st_channel.history(
+            limit=200, oldest_first=True
+        ):
+            if _msg.author.bot and not _msg.author == client.user:
+                continue
+            role = (
+                "assistant" if _msg.author == client.user
+                else "user"
+            )
+            if _msg.content and _msg.content.strip():
+                _st_messages.append({
+                    "role": role,
+                    "content": _msg.content.strip(),
+                    "timestamp": _msg.created_at.isoformat(),
+                })
+
+        if not _st_messages:
+            await message.channel.send(
+                "No messages found in this thread to save."
+            )
+            return
+
+        # Build transcript for summarization
+        _transcript = "\n\n".join(
+            f"{m['role'].title()}: {m['content'][:400]}"
+            for m in _st_messages
+        )
+
+        # Summarize via background model
+        _summary_prompt = (
+            "Summarize this conversation thread into a "
+            "structured memory record. Include: what was "
+            "worked on, decisions made, outcomes, and any "
+            "unresolved items. Be specific and factual. "
+            "Maximum 400 words.\n\n"
+            f"Thread: #{_st_channel.name}\n\n"
+            f"{_transcript[:3000]}"
+        )
+
+        await message.channel.send(
+            "Summarizing thread and saving to memory..."
+        )
+
+        try:
+            _summary = await call_background_model(
+                _summary_prompt
+            )
+            _summary = _summary.strip()
+        except Exception as _e:
+            await message.channel.send(
+                f"Summarization failed: {_e}"
+            )
+            return
+
+        # Determine channel context
+        _parent_name = (
+            _st_channel.parent.name
+            if hasattr(_st_channel, "parent")
+            and _st_channel.parent
+            else effective_channel_name
+        )
+        _is_isolated = (
+            _parent_name in MEMORY_ISOLATED_CHANNELS
+        )
+
+        # Save summary as strategic memory
+        loop = asyncio.get_running_loop()
+        try:
+            _mem_id = await loop.run_in_executor(
+                None,
+                lambda: save_strategic_memory(
+                    content=(
+                        f"[THREAD SUMMARY: {_st_channel.name}]\n"
+                        + _summary
+                    ),
+                    category="thread_summary",
+                    confidence=0.85,
+                    source="save-thread",
+                    project_tag=_parent_name,
+                    channel_name=_parent_name,
+                )
+            )
+        except Exception as _e:
+            await message.channel.send(
+                f"Failed to save to memory: {_e}"
+            )
+            return
+
+        # Log raw turns to conversation_log if not isolated
+        if not _is_isolated:
+            _thread_context_id = _st_channel.id
+            for _tm in _st_messages:
+                await loop.run_in_executor(
+                    None,
+                    lambda m=_tm: log_conversation_turn(
+                        user_id=str(user_id),
+                        context_id=_thread_context_id,
+                        channel_name=_parent_name,
+                        role=m["role"],
+                        content=m["content"],
+                        project_tag=_parent_name,
+                    )
+                )
+
+        await message.channel.send(
+            f"Thread saved to strategic memory "
+            f"(ID: {_mem_id}).\n"
+            f"Summary:\n> {_summary[:300]}"
+            + ("..." if len(_summary) > 300 else "")
+        )
         return
 
     # !pin <id>: pin an operational memory so it is never auto-archived or consolidated
