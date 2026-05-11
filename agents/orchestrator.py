@@ -1656,24 +1656,36 @@ async def execute_goal(
                         })
 
                     elif step_type == "save_memory":
-                        content_to_save = step_query if step_query != step_desc else step_desc
-                        await extract_and_store_memories(
-                            user_message=content_to_save,
-                            bot_reply="",
-                            guild=guild,
-                            task_completed=True,
-                            project_tag=project_tag,
-                            channel_name=channel_name,
-                            memory_mode=memory_mode,
-                            background_model_fn=call_background_model
+                        content_to_save = (
+                            step_query if step_query != step_desc else step_desc
                         )
-                        execution_context[user_id]["steps"].append({
-                            "step": step_num, "type": "save_memory",
-                            "content": f"Saved to memory: {content_to_save[:100]}"
-                        })
-                        await channel.send(
-                            f"💾 Saved to memory: {content_to_save[:80]}"
-                        )
+                        if memory_mode == "ephemeral":
+                            execution_context[user_id]["steps"].append({
+                                "step": step_num, "type": "save_memory",
+                                "content": "[Skipped — ephemeral channel]"
+                            })
+                            await channel.send(
+                                "💾 Save skipped — this channel doesn't "
+                                "persist memories."
+                            )
+                        else:
+                            await extract_and_store_memories(
+                                user_message=content_to_save,
+                                bot_reply="",
+                                guild=guild,
+                                task_completed=True,
+                                project_tag=project_tag,
+                                channel_name=channel_name,
+                                memory_mode=memory_mode,
+                                background_model_fn=call_background_model
+                            )
+                            execution_context[user_id]["steps"].append({
+                                "step": step_num, "type": "save_memory",
+                                "content": f"Saved to memory: {content_to_save[:100]}"
+                            })
+                            await channel.send(
+                                f"💾 Saved to memory: {content_to_save[:80]}"
+                            )
 
                     elif step_type == "call_agent":
                         agent_slug = step.get("agent", "").strip()
