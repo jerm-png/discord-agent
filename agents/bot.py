@@ -1,17 +1,24 @@
+import os
+from dotenv import load_dotenv
+
+# Load environment variables FIRST before any other
+# imports that may call os.getenv at module level
+load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+
+# Now import everything else
 import asyncio
 import base64
 import contextlib
-import discord
 import io
-import os
+import json
 import shutil
 import sqlite3
 import sys
-import json
 import urllib.request
 from datetime import datetime
+
+import discord
 from discord import app_commands
-from dotenv import load_dotenv
 from anthropic import APIStatusError
 import PyPDF2
 import docx
@@ -113,11 +120,6 @@ from orchestrator import (
 # ============================================================
 # CONFIGURATION
 # ============================================================
-
-load_dotenv(os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    '.env'
-))
 
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "")

@@ -3,6 +3,8 @@
 # ============================================================
 
 import os
+from dotenv import load_dotenv
+load_dotenv()
 
 # ── Owner ─────────────────────────────────────────────────────
 OWNER_ID = os.getenv("DISCORD_OWNER_ID", "")

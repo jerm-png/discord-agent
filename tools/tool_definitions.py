@@ -3,6 +3,9 @@ import os
 import subprocess
 import sys
 from datetime import datetime
+from dotenv import load_dotenv
+load_dotenv()
+
 from ddgs import DDGS
 import requests
 

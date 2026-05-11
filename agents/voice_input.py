@@ -2,6 +2,8 @@ import asyncio
 import os
 import shutil
 import tempfile
+from dotenv import load_dotenv
+load_dotenv()
 
 import discord
 from elevenlabs import ElevenLabs
