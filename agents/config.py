@@ -2,6 +2,11 @@
 # config.py — Shared constants for bot.py and orchestrator.py
 # ============================================================
 
+import os
+
+# ── Owner ─────────────────────────────────────────────────────
+OWNER_ID = os.getenv("DISCORD_OWNER_ID", "")
+
 # ── Models ───────────────────────────────────────────────────
 MAIN_MODEL = "claude-sonnet-4-6"
 BACKGROUND_MODEL = "claude-haiku-4-5-20251001"

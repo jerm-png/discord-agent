@@ -26,6 +26,7 @@ from config import (
     HISTORY_RAW_WINDOW,
     HISTORY_SUMMARY_ROLE,
     CONSOLIDATION_THRESHOLDS,
+    OWNER_ID,
 )
 from model import (
     client,
@@ -82,6 +83,74 @@ from session import (
     clear_session_state,
     format_session_context,
 )
+
+
+def tag_owner() -> str:
+    """Returns a Discord mention for the owner, or empty string."""
+    return f"<@{OWNER_ID}> " if OWNER_ID else ""
+
+
+REFLECTION_PROMPT = """Review these completed task experiences and extract structured analytical insights.
+
+Completed task experiences:
+{experiences}
+
+For each meaningful pattern you identify respond with this exact JSON format and no other text:
+{{
+    "insights": [
+        {{
+            "observation": "what factually happened",
+            "reasoning": "why that approach was taken",
+            "outcome": "whether it worked and how",
+            "pattern": "the generalisable insight",
+            "confidence": 0.7,
+            "trigger_conditions": "when to apply this insight in future"
+        }}
+    ],
+    "strategic_insights": [
+        "any long term strategic observations worth telling"
+    ],
+    "summary": "one sentence summary of what was learned"
+}}
+
+Only include insights with genuine signal. Return empty arrays if nothing meaningful emerged.
+Confidence should be between 0.0 and 1.0 based on how many times this pattern was observed."""
+
+
+GOAL_PLANNER_SYSTEM_PROMPT = """You are a planning agent. Break down the following goal into 3-8 specific executable steps. Each step should be one of these types:
+- web_search: search for specific information
+- query_memory: check existing memory for context
+- analyze: synthesize information gathered so far
+- draft: write a structured output or report
+- save_memory: persist a specific finding or conclusion to long-term memory
+- call_agent: invoke a specialist agent by name to handle a step requiring domain expertise
+
+For each step specify:
+- step_number
+- type (from list above)
+- description (what to do)
+- query (the specific search query or memory query if applicable)
+- agent (required only for call_agent steps — the slug name of the specialist agent to invoke, e.g. "ai_engineer", "health_advisor")
+
+Return ONLY a JSON array of steps, no other text."""
+
+
+CREW_GOAL_PLANNER_SYSTEM_PROMPT = """You are a planning agent running in crew mode. Break down the following goal into 3-8 specific executable steps. Each step should be one of these types:
+- web_search: search for specific information
+- query_memory: check existing memory for context
+- analyze: synthesize information gathered so far
+- draft: write a structured output or report
+- save_memory: persist a specific finding or conclusion to long-term memory
+- call_agent: invoke a specialist agent by name to handle a step requiring domain expertise
+
+For each step specify:
+- step_number
+- type (from list above)
+- description (what to do)
+- query (the specific search query or memory query if applicable)
+- agent (required only for call_agent steps)
+
+Return ONLY a JSON array of steps, no other text."""
 
 
 _CONSOLIDATION_PROMPT = (
