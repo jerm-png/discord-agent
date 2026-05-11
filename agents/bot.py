@@ -1200,7 +1200,7 @@ async def on_message(message):
                 if pg_status == "awaiting_approval":
                     pg["status"] = "executing"
                     pg["current_step"] = 0
-                    execution_context[uid] = []
+                    execution_context.pop(uid, None)
                     # Decision-as-memory capture
                     _goal_desc = pg.get("goal", "unknown goal")
                     _step_count = len(pg.get("steps", []))
