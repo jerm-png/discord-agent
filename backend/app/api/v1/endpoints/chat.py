@@ -82,7 +82,7 @@ async def chat_websocket(
                 project_tag=project_tag,
                 active_agent_slug=data.get("agent_slug"),
                 agent_trigger="none",
-                context_id=0,
+                context_id=thread_id,
                 channel_name=workspace_slug,
             )
             await ws_manager.send(thread_id, {"type": "done"})
@@ -111,7 +111,7 @@ async def get_thread_messages(
     user: str = Depends(require_auth),
 ):
     from app.core.state import conversation_history
-    key = f"drift-owner:{thread_id}"
+    key = ("drift-owner", thread_id)
     history = conversation_history.get(key, [])
 
     messages = []
