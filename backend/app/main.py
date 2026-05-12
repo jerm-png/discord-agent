@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.agents import load_agents
+from app.api.v1.router import router
 import app.core.state as state
 from app.features.chat.orchestrator import (
     run_proactive_flag_surfacing,
@@ -64,13 +65,23 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Drift",
+    description="Persistent AI cognition system",
+    version="0.1.0",
+    docs_url="/api/docs",
+    redoc_url=None,
     lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://notskynet.app",
+        "https://www.notskynet.app",
+        "http://localhost:3000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(router, prefix="/api/v1")
