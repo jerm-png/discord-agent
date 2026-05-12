@@ -192,7 +192,7 @@ Agent selection priority: (1) thread pin → (2) health-tracking hard rule → (
 | `!roster` | List people in entity memory | UI Button | "People" tab in director-workspace workspace sidebar |
 | `!profile <name>` | View entity profile | UI Button | Entity profile page/panel showing categorised facts and history |
 | `!profile-delete <id>` | Delete a fact by ID | UI Button | Delete (×) button on individual fact row in entity profile view |
-| `!save-thread` | Summarise thread to strategic memory | Automatic | Automatic on thread archive/close — no user action needed in web context |
+| `!save-thread` | Summarise thread to strategic memory | UI Button | "Save to Memory" button in thread header — user-initiated curation, not automatic. Auto-saving every thread creates noise in strategic memory. |
 | `!handoff` | Generate handoff document | UI Button | "Export Handoff" button |
 | `!status` | System health report | API Endpoint | `GET /api/v1/status` — surfaces in admin panel |
 
@@ -201,7 +201,7 @@ Agent selection priority: (1) thread pin → (2) health-tracking hard rule → (
 ## Section 3 — New Web-Native Behavior
 
 **1. Login screen as authentication front door (JWT-based single user auth)**
-Single-user JWT auth. Login page is the first route. All API endpoints require `Authorization: Bearer <token>`. Token stored in `localStorage` or `httpOnly` cookie.
+Single-user JWT auth. Login page is the first route. All API endpoints require `Authorization: Bearer <token>`. Token stored in `httpOnly` cookie only — never localStorage, which is vulnerable to JavaScript access.
 Architectural awareness: auth middleware must wrap the entire FastAPI app including WebSocket upgrades. The `OWNER_ID` env var concept maps to a single hashed password stored in env. No user table needed initially.
 
 **2. Manual thread title creation by user (with rename-anytime capability)**
@@ -283,7 +283,7 @@ Architectural awareness: The handoff generation function (`run_handoff_command` 
 2. `bge-m3` — multi-lingual, 1024d, state-of-the-art retrieval, ~570M params.
 3. `text-embedding-3-small` via OpenAI API — no local inference needed, 1536d, pay-per-use.
 4. `nomic-embed-text` via Ollama — runs locally, 768d, strong performance.
-**Recommendation:** TBD — needs discussion. `nomic-embed-text` via Ollama is a strong candidate: runs locally on the same VPS as the existing Ollama service, no API cost, meaningful quality improvement over MiniLM.
+**Recommendation:** `bge-m3` via sentence-transformers. Runs locally on the VPS with no Ollama dependency, no API cost, state-of-the-art retrieval quality, meaningful improvement over MiniLM. Ollama is not available on the VPS — it was dropped as part of the Discord → web UI transition.
 
 ---
 
@@ -297,14 +297,13 @@ Architectural awareness: The handoff generation function (`run_handoff_command` 
 
 ---
 
-**Decision:** How push notifications work without Discord
-**Context:** The bot posts status/alert messages to `#bot-status` and `#chief-of-staff` Discord channels. Proactive flag surfacing and scheduled consolidation results currently go to those Discord channels.
+**Decision:** How `search_codebase` tool works on the VPS
+**Context:** Currently calls `ccc.exe` — a Windows-specific binary that performs semantic search of the discord-agent codebase. That binary does not exist on Linux and the codebase it was searching is being retired.
 **Options:**
-1. Browser push notifications via Web Push API — requires service worker and user permission.
-2. In-app notification bell — alerts stored in DB, displayed in UI on next load.
-3. Email notifications via SMTP for high-priority flags.
-4. All notifications surface as in-app — `#chief-of-staff` becomes a "Notifications" view in the UI.
-**Recommendation:** Option 2 + 4 for the port. An in-app notifications table is sufficient. Browser push (Option 1) is a post-port enhancement. Option 3 requires an email service — defer.
+1. Replace with a Python-native search tool (ripgrep via subprocess) targeting the new Drift codebase.
+2. Drop the tool entirely from the initial port — the old codebase is being retired and a new codebase search tool can be built for the new repo when needed.
+3. Retain as a stub that returns a "not available" message until rebuilt.
+**Recommendation:** Option 2. Drop from the port. The tool was specific to the Discord bot codebase which no longer exists. Rebuild as a new tool targeting the Drift repo in a post-transition session when codebase search becomes useful again.
 
 ---
 
@@ -588,30 +587,24 @@ systemd services required:
 
 ### 6.1 Memory Wipe Scope
 
-**Wipe at cutover (Discord-keyed, meaningless in web context):**
-- `conversation_history` table — all rows (Discord `uid:channel_id` keys are meaningless; export as JSON backup first)
-- `conversation_log` table — all rows (Discord `context_id` values are meaningless; export as JSON backup first)
-- `session_state` table — all rows (Discord `context_id` values are meaningless; fresh start is appropriate)
-- `reasoning_trace` table — all rows (Discord channel context; optional — low value to retain)
+**Full clean slate at cutover. Nothing is preserved.**
 
-**Preserve at cutover:**
-- `strategic_memory` — all active rows (core user knowledge; this is the crown jewel)
-- `operational_memory` — all active rows (review manually post-cutover for stale items)
-- `analytical_memory` — all active rows (learned patterns and crystallised skills)
-- `experiences` — all rows (task episode history for reflection loop)
-- `memory_archive` — all rows (historical record)
-- `health_panels` — all rows (irreplaceable health data)
-- `health_protocols` — all rows (irreplaceable protocol history)
-- `entities` — all rows (director-workspace people)
-- `entity_facts` — all rows (longitudinal fact history)
-- `meta` — all rows except reset `pending_reflection` to `false`
+Wipe (delete entirely):
+- database.db — the entire SQLite file
+- memory/chroma_db/ — the entire ChromaDB directory
 
-**Export before wipe:**
-- `conversation_history` → `backup_conversation_history_YYYY-MM-DD.json`
-- `conversation_log` → `backup_conversation_log_YYYY-MM-DD.json`
+memory_manager.py creates all tables fresh on first 
+run. ChromaDB is rebuilt empty and ready for bge-m3 
+embeddings from the first query.
 
-**New table to create at cutover:**
-- `threads` — `id` (PK), `workspace_slug`, `title`, `created_at`, `last_message_at`; thread IDs become the new `context_id` for `conversation_history` and `session_state`
+No export step needed. User will resubmit health 
+protocols, entity facts, and strategic context 
+through normal conversation after cutover.
+
+Rationale: months of development noise, test data, 
+and draft memories are not worth carrying forward. 
+Starting clean produces better memory quality than 
+migrating a noisy dataset.
 
 ---
 
