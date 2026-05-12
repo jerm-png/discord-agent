@@ -145,7 +145,7 @@ export async function postThreadAction(
     `/api/v1/threads/${threadId}/action`,
     {
       method: 'POST',
-      body: JSON.stringify({ action, changes: changes || null }),
+      body: JSON.stringify({ action, changes: changes || "" }),
     }
   )
 }
