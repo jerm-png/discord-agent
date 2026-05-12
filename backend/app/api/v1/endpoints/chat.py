@@ -116,13 +116,34 @@ async def get_thread_messages(
 
     messages = []
     for i, msg in enumerate(history):
-        if msg.get("role") in ("user", "assistant"):
-            messages.append({
-                "id": f"msg-{i}",
-                "role": msg["role"],
-                "content": msg["content"] if isinstance(msg["content"], str) else str(msg["content"]),
-                "timestamp": "",
-            })
+        role = msg.get("role")
+        if role not in ("user", "assistant"):
+            continue
+
+        content = msg.get("content", "")
+
+        # Handle list-format content from Claude API
+        if isinstance(content, list):
+            content = " ".join(
+                block.get("text", "")
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            )
+
+        # Strip system context prefix from user messages
+        if role == "user" and "Current message: " in content:
+            content = content.split("Current message: ", 1)[1]
+
+        content = content.strip()
+        if not content:
+            continue
+
+        messages.append({
+            "id": f"msg-{i}",
+            "role": role,
+            "content": content,
+            "timestamp": "",
+        })
 
     return {"messages": messages}
 
