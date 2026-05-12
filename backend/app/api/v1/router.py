@@ -25,5 +25,6 @@ router.include_router(
 )
 router.include_router(
     threads.router,
+    prefix="/workspaces",
     tags=["threads"],
 )
