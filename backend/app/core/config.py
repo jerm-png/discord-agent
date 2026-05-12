@@ -165,3 +165,13 @@ SOUL_PATH = os.getenv(
     "SOUL_PATH",
     os.path.join(os.path.dirname(__file__), "..", "..", "..", "SOUL.md")
 )
+
+AGENTS_PATH = os.getenv(
+    "AGENTS_PATH",
+    r"C:\Users\Jerm\.claude\agents"
+)
+
+AGENT_KEYWORDS_CACHE_PATH = os.getenv(
+    "AGENT_KEYWORDS_CACHE_PATH",
+    os.path.join(os.path.dirname(__file__), "..", "..", "..", "memory", "agent_keywords_cache.json")
+)
