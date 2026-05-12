@@ -12,13 +12,21 @@ import {
   Network,
   Shield,
   Terminal,
+  Check,
+  X,
+  Edit3,
 } from 'lucide-react'
 import { CyberFrame } from './CyberFrame'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import type { ChatMessage } from '../api/client'
+import type { ChatMessage as ApiChatMessage } from '../api/client'
 
-export type { ChatMessage }
+export type ChatMessage = ApiChatMessage & {
+  actionType?: 'plan' | 'gate'
+  actionResolved?: string
+}
+
+type ActionKind = 'approve' | 'cancel' | 'modify' | 'continue' | 'adjust' | 'skip' | 'retry'
 
 interface ChatPanelProps {
   messages: ChatMessage[]
@@ -28,11 +36,11 @@ interface ChatPanelProps {
   workspaceLabel: string
   threadTitle: string
   onSendMessage: (content: string) => void
+  onAction?: (action: ActionKind, changes?: string) => void
 }
 
 function formatTime(ts: string): string {
   if (!ts) return ''
-  // Already formatted as HH:MM — return as-is
   if (/^\d{2}:\d{2}$/.test(ts)) return ts
   try {
     return new Date(ts).toLocaleTimeString('en-US', {
@@ -52,8 +60,11 @@ export function ChatPanel({
   isConnected,
   threadTitle,
   onSendMessage,
+  onAction,
 }: ChatPanelProps) {
   const [inputValue, setInputValue] = useState('')
+  const [modifyTarget, setModifyTarget] = useState<{ messageId: string; action: ActionKind } | null>(null)
+  const [modifyText, setModifyText] = useState('')
   const [cycles, setCycles] = useState(0)
   const [hexStream, setHexStream] = useState<string[]>([])
   const [activeNodes, setActiveNodes] = useState<number[]>([])
@@ -62,7 +73,6 @@ export function ChatPanel({
   const [waveHeights, setWaveHeights] = useState<number[]>(Array(50).fill(0.3))
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
-  // Auto-scroll on new messages or thinking state change
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, isThinking])
@@ -160,17 +170,13 @@ export function ChatPanel({
 
   return (
     <div className="flex-1 h-full flex flex-col bg-gradient-to-b from-[#0a0a10] to-[#08080d] relative scanlines">
-      {/* Hacking Node Progress Bar */}
       {isThinking && (
         <div className="absolute top-0 left-0 right-0 z-50">
-          {/* Audio Waveform Bar - industrial container */}
           <div className="h-8 w-full bg-gradient-to-b from-[#0c0c14] to-[#06060a] relative overflow-hidden flex items-center justify-center gap-[2px] px-6 border-b-2 border-[#1a1a22]">
-            {/* Left bracket decoration */}
             <div className="absolute left-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
               <div className="w-1 h-4 bg-neon-yellow/60" />
               <div className="w-1 h-6 bg-neon-yellow/80" />
             </div>
-
             {waveHeights.map((height, i) => (
               <div
                 key={i}
@@ -184,19 +190,14 @@ export function ChatPanel({
                 }}
               />
             ))}
-
-            {/* Right bracket decoration */}
             <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
               <div className="w-1 h-6 bg-neon-yellow/80" />
               <div className="w-1 h-4 bg-neon-yellow/60" />
             </div>
           </div>
 
-          {/* Hacking node interface - industrial style */}
           <div className="bg-gradient-to-b from-[#08080d] to-[#050508] overflow-hidden industrial-panel">
-            {/* Top row - Status and nodes */}
             <div className="flex items-center justify-between px-4 py-2.5 border-b-2 border-[#1a1a22]">
-              {/* Phase indicator */}
               <div className="flex items-center gap-3 px-3 py-1.5 industrial-inset border border-neon-pink/20">
                 <div className="relative">
                   <div className="w-2.5 h-2.5 bg-neon-pink pulse-dot-pink" />
@@ -207,8 +208,6 @@ export function ChatPanel({
                   {statusText || hackPhase || 'INITIALIZING'}
                 </span>
               </div>
-
-              {/* Network nodes visualization */}
               <div className="flex items-center gap-2 px-3 py-1.5 industrial-raised border border-neon-cyan/20">
                 {[0, 1, 2, 3, 4, 5].map((node) => (
                   <div
@@ -230,9 +229,7 @@ export function ChatPanel({
               </div>
             </div>
 
-            {/* Middle row - Hex stream and stats */}
             <div className="flex items-stretch">
-              {/* Hex data stream */}
               <div className="flex-1 px-4 py-2 border-r-2 border-[#1a1a22] industrial-inset">
                 <div className="flex items-center gap-2 mb-1">
                   <Database className="w-3 h-3 text-neon-green" />
@@ -247,7 +244,6 @@ export function ChatPanel({
                 </div>
               </div>
 
-              {/* Stats grid - raised panels */}
               <div className="grid grid-cols-3 gap-0 text-center">
                 <div className="px-4 py-2 border-r-2 border-[#1a1a22] industrial-raised">
                   <div className="flex items-center justify-center gap-1 mb-1">
@@ -285,21 +281,18 @@ export function ChatPanel({
               </div>
             </div>
 
-            {/* Bottom thick decorative bar */}
             <div className="h-1 w-full bg-gradient-to-r from-neon-pink/60 via-neon-cyan/60 to-neon-green/60" />
             <div className="industrial-divider-h" />
           </div>
         </div>
       )}
 
-      {/* Header */}
       <header
         className={cn(
           'px-6 py-4 flex items-center justify-between transition-all industrial-raised relative',
           isThinking && 'mt-[135px]'
         )}
       >
-        {/* Corner accents */}
         <div className="absolute top-2 left-2 w-4 h-4 border-l-2 border-t-2 border-neon-cyan/40" />
         <div className="absolute bottom-2 right-2 w-4 h-4 border-r-2 border-b-2 border-neon-pink/40" />
 
@@ -308,8 +301,7 @@ export function ChatPanel({
             {threadTitle}
           </h2>
           <p className="font-mono text-[10px] text-muted-foreground mt-0.5">
-            Session:{' '}
-            <span className="text-neon-pink">DRIFT-SYS</span>
+            Session: <span className="text-neon-pink">DRIFT-SYS</span>
           </p>
         </div>
         <div
@@ -336,11 +328,9 @@ export function ChatPanel({
           </span>
         </div>
 
-        {/* Bottom thick divider */}
         <div className="absolute -bottom-[3px] left-0 right-0 industrial-divider-h" />
       </header>
 
-      {/* Messages */}
       <div className="flex-1 overflow-y-auto p-6 space-y-6 scan-line relative">
         {messages.length === 0 && !isThinking ? (
           <div className="h-full flex flex-col items-center justify-center gap-3">
@@ -400,6 +390,78 @@ export function ChatPanel({
                         {message.content}
                       </div>
                     )}
+
+                    {message.actionType === 'plan' && onAction && (
+                      <div className="mt-4 pt-3 border-t border-[#1a1a22] flex flex-wrap gap-2">
+                        <button
+                          onClick={() => onAction('approve')}
+                          className="px-3 py-1.5 industrial-raised border border-neon-green/40 text-neon-green hover:border-neon-green hover:glow-green transition-all flex items-center gap-1.5"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                          <span className="font-mono text-[10px] uppercase tracking-wider font-bold">Approve</span>
+                        </button>
+                        <button
+                          onClick={() => { setModifyTarget({ messageId: message.id, action: 'modify' }); setModifyText('') }}
+                          className="px-3 py-1.5 industrial-raised border border-neon-cyan/40 text-neon-cyan hover:border-neon-cyan hover:glow-cyan transition-all flex items-center gap-1.5"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                          <span className="font-mono text-[10px] uppercase tracking-wider font-bold">Modify</span>
+                        </button>
+                        <button
+                          onClick={() => onAction('cancel')}
+                          className="px-3 py-1.5 industrial-raised border border-neon-pink/40 text-neon-pink hover:border-neon-pink hover:glow-pink transition-all flex items-center gap-1.5"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                          <span className="font-mono text-[10px] uppercase tracking-wider font-bold">Cancel</span>
+                        </button>
+                      </div>
+                    )}
+
+                    {message.actionType === 'gate' && onAction && (
+                      <div className="mt-4 pt-3 border-t border-[#1a1a22] flex flex-wrap gap-2">
+                        <button
+                          onClick={() => onAction('continue')}
+                          className="px-3 py-1.5 industrial-raised border border-neon-green/40 text-neon-green hover:border-neon-green hover:glow-green transition-all flex items-center gap-1.5"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                          <span className="font-mono text-[10px] uppercase tracking-wider font-bold">Continue</span>
+                        </button>
+                        <button
+                          onClick={() => { setModifyTarget({ messageId: message.id, action: 'adjust' }); setModifyText('') }}
+                          className="px-3 py-1.5 industrial-raised border border-neon-cyan/40 text-neon-cyan hover:border-neon-cyan hover:glow-cyan transition-all flex items-center gap-1.5"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                          <span className="font-mono text-[10px] uppercase tracking-wider font-bold">Adjust</span>
+                        </button>
+                        <button
+                          onClick={() => onAction('skip')}
+                          className="px-3 py-1.5 industrial-raised border border-neon-yellow/40 text-neon-yellow hover:border-neon-yellow transition-all flex items-center gap-1.5"
+                        >
+                          <span className="font-mono text-[10px] uppercase tracking-wider font-bold">Skip</span>
+                        </button>
+                        <button
+                          onClick={() => onAction('retry')}
+                          className="px-3 py-1.5 industrial-raised border border-neon-cyan/40 text-neon-cyan hover:border-neon-cyan transition-all flex items-center gap-1.5"
+                        >
+                          <span className="font-mono text-[10px] uppercase tracking-wider font-bold">Retry</span>
+                        </button>
+                        <button
+                          onClick={() => onAction('cancel')}
+                          className="px-3 py-1.5 industrial-raised border border-neon-pink/40 text-neon-pink hover:border-neon-pink hover:glow-pink transition-all flex items-center gap-1.5"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                          <span className="font-mono text-[10px] uppercase tracking-wider font-bold">Cancel</span>
+                        </button>
+                      </div>
+                    )}
+
+                    {message.actionResolved && (
+                      <div className="mt-3 pt-2 border-t border-[#1a1a22]">
+                        <span className="font-mono text-[10px] text-muted-foreground/50 uppercase tracking-wider">
+                          → {message.actionResolved}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </CyberFrame>
 
@@ -434,13 +496,10 @@ export function ChatPanel({
         )}
       </div>
 
-      {/* Input Area */}
       <div className="p-4 relative industrial-panel">
-        {/* Top thick divider */}
         <div className="absolute -top-[1px] left-0 right-0 industrial-divider-h" />
 
         <div className="flex items-end gap-3">
-          {/* Toolbar - industrial buttons */}
           <div className="flex items-center gap-1 pb-2">
             <button className="p-2.5 industrial-inset border border-muted-foreground/20 text-muted-foreground hover:text-neon-pink hover:border-neon-pink/40 transition-all group">
               <Paperclip className="w-4 h-4 group-hover:rotate-45 transition-transform" />
@@ -450,7 +509,6 @@ export function ChatPanel({
             </button>
           </div>
 
-          {/* Input - heavy industrial styling */}
           <div className="flex-1 relative">
             <textarea
               value={inputValue}
@@ -475,7 +533,6 @@ export function ChatPanel({
             )} />
           </div>
 
-          {/* Send Button - heavy industrial */}
           <button
             onClick={handleSend}
             disabled={!inputValue.trim()}
@@ -500,6 +557,53 @@ export function ChatPanel({
           </div>
         </div>
       </div>
+
+      {modifyTarget && onAction && (
+        <div
+          className="absolute inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm"
+          onClick={() => setModifyTarget(null)}
+        >
+          <div
+            className="industrial-raised border-2 border-neon-cyan/50 bg-[#0a0a10] w-full max-w-md mx-4 p-6"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-2 mb-4">
+              <Edit3 className="w-4 h-4 text-neon-cyan" />
+              <span className="font-mono text-xs text-neon-cyan glow-cyan-text uppercase tracking-wider font-bold">
+                {modifyTarget.action === 'modify' ? 'Modify Plan' : 'Adjust Step'}
+              </span>
+            </div>
+            <textarea
+              value={modifyText}
+              onChange={(e) => setModifyText(e.target.value)}
+              placeholder="Describe the change..."
+              rows={4}
+              autoFocus
+              className="w-full px-3 py-2 industrial-inset border-2 border-neon-cyan/30 text-foreground placeholder:text-muted-foreground/40 font-sans text-sm resize-none focus:outline-none focus:border-neon-pink/50"
+            />
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                onClick={() => setModifyTarget(null)}
+                className="px-3 py-1.5 industrial-inset border border-muted-foreground/30 text-muted-foreground hover:text-foreground transition-all"
+              >
+                <span className="font-mono text-[10px] uppercase tracking-wider font-bold">Cancel</span>
+              </button>
+              <button
+                onClick={() => {
+                  if (modifyText.trim()) {
+                    onAction(modifyTarget.action, modifyText.trim())
+                    setModifyTarget(null)
+                  }
+                }}
+                disabled={!modifyText.trim()}
+                className="px-3 py-1.5 industrial-raised border border-neon-green/50 text-neon-green hover:border-neon-green hover:glow-green transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                <span className="font-mono text-[10px] uppercase tracking-wider font-bold">Submit</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

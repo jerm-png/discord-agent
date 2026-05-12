@@ -127,3 +127,25 @@ export async function getMessages(threadId: string): Promise<ChatMessage[]> {
   )
   return data.messages
 }
+export type ThreadAction =
+  | 'approve'
+  | 'cancel'
+  | 'modify'
+  | 'continue'
+  | 'adjust'
+  | 'skip'
+  | 'retry'
+
+export async function postThreadAction(
+  threadId: string,
+  action: ThreadAction,
+  changes?: string
+): Promise<{ status: string; action: string }> {
+  return request<{ status: string; action: string }>(
+    `/api/v1/threads/${threadId}/action`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ action, changes: changes || null }),
+    }
+  )
+}

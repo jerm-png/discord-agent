@@ -6,6 +6,9 @@ export interface WSMessage {
   content?: string
   thread_id?: string
   workspace?: string
+  goal?: string
+  steps?: string[]
+  gate_kind?: string
 }
 
 interface UseWebSocketReturn {

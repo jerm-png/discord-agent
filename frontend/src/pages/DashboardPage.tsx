@@ -7,7 +7,8 @@ import { useWebSocket } from '../hooks/useWebSocket'
 import type { WSMessage } from '../hooks/useWebSocket'
 import { useDriftStore } from '../store/driftStore'
 import { getWorkspaces, getThreads, createThread, archiveThread, getMessages } from '../api/client'
-import type { Thread, ChatMessage } from '../api/client'
+import type { Thread } from '../api/client'
+import type { ChatMessage } from '../components/ChatPanel'
 
 export function DashboardPage() {
   const {
@@ -35,6 +36,28 @@ export function DashboardPage() {
           role: 'assistant',
           content: msg.content || msg.text || 'An error occurred',
           timestamp: new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' }),
+        },
+      ])
+    } else if (msg.type === 'plan') {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `plan-${Date.now()}`,
+          role: 'assistant',
+          content: msg.content || msg.text || 'Plan ready for approval.',
+          timestamp: new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' }),
+          actionType: 'plan',
+        },
+      ])
+    } else if (msg.type === 'gate') {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `gate-${Date.now()}`,
+          role: 'assistant',
+          content: msg.content || msg.text || 'Goal paused at gate.',
+          timestamp: new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' }),
+          actionType: 'gate',
         },
       ])
     }
@@ -102,6 +125,23 @@ export function DashboardPage() {
       console.error('Failed to create thread:', e)
     }
   }
+    
+  async function handleAction(action: 'approve' | 'cancel' | 'modify' | 'continue' | 'adjust' | 'skip' | 'retry', changes?: string) {
+    if (!activeThread) return
+    try {
+      const { postThreadAction } = await import('../api/client')
+      await postThreadAction(activeThread.id, action, changes)
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.actionType === 'plan' || m.actionType === 'gate'
+            ? { ...m, actionType: undefined, actionResolved: action }
+            : m
+        )
+      )
+    } catch (e) {
+      console.error('Action failed:', e)
+    }
+  }
 
   function handleSendMessage(content: string) {
     setMessages((prev) => [
@@ -151,6 +191,7 @@ export function DashboardPage() {
             workspaceLabel={activeWorkspaceLabel}
             threadTitle={activeThread.title}
             onSendMessage={handleSendMessage}
+            onAction={handleAction}
           />
         ) : (
           <div className="flex-1 flex items-center justify-center bg-[#0a0a0f] scanlines">
