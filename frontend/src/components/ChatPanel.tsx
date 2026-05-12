@@ -31,6 +31,7 @@ interface ChatPanelProps {
 }
 
 function formatTime(ts: string): string {
+  if (!ts) return ''
   try {
     return new Date(ts).toLocaleTimeString('en-US', {
       hour: '2-digit',
@@ -38,7 +39,7 @@ function formatTime(ts: string): string {
       hour12: false,
     })
   } catch {
-    return ts
+    return ''
   }
 }
 
