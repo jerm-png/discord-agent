@@ -85,6 +85,7 @@ async def chat_websocket(
                 context_id=0,
                 channel_name=workspace_slug,
             )
+            await ws_manager.send(thread_id, {"type": "done"})
 
     except WebSocketDisconnect:
         ws_manager.disconnect(thread_id)

@@ -7,7 +7,7 @@ import type { ChatMessage } from '../components/ChatPanel'
 import { useWebSocket } from '../hooks/useWebSocket'
 import type { WSMessage } from '../hooks/useWebSocket'
 import { useDriftStore } from '../store/driftStore'
-import { getWorkspaces, getThreads, createThread } from '../api/client'
+import { getWorkspaces, getThreads, createThread, archiveThread } from '../api/client'
 import type { Thread } from '../api/client'
 
 export function DashboardPage() {
@@ -21,6 +21,7 @@ export function DashboardPage() {
     setThreads,
     setActiveThread,
     addThread,
+    removeThread,
   } = useDriftStore()
 
   const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -78,6 +79,18 @@ export function DashboardPage() {
     setActiveThread(thread)
   }
 
+  async function handleDeleteThread(threadId: string) {
+    try {
+      await archiveThread(threadId)
+      removeThread(threadId)
+      if (activeThread?.id === threadId) {
+        setActiveThread(null)
+      }
+    } catch (e) {
+      console.error('Failed to archive thread:', e)
+    }
+  }
+
   async function handleCreateThread(title: string) {
     try {
       const thread = await createThread(activeWorkspace, title)
@@ -119,6 +132,7 @@ export function DashboardPage() {
           activeThread={activeThread}
           onThreadChange={handleThreadChange}
           onCreateThread={handleCreateThread}
+          onDeleteThread={handleDeleteThread}
           workspaceLabel={activeWorkspaceLabel}
           isLoading={threadsLoading}
         />
