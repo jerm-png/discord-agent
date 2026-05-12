@@ -105,6 +105,28 @@ async def chat_websocket(
         ws_manager.disconnect(thread_id)
 
 
+@router.get("/threads/{thread_id}/messages")
+async def get_thread_messages(
+    thread_id: str,
+    user: str = Depends(require_auth),
+):
+    from app.core.state import conversation_history
+    key = f"drift-owner:{thread_id}"
+    history = conversation_history.get(key, [])
+
+    messages = []
+    for i, msg in enumerate(history):
+        if msg.get("role") in ("user", "assistant"):
+            messages.append({
+                "id": f"msg-{i}",
+                "role": msg["role"],
+                "content": msg["content"] if isinstance(msg["content"], str) else str(msg["content"]),
+                "timestamp": "",
+            })
+
+    return {"messages": messages}
+
+
 @router.post("/threads/{thread_id}/action")
 async def thread_action(
     thread_id: str,

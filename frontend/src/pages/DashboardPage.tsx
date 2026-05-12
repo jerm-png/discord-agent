@@ -3,12 +3,11 @@ import { SystemStatusBar } from '../components/SystemStatusBar'
 import { WorkspaceSidebar } from '../components/WorkspaceSidebar'
 import { ThreadList } from '../components/ThreadList'
 import { ChatPanel } from '../components/ChatPanel'
-import type { ChatMessage } from '../components/ChatPanel'
 import { useWebSocket } from '../hooks/useWebSocket'
 import type { WSMessage } from '../hooks/useWebSocket'
 import { useDriftStore } from '../store/driftStore'
-import { getWorkspaces, getThreads, createThread, archiveThread } from '../api/client'
-import type { Thread } from '../api/client'
+import { getWorkspaces, getThreads, createThread, archiveThread, getMessages } from '../api/client'
+import type { Thread, ChatMessage } from '../api/client'
 
 export function DashboardPage() {
   const {
@@ -60,11 +59,14 @@ export function DashboardPage() {
       .finally(() => setThreadsLoading(false))
   }, [activeWorkspace, setThreads])
 
-  // Connect WebSocket when active thread changes
+  // Connect WebSocket and load history when active thread changes
   useEffect(() => {
     if (activeThread) {
       setMessages([])
       connect(activeWorkspace, activeThread.id)
+      getMessages(activeThread.id)
+        .then((msgs) => setMessages(msgs))
+        .catch(console.error)
     } else {
       disconnect()
     }

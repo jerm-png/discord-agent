@@ -388,6 +388,29 @@
   100%{transform:translateX(100%)}
 }
 
+/* ── Scan Line ────────────────────────────────────────── */
+@keyframes scan-sweep {
+  0% { top: 0; }
+  100% { top: 100%; }
+}
+
+.scan-line::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg,
+    transparent,
+    rgba(0, 240, 255, 0.15),
+    transparent
+  );
+  animation: scan-sweep 4s linear infinite;
+  pointer-events: none;
+  z-index: 2;
+}
+
 /* ── Prose overrides for markdown ─────────────────────── */
 .drift-prose { font-family: 'Inter', system-ui, sans-serif; font-size: 0.875rem; line-height: 1.6; color: #f0f0f5; }
 .drift-prose strong { color: #05ffa1; font-weight: 600; }

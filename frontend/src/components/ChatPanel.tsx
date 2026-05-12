@@ -16,13 +16,9 @@ import {
 import { CyberFrame } from './CyberFrame'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import type { ChatMessage } from '../api/client'
 
-export interface ChatMessage {
-  id: string
-  role: 'user' | 'assistant'
-  content: string
-  timestamp: string
-}
+export type { ChatMessage }
 
 interface ChatPanelProps {
   messages: ChatMessage[]
@@ -342,7 +338,7 @@ export function ChatPanel({
       </header>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-6 space-y-6">
+      <div className="flex-1 overflow-y-auto p-6 space-y-6 scan-line relative">
         {messages.length === 0 && !isThinking ? (
           <div className="h-full flex flex-col items-center justify-center gap-3">
             <Terminal className="w-12 h-12 text-neon-cyan/20" strokeWidth={1} />
@@ -409,6 +405,25 @@ export function ChatPanel({
                 )}
               </div>
             ))}
+            {isThinking && (
+              <div className="flex gap-4 justify-start">
+                <div className="w-10 h-10 shrink-0 flex items-center justify-center industrial-raised border-2 border-[#00f0ff]/50 glow-cyan mt-2">
+                  <Bot className="w-5 h-5 text-[#00f0ff]" />
+                </div>
+                <div className="cyber-frame cyber-frame-cyan px-5 py-4">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="font-mono text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 text-[#00f0ff] glow-cyan-text bg-[#00f0ff]/10 border border-[#00f0ff]/30">
+                      DRIFT
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5 py-2">
+                    <span className="w-2 h-2 bg-[#00f0ff] rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                    <span className="w-2 h-2 bg-[#00f0ff] rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                    <span className="w-2 h-2 bg-[#00f0ff] rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                  </div>
+                </div>
+              </div>
+            )}
             <div ref={messagesEndRef} />
           </>
         )}
@@ -447,7 +462,12 @@ export function ChatPanel({
               )}
               style={{ minHeight: '48px', maxHeight: '150px' }}
             />
-            <div className="absolute bottom-0 left-2 right-2 h-[2px] bg-gradient-to-r from-transparent via-neon-cyan/30 to-transparent" />
+            <div className={cn(
+              'absolute bottom-0 left-2 right-2 h-[2px]',
+              inputValue.trim()
+                ? 'bg-gradient-to-r from-transparent via-[#ff2a6d]/60 to-transparent'
+                : 'bg-gradient-to-r from-transparent via-[#00f0ff]/30 to-transparent'
+            )} />
           </div>
 
           {/* Send Button - heavy industrial */}

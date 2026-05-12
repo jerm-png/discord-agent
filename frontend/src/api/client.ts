@@ -1,5 +1,12 @@
 const BASE_URL = ''
 
+export interface ChatMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  timestamp: string
+}
+
 export interface Workspace {
   slug: string
   label: string
@@ -112,4 +119,11 @@ export async function archiveThread(threadId: string): Promise<void> {
   await request<unknown>(`/api/v1/workspaces/threads/${threadId}`, {
     method: 'DELETE',
   })
+}
+
+export async function getMessages(threadId: string): Promise<ChatMessage[]> {
+  const data = await request<{ messages: ChatMessage[] }>(
+    `/api/v1/threads/${threadId}/messages`
+  )
+  return data.messages
 }
