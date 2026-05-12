@@ -2,6 +2,7 @@ from fastapi import APIRouter
 from app.api.v1.endpoints import (
     auth,
     status,
+    threads,
     workspaces,
 )
 
@@ -21,4 +22,8 @@ router.include_router(
     workspaces.router,
     prefix="/workspaces",
     tags=["workspaces"],
+)
+router.include_router(
+    threads.router,
+    tags=["threads"],
 )

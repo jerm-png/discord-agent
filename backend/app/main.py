@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.agents import load_agents
 from app.api.v1.router import router
+from app.db.threads import init_threads_table
 import app.core.state as state
 from app.features.chat.orchestrator import (
     run_proactive_flag_surfacing,
@@ -41,6 +42,10 @@ async def lifespan(app: FastAPI):
             logger.info("Langfuse: no keys found — tracing disabled")
     except Exception as e:
         logger.warning(f"Langfuse init failed — tracing disabled: {e}")
+
+    # Database tables
+    init_threads_table()
+    logger.info("Threads table ready")
 
     # Agent definitions
     await load_agents()
