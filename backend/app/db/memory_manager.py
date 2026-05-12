@@ -6,11 +6,15 @@ import numpy as np
 import chromadb
 from datetime import datetime, timedelta
 from sentence_transformers import SentenceTransformer
-from app.core.config import DB_PATH, CHROMA_PATH
+from app.core.config import DB_PATH, CHROMA_PATH, ISOLATED_WORKSPACES
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
+
+# Covers both the new workspace slug ("health") and the legacy
+# project_tag value ("health-tracking") still stored in memory rows.
+HEALTH_ISOLATION_SET = ISOLATED_WORKSPACES | {"health-tracking"}
 
 MEMORY_TOKEN_BUDGET = {
     "strategic": 150,
@@ -35,13 +39,6 @@ COMPLETION_SIGNALS = [
     "complete", "sorted", "great", "excellent", "thanks"
 ]
 
-# Channels whose memories are fully isolated — never bleed
-# into other channels and never receive memories from them.
-MEMORY_ISOLATED_CHANNELS = {"health-tracking"}
-
-# Channels that receive no global-memory fallback during retrieval.
-# Memories saved in these channels only surface in those channels.
-RESTRICTED_CHANNELS = {"health-tracking"}
 
 # ============================================================
 # INITIALISATION
@@ -604,7 +601,7 @@ def search_conversations(query: str, channel_name: str, user_id: str,
     Health-tracking isolation enforced at SQL level.
     """
     safe_query = _sanitize_fts_query(query)
-    is_isolated = channel_name in MEMORY_ISOLATED_CHANNELS
+    is_isolated = channel_name in HEALTH_ISOLATION_SET
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
@@ -619,7 +616,7 @@ def search_conversations(query: str, channel_name: str, user_id: str,
                 LIMIT ?
             """, (safe_query, str(user_id), channel_name, limit))
         else:
-            excluded = list(MEMORY_ISOLATED_CHANNELS)
+            excluded = list(HEALTH_ISOLATION_SET)
             placeholders = ",".join("?" * len(excluded))
             c.execute(f"""
                 SELECT timestamp, channel_name, role, content, context_id
@@ -1004,7 +1001,7 @@ def get_relevant_memories(query, max_results=TOP_N_MEMORIES,
                           channel_name=None):
     """
     Retrieves semantically relevant memories with bidirectional
-    isolation for channels in MEMORY_ISOLATED_CHANNELS.
+    isolation for channels in HEALTH_ISOLATION_SET.
 
     Isolated channel strategy: the ChromaDB where clause enforces
     isolation at query time — only documents whose metadata contains
@@ -1018,13 +1015,13 @@ def get_relevant_memories(query, max_results=TOP_N_MEMORIES,
     Non-isolated channel strategy: no where clause (avoids $ne
     unreliable behaviour for missing-field documents in ChromaDB).
     Candidates are fetched and filtered post-retrieval: any doc
-    whose project_tag is in MEMORY_ISOLATED_CHANNELS is excluded.
+    whose project_tag is in HEALTH_ISOLATION_SET is excluded.
     Global memories (project_tag absent → None) correctly pass.
     """
     query_embedding = embedding_model.encode(query).tolist()
     results = {}
-    is_isolated = channel_name in MEMORY_ISOLATED_CHANNELS
-    is_restricted = channel_name in RESTRICTED_CHANNELS
+    is_isolated = channel_name in HEALTH_ISOLATION_SET
+    is_restricted = channel_name in HEALTH_ISOLATION_SET
 
     for layer_name, collection in [
         ("strategic", strategic_collection),
@@ -1098,7 +1095,7 @@ def get_relevant_memories(query, max_results=TOP_N_MEMORIES,
                     doc_tag = (
                         meta.get("project_tag") if meta else None
                     )
-                    if doc_tag in MEMORY_ISOLATED_CHANNELS:
+                    if doc_tag in HEALTH_ISOLATION_SET:
                         continue
                     if channel_name:
                         doc_channel = (
@@ -1124,7 +1121,7 @@ def get_relevant_memories(query, max_results=TOP_N_MEMORIES,
     else:
         results["stale_flags"] = [
             f for f in all_stale
-            if f.get("project_tag") not in MEMORY_ISOLATED_CHANNELS
+            if f.get("project_tag") not in HEALTH_ISOLATION_SET
         ]
 
     return results
@@ -2009,10 +2006,10 @@ def get_consolidation_candidates(layer: str,
 
     table, content_col, only_active = layer_config[layer]
     collection = collection_map[layer]
-    is_isolated = channel_name in MEMORY_ISOLATED_CHANNELS
+    is_isolated = channel_name in HEALTH_ISOLATION_SET
 
     cutoff = (datetime.now() - timedelta(hours=24)).isoformat()
-    excluded_tags = list(MEMORY_ISOLATED_CHANNELS)
+    excluded_tags = list(HEALTH_ISOLATION_SET)
     status_clause = (
         "status = 'active'" if only_active else "status != 'active'"
     )

@@ -31,14 +31,8 @@ from app.core.config import (
     HISTORY_RAW_WINDOW,
     HISTORY_SUMMARY_ROLE,
     CONSOLIDATION_THRESHOLDS,
-    CHANNEL_MEMORY_MODE,
-    CHANNEL_PROJECT_TAG,
-    CHANNEL_IGNORED,
-    THREADED_CHANNELS,
-    CHANNEL_TOOL_MODE,
-    CHANNEL_PURPOSE,
-    SEARCH_ONLY_TOOL_NAMES,
-    CODEBASE_SEARCH_EXCLUDED_CHANNELS,
+    WORKSPACES,
+    ISOLATED_WORKSPACES,
     FILE_CONTENT_CHAR_LIMIT,
     POPPLER_PATH,
     PDF_VISION_THRESHOLD,
@@ -83,7 +77,6 @@ from app.db.memory_manager import (
     format_entity_profile_for_prompt,
     upsert_entity,
     add_entity_fact,
-    MEMORY_ISOLATED_CHANNELS,
     drain_rubric_rejection_log,
     is_task_completion,
     get_recent_experiences,
@@ -322,7 +315,7 @@ _CONSOLIDATION_PROMPT = (
 
 def _should_consolidate(stats: dict, channel_name: str) -> bool:
     """Returns True if any layer exceeds its consolidation threshold."""
-    is_isolated = channel_name in MEMORY_ISOLATED_CHANNELS
+    is_isolated = channel_name in (ISOLATED_WORKSPACES | {"health-tracking"})
     for layer in ("strategic", "operational", "analytical"):
         layer_stats = stats.get(layer, {})
         if is_isolated:
@@ -333,7 +326,7 @@ def _should_consolidate(stats: dict, channel_name: str) -> bool:
             total = layer_stats.get("total", 0)
             health_count = sum(
                 v for k, v in layer_stats.get("by_tag", {}).items()
-                if k in MEMORY_ISOLATED_CHANNELS
+                if k in (ISOLATED_WORKSPACES | {"health-tracking"})
             )
             if total - health_count > CONSOLIDATION_THRESHOLDS[layer]:
                 return True
@@ -677,7 +670,7 @@ async def extract_and_store_memories(
     after each interaction.
     """
     try:
-        if channel_name in MEMORY_ISOLATED_CHANNELS:
+        if channel_name in (ISOLATED_WORKSPACES | {"health-tracking"}):
             scope_instruction = (
                 "\nSCOPE RESTRICTION: This exchange is from the "
                 "private health tracking channel. Only extract "
@@ -876,7 +869,7 @@ async def _consolidate_layer(
     the originals. Returns {"merged": N, "archived": X, "skipped": Y}.
     """
     loop = asyncio.get_running_loop()
-    is_isolated = channel_name in MEMORY_ISOLATED_CHANNELS
+    is_isolated = channel_name in (ISOLATED_WORKSPACES | {"health-tracking"})
 
     before_stats = memory_stats()
     before_count = (
@@ -2162,8 +2155,9 @@ async def process_user_message(
             "text": "🧠 Memory searched — context loaded"
         })
 
-    channel_purpose = CHANNEL_PURPOSE.get(
-        effective_channel_name, "General"
+    _ws = WORKSPACES.get(effective_channel_name, {})
+    channel_purpose = _ws.get(
+        "personality", f"General workspace: {effective_channel_name}"
     )
     _agent_label = (
         f" | Agent: {AGENT_DEFINITIONS[active_agent_slug]['name']}"
@@ -2209,7 +2203,7 @@ async def process_user_message(
     # ── FILE INJECTION ────────────────────────────────────────
     file_injection_chars = 0
     all_user_files = list(attached_files.get((user_id, context_id), []))
-    is_isolated_channel = effective_channel_name in MEMORY_ISOLATED_CHANNELS
+    is_isolated_channel = effective_channel_name in (ISOLATED_WORKSPACES | {"health-tracking"})
 
     if all_user_files:
         if is_isolated_channel:
@@ -2220,7 +2214,7 @@ async def process_user_message(
         else:
             user_files = [
                 f for f in all_user_files
-                if f.get("channel_name") not in MEMORY_ISOLATED_CHANNELS
+                if f.get("channel_name") not in (ISOLATED_WORKSPACES | {"health-tracking"})
             ]
 
         doc_files       = [f for f in user_files if f["content_type"] == "document"]
@@ -2315,36 +2309,23 @@ async def process_user_message(
     try:
         tool_call_count = 0
         final_response_text = ""
-        tool_mode = CHANNEL_TOOL_MODE.get(effective_channel_name, "none")
+        _ws_tools = WORKSPACES.get(effective_channel_name, {})
+        tool_mode = _ws_tools.get("tool_mode", "none")
         if tool_mode == "full":
-            if effective_channel_name == "director-workspace":
-                # director-workspace gets all tools including
-                # save_person_fact but not search_codebase
-                active_tools = [
-                    t for t in TOOL_DEFINITIONS
-                    if t["name"] != "search_codebase"
-                ]
-            elif effective_channel_name in CODEBASE_SEARCH_EXCLUDED_CHANNELS:
-                # Other excluded channels get full tools minus
-                # search_codebase and minus save_person_fact
-                active_tools = [
-                    t for t in TOOL_DEFINITIONS
-                    if t["name"] not in (
-                        "search_codebase", "save_person_fact"
-                    )
-                ]
+            if _ws_tools.get("entity_memory", False):
+                # Entity-memory workspaces include save_person_fact
+                active_tools = list(TOOL_DEFINITIONS)
             else:
-                # All other full channels get everything except
-                # save_person_fact (person tracking is
-                # director-workspace only)
+                # All other full workspaces exclude save_person_fact
                 active_tools = [
                     t for t in TOOL_DEFINITIONS
                     if t["name"] != "save_person_fact"
                 ]
         elif tool_mode == "search_only":
+            _search_only = {"web_search", "web_fetch", "query_memory"}
             active_tools = [
                 t for t in TOOL_DEFINITIONS
-                if t["name"] in SEARCH_ONLY_TOOL_NAMES
+                if t["name"] in _search_only
             ]
         else:
             active_tools = []
@@ -2556,7 +2537,7 @@ async def process_user_message(
 
         # ── SLIDING WINDOW HISTORY ───────────────────────────
         _full_history = conversation_history[_hist_key]
-        _is_isolated = effective_channel_name in MEMORY_ISOLATED_CHANNELS
+        _is_isolated = effective_channel_name in (ISOLATED_WORKSPACES | {"health-tracking"})
 
         if (len(_full_history) > HISTORY_RAW_WINDOW
                 and not _is_isolated
