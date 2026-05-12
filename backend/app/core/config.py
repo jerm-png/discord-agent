@@ -1,17 +1,10 @@
 import os
 from dotenv import load_dotenv
-load_dotenv()
-
-# ── Owner ─────────────────────────────────────────────────────
-OWNER_ID = os.getenv("OWNER_ID", "")
+load_dotenv(os.getenv("ENV_FILE", "/var/www/drift/.env"))
 
 # ── Models ───────────────────────────────────────────────────
 MAIN_MODEL = "claude-sonnet-4-6"
 BACKGROUND_MODEL = "claude-haiku-4-5-20251001"
-
-# ── Ollama ───────────────────────────────────────────────────
-OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "qwen3:8b"
 
 # ── Database ─────────────────────────────────────────────────
 DB_PATH = os.getenv(
@@ -41,122 +34,9 @@ CONSOLIDATION_THRESHOLDS = {
     "analytical":       75,
     "health_tracking": 150,
 }
-
-# ── Channel / context configuration ─────────────────────────
-CHANNEL_MEMORY_MODE = {
-    "bot-commands":           "ephemeral",
-    "sandbox":                "ephemeral",
-    "chief-of-staff":         "global",
-    "director-workspace":     "global",
-    "planning":               "global",
-    "contact-center":         "project",
-    "gamification-dashboard": "project",
-    "slack-intelligence":     "project",
-    "health-tracking":        "project",
-}
-
-CHANNEL_PROJECT_TAG = {
-    "contact-center":         "contact-center",
-    "gamification-dashboard": "gamification-dashboard",
-    "slack-intelligence":     "slack-intelligence",
-    "health-tracking":        "health-tracking",
-}
-
-CHANNEL_IGNORED: set = {
-    "rules-and-info",
-    "bot-status",
-    "bot-logs",
-    "research-reports",
-    "general-output",
-}
-
-THREADED_CHANNELS: set = {
-    "chief-of-staff",
-    "director-workspace",
-    "planning",
-    "contact-center",
-    "gamification-dashboard",
-    "health-tracking",
-}
-
-CHANNEL_TOOL_MODE = {
-    "bot-commands":           "search_only",
-    "sandbox":                "none",
-    "chief-of-staff":         "full",
-    "director-workspace":     "full",
-    "planning":               "full",
-    "contact-center":         "full",
-    "gamification-dashboard": "full",
-    "slack-intelligence":     "full",
-    "health-tracking":        "full",
-}
-
-SEARCH_ONLY_TOOL_NAMES: set = {
-    "web_search", "web_fetch", "query_memory", "search_codebase"
-}
-
-CODEBASE_SEARCH_EXCLUDED_CHANNELS: set = {
-    "health-tracking",
-    "chief-of-staff",
-    "director-workspace",
-}
-
-CHANNEL_PURPOSE = {
-    "bot-commands": (
-        "General assistance channel. Open scope. "
-        "All topics welcome including personal, "
-        "workplace, and day-to-day situations."
-    ),
-    "chief-of-staff": (
-        "Strategic layer. Long-term decisions, "
-        "values, constraints, who the user is."
-    ),
-    "director-workspace": (
-        "Private leadership workspace for a Director "
-        "of Customer/Client Experience. Used for "
-        "coaching and development tracking of four "
-        "direct reports, sounding board conversations, "
-        "team trend analysis, difficult people decisions, "
-        "and leadership mentoring. Entity memory tracks "
-        "individuals longitudinally across sessions. "
-        "High-stakes decisions always gate before drafting."
-    ),
-    "planning": (
-        "Strategic planning sessions and "
-        "long-form thinking."
-    ),
-    "contact-center": (
-        "Active project: 60-day contact center "
-        "intelligence validation. Balto audit, "
-        "Five9 pipeline, briefing format."
-    ),
-    "gamification-dashboard": (
-        "Active project: frontline agent "
-        "performance gamification dashboard build."
-    ),
-    "slack-intelligence": (
-        "Future project: Slack channel analysis, "
-        "common questions and obstacle surfacing."
-    ),
-    "sandbox": (
-        "Testing only. Treat all messages as "
-        "experiments, no real context assumed."
-    ),
-    "health-tracking": (
-        "Fully private health tracking channel. "
-        "Biomarker panel logging and trend analysis, "
-        "peptide protocol tracking, direct-to-consumer "
-        "panel recommendations, and health research. "
-        "Context is completely isolated from all other channels. "
-        "Treat all health information with discretion. "
-        "Always recommend consulting a doctor for clinical "
-        "decisions while providing thorough research-based guidance."
-    ),
-}
-
 # ── File processing ──────────────────────────────────────────
 FILE_CONTENT_CHAR_LIMIT = 50_000
-POPPLER_PATH = r"C:\poppler\poppler-25.12.0\Library\bin"
+POPPLER_PATH = os.getenv("POPPLER_PATH", None)
 PDF_VISION_THRESHOLD = 50
 PDF_VISION_MAX_PAGES = 3
 
@@ -185,57 +65,110 @@ DRIFT_PASSWORD = os.getenv("DRIFT_PASSWORD", "")
 # ── Workspaces ────────────────────────────────────────────────
 WORKSPACES = {
     "chief-of-staff": {
-        "label": "Chief of Staff",
+        "label": "Architect",
         "memory_mode": "global",
+        "tool_mode": "full",
+        "project_tag": None,
+        "agent_hints": ["personal-productivity", "director-advisor"],
+        "threaded": True,
         "isolated": False,
         "entity_memory": False,
+        "personality": (
+            "You are operating in Architect — the workspace "
+            "for understanding who Jerm is, how he thinks, "
+            "his values, and his operating model. This is the "
+            "most reflective workspace. Be present, direct, "
+            "and honest. No comedy layer here — this is the "
+            "clearest version of what Drift is."
+        ),
+        "language": "clean",
     },
-    "director-workspace": {
-        "label": "Director Workspace",
+    "director": {
+        "label": "Admin Prime",
         "memory_mode": "global",
+        "tool_mode": "full",
+        "project_tag": None,
+        "agent_hints": ["director-advisor"],
+        "threaded": True,
         "isolated": False,
         "entity_memory": True,
+        "personality": (
+            "You are operating in Admin Prime — the workspace "
+            "for Jerm's team, people, coaching, and management "
+            "work. Be sharp and structured when the work is "
+            "serious. Be warm and human when the conversation "
+            "is human. Crack jokes when they fit — especially "
+            "when Jerm is venting. Humor comes from the actual "
+            "context, not generically. Read the room."
+        ),
+        "language": "light",
     },
-    "planning": {
-        "label": "Planning",
-        "memory_mode": "global",
-        "isolated": False,
-        "entity_memory": False,
-    },
-    "contact-center": {
-        "label": "Contact Center",
-        "memory_mode": "project",
-        "isolated": False,
-        "entity_memory": False,
-    },
-    "gamification-dashboard": {
-        "label": "Gamification Dashboard",
-        "memory_mode": "project",
-        "isolated": False,
-        "entity_memory": False,
-    },
-    "slack-intelligence": {
-        "label": "Slack Intelligence",
-        "memory_mode": "project",
-        "isolated": False,
-        "entity_memory": False,
-    },
-    "health-tracking": {
-        "label": "Health Tracking",
-        "memory_mode": "project",
+    "health": {
+        "label": "Med-Bay",
+        "memory_mode": "isolated",
+        "tool_mode": "full",
+        "project_tag": "health-tracking",
+        "agent_hints": ["health-researcher"],
+        "threaded": True,
         "isolated": True,
         "entity_memory": False,
+        "personality": (
+            "You are operating in Med-Bay — the health "
+            "workspace. Be warm, educational, and invested "
+            "in genuine health improvement. Explain the why "
+            "behind recommendations. Remember what was said "
+            "last time and hold Jerm to it when it matters. "
+            "Get appropriately firm when follow-through is "
+            "slipping on something important. Never alarmist "
+            "but never dismissive of things that matter."
+        ),
+        "language": "clean",
     },
-    "bot-commands": {
-        "label": "General",
-        "memory_mode": "ephemeral",
+    "engineering": {
+        "label": "The Rig",
+        "memory_mode": "project",
+        "tool_mode": "full",
+        "project_tag": "engineering",
+        "agent_hints": [
+            "engineering-ai-engineer",
+            "engineering-data-engineer",
+            "engineering-database-optimizer",
+        ],
+        "threaded": True,
         "isolated": False,
         "entity_memory": False,
+        "personality": (
+            "You are operating in The Rig — the engineering "
+            "and data workspace. You are the slightly unhinged "
+            "but reliably accurate engineer. Dry humor, strong "
+            "opinions delivered matter-of-factly, occasionally "
+            "strange analogies that turn out to work. Never "
+            "wrong, just a little odd to be around. Casual "
+            "profanity is fine when it fits naturally — use "
+            "it the way a senior engineer who has been at it "
+            "too long actually talks. Don't force it."
+        ),
+        "language": "unrestricted",
     },
-    "sandbox": {
-        "label": "Sandbox",
-        "memory_mode": "ephemeral",
+    "general": {
+        "label": "Terminal",
+        "memory_mode": "global",
+        "tool_mode": "full",
+        "project_tag": None,
+        "agent_hints": [],
+        "threaded": True,
         "isolated": False,
         "entity_memory": False,
+        "personality": (
+            "You are operating in Terminal — the general "
+            "catch-all workspace. Adapt to the conversation. "
+            "Default to the Architect register for reflective "
+            "work, shift toward The Rig register for technical "
+            "work, shift toward Admin Prime warmth for people "
+            "work. Read what the conversation needs."
+        ),
+        "language": "adaptive",
     },
 }
+
+ISOLATED_WORKSPACES = {"health"}
