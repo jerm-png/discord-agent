@@ -21,57 +21,38 @@ export function CyberFrame({
       ? { start: '#00f0ff', end: '#ff2a6d', glow: 'rgba(0, 240, 255, 0.3)' }
       : { start: '#ff2a6d', end: '#00f0ff', glow: 'rgba(255, 42, 109, 0.3)' }
 
+  const midColor = variant === 'cyan' ? '#05ffa1' : '#d100d1'
+
   return (
     <div className={cn('relative', className)}>
-      {/* SVG Border Frame */}
-      <svg
-        className="absolute inset-0 w-full h-full pointer-events-none"
-        preserveAspectRatio="none"
-      >
-        <defs>
-          <linearGradient
-            id={`border-gradient-${variant}`}
-            x1="0%"
-            y1="0%"
-            x2="100%"
-            y2="100%"
-          >
-            <stop offset="0%" stopColor={colors.start} />
-            <stop
-              offset="50%"
-              stopColor={variant === 'cyan' ? '#05ffa1' : '#d100d1'}
-            />
-            <stop offset="100%" stopColor={colors.end} />
-          </linearGradient>
-          <filter id={`glow-${variant}`}>
-            <feGaussianBlur stdDeviation="3" result="coloredBlur" />
-            <feMerge>
-              <feMergeNode in="coloredBlur" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
-        </defs>
-
-        {/* Main border path - chamfered corners */}
-        <path
-          d={`
-            M ${cornerSize} 0
-            L calc(100% - ${cornerSize}px) 0
-            L 100% ${cornerSize}
-            L 100% calc(100% - ${cornerSize}px)
-            L calc(100% - ${cornerSize}px) 100%
-            L ${cornerSize} 100%
-            L 0 calc(100% - ${cornerSize}px)
-            L 0 ${cornerSize}
-            Z
-          `}
-          fill="none"
-          stroke={`url(#border-gradient-${variant})`}
-          strokeWidth="2"
-          filter={`url(#glow-${variant})`}
-          vectorEffect="non-scaling-stroke"
-        />
-      </svg>
+      {/* Gradient border via clip-path */}
+      <div
+        className="absolute inset-0 pointer-events-none"
+        style={{
+          background: `linear-gradient(135deg, ${colors.start}, ${midColor}, ${colors.end})`,
+          clipPath: `polygon(
+            ${cornerSize}px 0,
+            calc(100% - ${cornerSize}px) 0,
+            100% ${cornerSize}px,
+            100% calc(100% - ${cornerSize}px),
+            calc(100% - ${cornerSize}px) 100%,
+            ${cornerSize}px 100%,
+            0 calc(100% - ${cornerSize}px),
+            0 ${cornerSize}px,
+            ${cornerSize}px 0,
+            ${cornerSize}px 2px,
+            2px ${cornerSize}px,
+            2px calc(100% - ${cornerSize}px),
+            ${cornerSize}px calc(100% - 2px),
+            calc(100% - ${cornerSize}px) calc(100% - 2px),
+            calc(100% - 2px) calc(100% - ${cornerSize}px),
+            calc(100% - 2px) ${cornerSize}px,
+            calc(100% - ${cornerSize}px) 2px,
+            ${cornerSize}px 2px
+          )`,
+          boxShadow: `0 0 12px ${colors.glow}`,
+        }}
+      />
 
       {/* Corner accent notches - top left */}
       <div
