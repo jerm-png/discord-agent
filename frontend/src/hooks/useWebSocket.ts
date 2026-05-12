@@ -49,8 +49,14 @@ export function useWebSocket(
         const data = JSON.parse(event.data) as WSMessage
 
         if (data.type === 'status') {
-          setIsThinking(true)
-          setStatusText(data.text || '')
+          const txt = data.text || ''
+          if (/cancelled|cancel|aborted|complete/i.test(txt)) {
+            setIsThinking(false)
+            setStatusText('')
+          } else {
+            setIsThinking(true)
+            setStatusText(txt)
+          }
         } else if (data.type === 'response') {
           setIsThinking(false)
           setStatusText('')
