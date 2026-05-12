@@ -19,6 +19,11 @@ DB_PATH = os.getenv(
     os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "memory", "database.db")
 )
 
+CHROMA_PATH = os.getenv(
+    "CHROMA_PATH",
+    os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "memory", "chroma_db")
+)
+
 # ── Agentic loop limits ──────────────────────────────────────
 MAX_TOOL_CALLS = 10
 MAX_REASONING_ITERATIONS = 10
