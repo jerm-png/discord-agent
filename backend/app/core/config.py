@@ -175,3 +175,67 @@ AGENT_KEYWORDS_CACHE_PATH = os.getenv(
     "AGENT_KEYWORDS_CACHE_PATH",
     os.path.join(os.path.dirname(__file__), "..", "..", "..", "memory", "agent_keywords_cache.json")
 )
+
+# ── Auth ──────────────────────────────────────────────────────
+JWT_SECRET = os.getenv("JWT_SECRET", "change-me-in-production")
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "24"))
+DRIFT_PASSWORD = os.getenv("DRIFT_PASSWORD", "")
+
+# ── Workspaces ────────────────────────────────────────────────
+WORKSPACES = {
+    "chief-of-staff": {
+        "label": "Chief of Staff",
+        "memory_mode": "global",
+        "isolated": False,
+        "entity_memory": False,
+    },
+    "director-workspace": {
+        "label": "Director Workspace",
+        "memory_mode": "global",
+        "isolated": False,
+        "entity_memory": True,
+    },
+    "planning": {
+        "label": "Planning",
+        "memory_mode": "global",
+        "isolated": False,
+        "entity_memory": False,
+    },
+    "contact-center": {
+        "label": "Contact Center",
+        "memory_mode": "project",
+        "isolated": False,
+        "entity_memory": False,
+    },
+    "gamification-dashboard": {
+        "label": "Gamification Dashboard",
+        "memory_mode": "project",
+        "isolated": False,
+        "entity_memory": False,
+    },
+    "slack-intelligence": {
+        "label": "Slack Intelligence",
+        "memory_mode": "project",
+        "isolated": False,
+        "entity_memory": False,
+    },
+    "health-tracking": {
+        "label": "Health Tracking",
+        "memory_mode": "project",
+        "isolated": True,
+        "entity_memory": False,
+    },
+    "bot-commands": {
+        "label": "General",
+        "memory_mode": "ephemeral",
+        "isolated": False,
+        "entity_memory": False,
+    },
+    "sandbox": {
+        "label": "Sandbox",
+        "memory_mode": "ephemeral",
+        "isolated": False,
+        "entity_memory": False,
+    },
+}
