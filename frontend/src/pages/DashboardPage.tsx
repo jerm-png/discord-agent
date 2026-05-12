@@ -34,7 +34,7 @@ export function DashboardPage() {
           id: `${Date.now()}-${Math.random()}`,
           role: 'assistant',
           content: msg.content || msg.text || 'An error occurred',
-          timestamp: new Date().toISOString(),
+          timestamp: new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' }),
         },
       ])
     }

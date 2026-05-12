@@ -32,6 +32,8 @@ interface ChatPanelProps {
 
 function formatTime(ts: string): string {
   if (!ts) return ''
+  // Already formatted as HH:MM — return as-is
+  if (/^\d{2}:\d{2}$/.test(ts)) return ts
   try {
     return new Date(ts).toLocaleTimeString('en-US', {
       hour: '2-digit',
@@ -381,9 +383,11 @@ export function ChatPanel({
                       >
                         {message.role === 'assistant' ? 'Drift' : 'You'}
                       </span>
-                      <span className="font-mono text-[10px] text-neon-yellow/60 tabular-nums">
-                        {formatTime(message.timestamp)}
-                      </span>
+                      {message.timestamp && (
+                        <span className="font-mono text-[10px] text-neon-yellow/60 tabular-nums">
+                          {formatTime(message.timestamp)}
+                        </span>
+                      )}
                     </div>
                     {message.role === 'assistant' ? (
                       <div className="drift-prose">
