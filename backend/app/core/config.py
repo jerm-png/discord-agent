@@ -159,3 +159,9 @@ FILE_CONTENT_CHAR_LIMIT = 50_000
 POPPLER_PATH = r"C:\poppler\poppler-25.12.0\Library\bin"
 PDF_VISION_THRESHOLD = 50
 PDF_VISION_MAX_PAGES = 3
+
+# ── Paths ─────────────────────────────────────────────────────
+SOUL_PATH = os.getenv(
+    "SOUL_PATH",
+    os.path.join(os.path.dirname(__file__), "..", "..", "..", "SOUL.md")
+)

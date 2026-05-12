@@ -51,8 +51,7 @@ from app.core.model import (
     call_background_model_json,
 )
 from app.core.ws_manager import ws_manager
-import state
-from state import (
+from app.core.state import (
     conversation_history,
     attached_files,
     pending_goals,
@@ -65,6 +64,7 @@ from state import (
     AGENT_DEFINITIONS,
     SYSTEM_PROMPT,
 )
+import app.core.state as state
 from app.db.memory_manager import (
     get_relevant_memories,
     format_memory_for_prompt,
