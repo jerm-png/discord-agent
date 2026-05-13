@@ -2,6 +2,8 @@ import os
 from dotenv import load_dotenv
 load_dotenv(os.getenv("ENV_FILE", "/var/www/drift/.env"))
 
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+
 # ── Models ───────────────────────────────────────────────────
 MAIN_MODEL = "claude-sonnet-4-6"
 BACKGROUND_MODEL = "claude-haiku-4-5-20251001"
