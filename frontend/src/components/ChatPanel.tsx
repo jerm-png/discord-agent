@@ -17,6 +17,7 @@ import {
   Edit3,
 } from 'lucide-react'
 import { CyberFrame } from './CyberFrame'
+import { CommandBar } from './CommandBar'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ChatMessage as ApiChatMessage } from '../api/client'
@@ -34,6 +35,7 @@ interface ChatPanelProps {
   statusText: string
   isConnected: boolean
   workspaceLabel: string
+  workspaceSlug: string
   threadTitle: string
   onSendMessage: (content: string) => void
   onAction?: (action: ActionKind, changes?: string) => void
@@ -58,6 +60,7 @@ export function ChatPanel({
   isThinking,
   statusText,
   isConnected,
+  workspaceSlug,
   threadTitle,
   onSendMessage,
   onAction,
@@ -483,6 +486,8 @@ export function ChatPanel({
           </>
         )}
       </div>
+
+      <CommandBar onSendMessage={onSendMessage} workspaceSlug={workspaceSlug} />
 
       <div className="p-4 relative industrial-panel">
         <div className="absolute -top-[1px] left-0 right-0 industrial-divider-h" />

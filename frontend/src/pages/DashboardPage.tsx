@@ -205,6 +205,7 @@ export function DashboardPage() {
             statusText={statusText}
             isConnected={isConnected}
             workspaceLabel={activeWorkspaceLabel}
+            workspaceSlug={activeWorkspace}
             threadTitle={activeThread.title}
             onSendMessage={handleSendMessage}
             onAction={handleAction}
