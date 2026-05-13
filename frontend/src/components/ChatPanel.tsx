@@ -79,6 +79,18 @@ export function ChatPanel({
   // ── Voice-to-text (Web Speech API) ────────────────────────────────
   const [isRecording, setIsRecording] = useState(false)
   const [voiceTooltip, setVoiceTooltip] = useState('')
+  // Auto-send countdown after a successful voice capture. Null = idle,
+  // otherwise the number of seconds remaining (counts down 4..1, then 0
+  // is the send trigger). The text to send is captured at countdown
+  // start so user edits during the countdown reliably cancel.
+  const [autoSendIn, setAutoSendIn] = useState<number | null>(null)
+  const autoSendTextRef = useRef('')
+  // Stable ref for the parent's onSendMessage so the countdown effect
+  // does not re-fire when the parent re-renders.
+  const onSendMessageRef = useRef(onSendMessage)
+  useEffect(() => {
+    onSendMessageRef.current = onSendMessage
+  }, [onSendMessage])
   // Detect SpeechRecognition support once so the mic can render as
   // visibly disabled in browsers that don't ship it (Firefox without
   // flags, older Safari) instead of looking broken on click.
@@ -185,7 +197,9 @@ export function ChatPanel({
     rec.onend = () => {
       clearSilenceTimer()
       setIsRecording(false)
-      setInputValue(finalTranscriptRef.current.trim())
+      const finalText = finalTranscriptRef.current.trim()
+      setInputValue(finalText)
+      if (finalText) startAutoSend(finalText)
       recognitionRef.current = null
     }
 
@@ -200,7 +214,40 @@ export function ChatPanel({
     }
   }
 
+  const cancelAutoSend = () => {
+    setAutoSendIn(null)
+  }
+
+  const startAutoSend = (text: string) => {
+    if (!text.trim()) return
+    autoSendTextRef.current = text
+    setAutoSendIn(4)
+  }
+
+  // Countdown tick. Each render with a non-null autoSendIn schedules the
+  // next decrement 1s later; reaching 0 fires onSendMessage and clears.
+  // User-initiated edits / focus / mic-click set autoSendIn to null,
+  // which short-circuits the cleanup and prevents the send.
+  useEffect(() => {
+    if (autoSendIn === null) return
+    if (autoSendIn <= 0) {
+      const text = autoSendTextRef.current.trim()
+      if (text) onSendMessageRef.current(text)
+      setInputValue('')
+      setAutoSendIn(null)
+      return
+    }
+    const timer = window.setTimeout(() => {
+      setAutoSendIn((prev) => (prev === null ? null : prev - 1))
+    }, 1000)
+    return () => window.clearTimeout(timer)
+  }, [autoSendIn])
+
   const handleMicClick = () => {
+    // Any mic interaction during the countdown cancels the auto-send —
+    // the user clearly wants to do something different than ship the
+    // captured transcript.
+    cancelAutoSend()
     if (isRecording) stopRecording()
     else startRecording()
   }
@@ -302,6 +349,8 @@ export function ChatPanel({
 
   const handleSend = () => {
     if (!inputValue.trim()) return
+    // Manual send pre-empts any pending auto-send.
+    if (autoSendIn !== null) cancelAutoSend()
     onSendMessage(inputValue.trim())
     setInputValue('')
   }
@@ -679,7 +728,18 @@ export function ChatPanel({
           <div className="flex-1 relative">
             <textarea
               value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
+              onChange={(e) => {
+                // Any typed change during the countdown means the user is
+                // editing — cancel the auto-send so it can never fire on
+                // text they meant to revise.
+                if (autoSendIn !== null) cancelAutoSend()
+                setInputValue(e.target.value)
+              }}
+              onFocus={() => {
+                // Focusing the input is also an explicit signal that the
+                // user wants to take over and edit before sending.
+                if (autoSendIn !== null) cancelAutoSend()
+              }}
               onKeyDown={handleKeyDown}
               placeholder={isRecording ? 'Listening...' : 'Enter command...'}
               rows={1}
@@ -721,10 +781,19 @@ export function ChatPanel({
             Press <span className="text-neon-cyan font-bold">Enter</span> to send |{' '}
             <span className="text-neon-pink font-bold">Shift+Enter</span> for new line
           </p>
-          <div className="flex items-center gap-2 px-2 py-1 industrial-inset border border-neon-yellow/20">
-            <Zap className="w-3 h-3 text-neon-yellow" />
-            <span className="font-mono text-[10px] text-neon-yellow/80 font-bold">READY</span>
-          </div>
+          {autoSendIn !== null ? (
+            <div className="flex items-center gap-2 px-2 py-1 industrial-inset border border-neon-pink/50 glow-pink">
+              <span className="w-2 h-2 bg-neon-pink rounded-full pulse-dot-pink" />
+              <span className="font-mono text-[10px] text-neon-pink glow-pink-text font-bold tabular-nums">
+                SENDING IN {autoSendIn}...
+              </span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 px-2 py-1 industrial-inset border border-neon-yellow/20">
+              <Zap className="w-3 h-3 text-neon-yellow" />
+              <span className="font-mono text-[10px] text-neon-yellow/80 font-bold">READY</span>
+            </div>
+          )}
         </div>
       </div>
 
