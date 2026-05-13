@@ -128,16 +128,20 @@ export function DashboardPage() {
     
   async function handleAction(action: 'approve' | 'cancel' | 'modify' | 'continue' | 'adjust' | 'skip' | 'retry', changes?: string) {
     if (!activeThread) return
+    // Resolve the CURRENT plan/gate messages synchronously, before the POST.
+    // If we did this after `await postThreadAction(...)`, a fresh `plan`/`gate`
+    // frame dispatched by the backend's fire-and-forget execute_goal could
+    // land in `messages` first and get incorrectly marked resolved by this map.
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.actionType === 'plan' || m.actionType === 'gate'
+          ? { ...m, actionType: undefined, actionResolved: action }
+          : m
+      )
+    )
     try {
       const { postThreadAction } = await import('../api/client')
       await postThreadAction(activeThread.id, action, changes)
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.actionType === 'plan' || m.actionType === 'gate'
-            ? { ...m, actionType: undefined, actionResolved: action }
-            : m
-        )
-      )
     } catch (e) {
       console.error('Action failed:', e)
     } finally {
