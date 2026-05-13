@@ -79,6 +79,17 @@ export function ChatPanel({
   // ── Voice-to-text (Web Speech API) ────────────────────────────────
   const [isRecording, setIsRecording] = useState(false)
   const [voiceTooltip, setVoiceTooltip] = useState('')
+  // Detect SpeechRecognition support once so the mic can render as
+  // visibly disabled in browsers that don't ship it (Firefox without
+  // flags, older Safari) instead of looking broken on click.
+  const [speechSupported] = useState(() => {
+    if (typeof window === 'undefined') return false
+    const w = window as unknown as {
+      SpeechRecognition?: unknown
+      webkitSpeechRecognition?: unknown
+    }
+    return Boolean(w.SpeechRecognition || w.webkitSpeechRecognition)
+  })
   // Loose ref type — lib.dom's SpeechRecognition interface exists but the
   // constructor isn't a guaranteed global (vendor-prefixed in Chrome/Safari),
   // and pinning to the strict interface trips ResultList iterator/error-code
@@ -628,20 +639,31 @@ export function ChatPanel({
             <button className="p-2.5 industrial-inset border border-muted-foreground/20 text-muted-foreground hover:text-neon-pink hover:border-neon-pink/40 transition-all group">
               <Paperclip className="w-4 h-4 group-hover:rotate-45 transition-transform" />
             </button>
-            <div className="relative">
+            <div className="relative inline-flex">
               {voiceTooltip && (
-                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 whitespace-nowrap px-2 py-1 industrial-inset border border-neon-pink/40 font-mono text-[10px] text-neon-pink glow-pink-text z-10">
+                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 whitespace-nowrap px-2 py-1 industrial-inset border border-neon-pink/40 font-mono text-[10px] text-neon-pink glow-pink-text z-10 pointer-events-none">
                   {voiceTooltip}
                 </div>
               )}
               <button
+                type="button"
                 onClick={handleMicClick}
-                title={isRecording ? 'Stop recording' : 'Voice input'}
+                disabled={!speechSupported}
+                title={
+                  !speechSupported
+                    ? 'Voice input not supported in this browser'
+                    : isRecording
+                      ? 'Stop recording'
+                      : 'Voice input'
+                }
                 className={cn(
-                  'p-2.5 industrial-inset border transition-all',
-                  isRecording
-                    ? 'border-neon-pink/60 text-neon-pink glow-pink'
-                    : 'border-muted-foreground/20 text-muted-foreground hover:text-neon-green hover:border-neon-green/40',
+                  'p-2.5 industrial-inset border transition-all cursor-pointer',
+                  !speechSupported &&
+                    'opacity-40 cursor-not-allowed border-muted-foreground/20 text-muted-foreground',
+                  speechSupported && isRecording &&
+                    'border-neon-pink/60 text-neon-pink glow-pink',
+                  speechSupported && !isRecording &&
+                    'border-muted-foreground/20 text-muted-foreground hover:text-neon-green hover:border-neon-green/40',
                 )}
               >
                 <Mic
