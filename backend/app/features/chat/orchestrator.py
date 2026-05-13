@@ -1603,11 +1603,23 @@ async def execute_goal(
                         )
                         filter_prompt = (
                             f"Given this goal: '{goal}', which of the "
-                            f"following memories are relevant? Return ONLY "
-                            f"the indices of relevant memories as a JSON "
-                            f"array, or an empty array if none are "
-                            f"relevant.\n\nMemories:\n{numbered}"
+                            f"following memories are relevant?\n\n"
+                            f"Return ONLY indices of memories that are "
+                            f"directly relevant to accomplishing this "
+                            f"specific goal. Memories about unrelated "
+                            f"personal topics, pets, people, or other "
+                            f"subjects should NOT be included even if they "
+                            f"share superficial keywords. If no memory is "
+                            f"directly relevant, return an empty array.\n\n"
+                            f"Respond with ONLY a JSON array of integer "
+                            f"indices, no other text.\n\n"
+                            f"Memories:\n{numbered}"
                         )
+                        logger.info(
+                            f"[query_memory filter] goal={goal[:80]!r} | "
+                            f"candidates={len(indexed_memories)}"
+                        )
+                        raw = ""
                         try:
                             raw = await call_background_model(filter_prompt)
                             cleaned = (
@@ -1618,16 +1630,40 @@ async def execute_goal(
                             relevant_indices = json.loads(cleaned)
                             if not isinstance(relevant_indices, list):
                                 relevant_indices = []
-                        except Exception:
+                        except Exception as _filter_err:
+                            logger.warning(
+                                f"[query_memory filter] parse failed: "
+                                f"{_filter_err} | raw={raw[:200]!r}"
+                            )
                             # Fail closed — if the filter can't decide, keep
                             # nothing rather than leak low-relevance context.
                             relevant_indices = []
+
+                        logger.info(
+                            f"[query_memory filter] raw={raw[:200]!r} | "
+                            f"parsed_indices={relevant_indices}"
+                        )
 
                         filtered = [
                             indexed_memories[i] for i in relevant_indices
                             if isinstance(i, int)
                             and 0 <= i < len(indexed_memories)
                         ]
+                        if filtered:
+                            _kept_preview = "; ".join(
+                                f"[{lyr}] {txt[:60]}"
+                                for lyr, txt in filtered[:5]
+                            )
+                            logger.info(
+                                f"[query_memory filter] kept "
+                                f"{len(filtered)}/{len(indexed_memories)} "
+                                f"-> {_kept_preview}"
+                            )
+                        else:
+                            logger.info(
+                                f"[query_memory filter] kept 0/"
+                                f"{len(indexed_memories)} — none relevant"
+                            )
 
                         if not filtered:
                             qm_content = "No relevant memories found."
