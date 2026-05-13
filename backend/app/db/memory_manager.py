@@ -177,6 +177,22 @@ def init_db():
         )
     """)
 
+    # Child-safety content flags (Parker workspace). Admin reviews these
+    # via /api/v1/flags/* endpoints.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS content_flags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            thread_id TEXT NOT NULL,
+            message_content TEXT NOT NULL,
+            response_content TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            flagged_at TEXT NOT NULL,
+            reviewed INTEGER NOT NULL DEFAULT 0,
+            reviewed_at TEXT
+        )
+    """)
+
     for _table in ("strategic_memory", "operational_memory",
                    "analytical_memory", "experiences"):
         try:
@@ -1471,6 +1487,83 @@ def save_conversation_history(user_id: str, history: list) -> None:
     """, (user_id, json.dumps(history), now))
     conn.commit()
     conn.close()
+
+
+def save_content_flag(
+    user_id: str,
+    thread_id: str,
+    message_content: str,
+    response_content: str,
+    reason: str,
+) -> int:
+    """Insert a new unreviewed content_flags row. Returns the new id."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        """
+        INSERT INTO content_flags (
+            user_id, thread_id, message_content, response_content,
+            reason, flagged_at, reviewed
+        ) VALUES (?, ?, ?, ?, ?, ?, 0)
+        """,
+        (
+            user_id, thread_id, message_content, response_content,
+            reason, datetime.now().isoformat(),
+        ),
+    )
+    flag_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return flag_id or 0
+
+
+def get_unreviewed_flags() -> list:
+    """Return all unreviewed flags, newest first."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        """
+        SELECT id, user_id, thread_id, message_content, response_content,
+               reason, flagged_at, reviewed, reviewed_at
+        FROM content_flags
+        WHERE reviewed = 0
+        ORDER BY flagged_at DESC
+        """
+    )
+    rows = c.fetchall()
+    conn.close()
+    return [
+        {
+            "id": r[0],
+            "user_id": r[1],
+            "thread_id": r[2],
+            "message_content": r[3],
+            "response_content": r[4],
+            "reason": r[5],
+            "flagged_at": r[6],
+            "reviewed": bool(r[7]),
+            "reviewed_at": r[8],
+        }
+        for r in rows
+    ]
+
+
+def mark_flag_reviewed(flag_id: int) -> bool:
+    """Mark a flag reviewed. Returns True if a row was updated."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        """
+        UPDATE content_flags
+        SET reviewed = 1, reviewed_at = ?
+        WHERE id = ? AND reviewed = 0
+        """,
+        (datetime.now().isoformat(), flag_id),
+    )
+    updated = c.rowcount
+    conn.commit()
+    conn.close()
+    return updated > 0
 
 
 def load_all_conversation_histories() -> dict:

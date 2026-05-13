@@ -1,6 +1,11 @@
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
-from app.core.auth import verify_password, create_token
+from app.core.auth import (
+    CurrentUser,
+    create_token,
+    get_current_user,
+    verify_password,
+)
 
 router = APIRouter()
 
@@ -12,13 +17,14 @@ class LoginRequest(BaseModel):
 @router.post("/login")
 async def login(request: LoginRequest, response: Response):
     """
-    Authenticate with the Drift password.
-    Returns a JWT token set as an httpOnly cookie.
+    Authenticate against either DRIFT_PASSWORD (admin) or PARKER_PASSWORD
+    (user). Returns the assigned user_id + role and sets the JWT cookie.
     """
-    if not verify_password(request.password):
+    user = verify_password(request.password)
+    if not user:
         raise HTTPException(status_code=401, detail="Invalid password")
 
-    token = create_token()
+    token = create_token(user["user_id"], user["role"])
     response.set_cookie(
         key="drift_token",
         value=token,
@@ -29,7 +35,17 @@ async def login(request: LoginRequest, response: Response):
         max_age=86400,
     )
 
-    return {"message": "Authenticated"}
+    return {
+        "message": "Authenticated",
+        "user_id": user["user_id"],
+        "role": user["role"],
+    }
+
+
+@router.get("/me")
+async def me(user: CurrentUser = Depends(get_current_user)):
+    """Return the current authenticated user info (driven by the cookie)."""
+    return user
 
 
 @router.post("/logout")

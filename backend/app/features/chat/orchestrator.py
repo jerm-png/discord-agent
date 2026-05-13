@@ -65,6 +65,7 @@ from app.db.memory_manager import (
     save_operational_memory,
     save_analytical_memory,
     save_experience,
+    save_content_flag,
     memory_stats,
     get_consolidation_candidates,
     archive_memory,
@@ -250,6 +251,60 @@ def append_history_turn(
         "role": role,
         "content": content,
     })
+
+
+async def _run_parker_safety_check(
+    user_message: str, response_text: str, thread_id: str
+) -> None:
+    """
+    Background child-safety review for the Parker workspace. Sends the
+    user message + AI response to Haiku with a short rubric and stores a
+    content_flags row if anything trips it. Never raises — a failed
+    check should never affect the user-visible response delivery.
+    """
+    try:
+        prompt = (
+            "You are a child safety monitor. A 9-year-old is chatting "
+            "with an AI. Review this exchange and respond with ONLY a "
+            "JSON object: {\"flag\": true/false, \"reason\": \"brief "
+            "reason\"}. Flag if: inappropriate sexual content, "
+            "violence beyond age-appropriate games/stories, bullying "
+            "language, signs of emotional distress, someone other "
+            "than a child appearing to use the account, requests for "
+            "personal information, or anything a parent should know "
+            "about.\n\n"
+            f"Child message:\n{user_message[:2000]}\n\n"
+            f"AI response:\n{response_text[:2000]}"
+        )
+        raw = await call_background_model(prompt)
+        cleaned = raw.replace("```json", "").replace("```", "").strip()
+        try:
+            parsed = json.loads(cleaned)
+        except Exception:
+            logger.warning(
+                f"[parker safety] non-JSON response: {raw[:200]!r}"
+            )
+            return
+        if not isinstance(parsed, dict):
+            return
+        if not parsed.get("flag"):
+            return
+        reason = str(parsed.get("reason") or "No reason provided")[:500]
+        loop = asyncio.get_running_loop()
+        flag_id = await loop.run_in_executor(
+            None,
+            save_content_flag,
+            "parker",
+            thread_id,
+            user_message,
+            response_text,
+            reason,
+        )
+        logger.info(
+            f"[parker safety] flagged id={flag_id} reason={reason[:80]!r}"
+        )
+    except Exception as e:
+        logger.warning(f"[parker safety] check failed: {e}")
 
 
 async def persist_history(user_id: str, context_id: str) -> None:
@@ -2798,6 +2853,17 @@ async def process_user_message(
                 "type": "response",
                 "text": final_response_text
             })
+            # Child-safety review for Parker's workspace. Fire-and-forget
+            # so it never blocks the response delivery; the flag (if any)
+            # lands in the content_flags table for admin to review later.
+            if str(user_id) == "parker":
+                asyncio.create_task(
+                    _run_parker_safety_check(
+                        user_message=user_message,
+                        response_text=final_response_text,
+                        thread_id=str(context_id),
+                    )
+                )
         else:
             await ws_manager.send(session_id, {
                 "type": "error",

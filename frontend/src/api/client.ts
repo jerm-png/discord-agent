@@ -46,7 +46,14 @@ async function request<T>(
   return res.json() as Promise<T>
 }
 
-export async function login(password: string): Promise<{ message: string }> {
+export interface AuthUser {
+  user_id: string
+  role: 'admin' | 'user'
+}
+
+export async function login(
+  password: string,
+): Promise<{ message: string } & AuthUser> {
   const res = await fetch(`${BASE_URL}/api/v1/auth/login`, {
     method: 'POST',
     credentials: 'include',
@@ -62,6 +69,15 @@ export async function login(password: string): Promise<{ message: string }> {
     throw new Error(msg)
   }
   return res.json()
+}
+
+export async function getMe(): Promise<AuthUser | null> {
+  const res = await fetch(`${BASE_URL}/api/v1/auth/me`, {
+    credentials: 'include',
+  })
+  if (res.status === 401) return null
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json() as Promise<AuthUser>
 }
 
 export async function logout(): Promise<void> {
@@ -151,4 +167,29 @@ export async function postThreadAction(
       body: JSON.stringify({ action, changes: changes || "" }),
     }
   )
+}
+
+export interface ContentFlag {
+  id: number
+  user_id: string
+  thread_id: string
+  message_content: string
+  response_content: string
+  reason: string
+  flagged_at: string
+  reviewed: boolean
+  reviewed_at: string | null
+}
+
+export async function getUnreviewedFlags(): Promise<ContentFlag[]> {
+  const data = await request<{ flags: ContentFlag[] }>(
+    `/api/v1/flags/unreviewed`,
+  )
+  return data.flags ?? []
+}
+
+export async function reviewFlag(flagId: number): Promise<void> {
+  await request<unknown>(`/api/v1/flags/${flagId}/review`, {
+    method: 'POST',
+  })
 }

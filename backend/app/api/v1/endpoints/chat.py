@@ -4,7 +4,11 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from app.core.auth import require_auth, verify_token
+from app.core.auth import (
+    CurrentUser,
+    decode_token,
+    get_current_user,
+)
 from app.core.config import WORKSPACES
 from app.core.ws_manager import ws_manager
 from app.db.threads import get_thread, update_thread_activity
@@ -37,17 +41,29 @@ async def chat_websocket(
     workspace_slug: str,
     thread_id: str,
 ):
-    # Authentication
+    # Authentication — decode user_id + role from the cookie JWT.
     drift_token = websocket.cookies.get("drift_token")
-    if not drift_token or not verify_token(drift_token):
+    auth_user = decode_token(drift_token) if drift_token else None
+    if not auth_user:
         await websocket.close(code=1008)
         return
+    user_id = auth_user["user_id"]
+    author_display_name = "Parker" if user_id == "parker" else "Jerm"
 
     # Workspace validation
     if workspace_slug not in WORKSPACES:
         await websocket.close(code=1008)
         return
     ws_config = WORKSPACES[workspace_slug]
+    # Enforce per-workspace user restriction. Parker can only chat in
+    # parker.exe; admin can chat in any workspace except parker.exe.
+    restricted = ws_config.get("user_restricted")
+    if restricted is not None and user_id != restricted:
+        await websocket.close(code=1008)
+        return
+    if restricted is None and user_id == "parker":
+        await websocket.close(code=1008)
+        return
     memory_mode = ws_config["memory_mode"]
     project_tag = ws_config.get("project_tag")
 
@@ -90,8 +106,8 @@ async def chat_websocket(
                     _, goal_text = goal_trigger
                     asyncio.create_task(run_goal_planning(
                         goal_text=goal_text,
-                        user_id="drift-owner",
-                        author_display_name="Jerm",
+                        user_id=user_id,
+                        author_display_name=author_display_name,
                         session_id=thread_id,
                         memory_mode=memory_mode,
                         project_tag=project_tag,
@@ -107,8 +123,8 @@ async def chat_websocket(
 
             await process_user_message(
                 user_message=content,
-                user_id="drift-owner",
-                author_display_name="Jerm",
+                user_id=user_id,
+                author_display_name=author_display_name,
                 session_id=thread_id,
                 memory_mode=memory_mode,
                 project_tag=project_tag,
@@ -140,10 +156,10 @@ async def chat_websocket(
 @router.get("/threads/{thread_id}/messages")
 async def get_thread_messages(
     thread_id: str,
-    user: str = Depends(require_auth),
+    user: CurrentUser = Depends(get_current_user),
 ):
     from app.core.state import conversation_history
-    key = ("drift-owner", thread_id)
+    key = (user["user_id"], thread_id)
     history = conversation_history.get(key, [])
 
     messages = []
@@ -190,7 +206,7 @@ async def get_thread_messages(
 async def thread_action(
     thread_id: str,
     body: ThreadActionRequest,
-    user: str = Depends(require_auth),
+    user: CurrentUser = Depends(get_current_user),
 ):
     thread = get_thread(thread_id)
     if not thread:
@@ -202,8 +218,18 @@ async def thread_action(
             detail=f"Invalid action. Must be one of: {', '.join(sorted(ALLOWED_ACTIONS))}",
         )
 
+    user_id = user["user_id"]
+    author_display_name = "Parker" if user_id == "parker" else "Jerm"
+
     workspace_slug = thread["workspace"]
     ws_config = WORKSPACES.get(workspace_slug, {})
+    # Per-workspace user restriction: Parker only operates in parker.exe;
+    # admin cannot operate inside Parker's workspace.
+    restricted = ws_config.get("user_restricted")
+    if restricted is not None and user_id != restricted:
+        raise HTTPException(status_code=403, detail="Workspace not accessible")
+    if restricted is None and user_id == "parker":
+        raise HTTPException(status_code=403, detail="Workspace not accessible")
     memory_mode = ws_config.get("memory_mode", "global")
     project_tag = ws_config.get("project_tag")
 
@@ -211,7 +237,7 @@ async def thread_action(
 
     if action == "approve":
         from app.core.state import pending_goals, execution_context
-        pg = pending_goals.get("drift-owner")
+        pg = pending_goals.get(user_id)
         if not pg:
             raise HTTPException(status_code=400, detail="No pending goal to approve.")
         if pg.get("status") != "awaiting_approval":
@@ -221,38 +247,29 @@ async def thread_action(
             )
         pg["status"] = "executing"
         pg["current_step"] = 0
-        execution_context.pop("drift-owner", None)
-        # Fire-and-forget: execute_goal runs the plan step-by-step and emits
-        # WebSocket frames as it progresses. Awaiting it would hold the HTTP
-        # response open for the entire goal duration.
+        execution_context.pop(user_id, None)
         asyncio.create_task(execute_goal(
-            user_id="drift-owner",
-            author_display_name="Jerm",
+            user_id=user_id,
+            author_display_name=author_display_name,
         ))
 
     elif action == "cancel":
         from app.core.state import pending_goals, gate_pending, execution_context
-        pending_goals.pop("drift-owner", None)
-        gate_pending.pop("drift-owner", None)
-        execution_context.pop("drift-owner", None)
+        pending_goals.pop(user_id, None)
+        gate_pending.pop(user_id, None)
+        execution_context.pop(user_id, None)
         cancel_text = "❌ Goal cancelled."
-        # Emit as `response` so handleWSMessage adds it to the chat as an
-        # assistant message. `status` frames only update the thinking indicator
-        # and never render in the message list.
         await ws_manager.send(thread_id, {
             "type": "response",
             "text": cancel_text,
         })
-        # Persist the cancel confirmation to conversation history so it
-        # survives reload. The cancel handler doesn't go through
-        # process_user_message, so this is the only place it gets saved.
-        append_history_turn("drift-owner", thread_id, "assistant", cancel_text)
-        await persist_history("drift-owner", thread_id)
+        append_history_turn(user_id, thread_id, "assistant", cancel_text)
+        await persist_history(user_id, thread_id)
 
     elif action in ("continue", "adjust", "skip", "retry"):
         await resume_goal_from_gate(
-            user_id="drift-owner",
-            author_display_name="Jerm",
+            user_id=user_id,
+            author_display_name=author_display_name,
             action=action,
             changes=body.changes,
         )
@@ -260,8 +277,8 @@ async def thread_action(
     elif action == "modify":
         await run_goal_modification(
             changes=body.changes,
-            user_id="drift-owner",
-            author_display_name="Jerm",
+            user_id=user_id,
+            author_display_name=author_display_name,
             session_id=thread_id,
             memory_mode=memory_mode,
             project_tag=project_tag,

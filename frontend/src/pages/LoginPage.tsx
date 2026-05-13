@@ -4,7 +4,7 @@ import { login } from '../api/client'
 import { useAuthStore } from '../store/authStore'
 
 export function LoginPage() {
-  const setAuthenticated = useAuthStore((s) => s.setAuthenticated)
+  const setUser = useAuthStore((s) => s.setUser)
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -14,8 +14,8 @@ export function LoginPage() {
     setLoading(true)
     setError('')
     try {
-      await login(password)
-      setAuthenticated(true)
+      const result = await login(password)
+      setUser(result.user_id, result.role)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Authentication failed')
     } finally {

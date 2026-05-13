@@ -6,11 +6,14 @@ import { ChatPanel } from '../components/ChatPanel'
 import { useWebSocket } from '../hooks/useWebSocket'
 import type { WSMessage } from '../hooks/useWebSocket'
 import { useDriftStore } from '../store/driftStore'
+import { useAuthStore } from '../store/authStore'
 import { getWorkspaces, getThreads, createThread, archiveThread, getMessages } from '../api/client'
 import type { Thread } from '../api/client'
 import type { ChatMessage } from '../components/ChatPanel'
 
 export function DashboardPage() {
+  const userId = useAuthStore((s) => s.userId)
+  const isParker = userId === 'parker'
   const {
     workspaces,
     activeWorkspace,
@@ -69,9 +72,22 @@ export function DashboardPage() {
   // Load workspaces on mount
   useEffect(() => {
     getWorkspaces()
-      .then((ws) => setWorkspaces(ws))
+      .then((ws) => {
+        setWorkspaces(ws)
+        // If the current activeWorkspace isn't visible to this user
+        // (e.g. Parker auto-routed to "parker.exe", or admin's default
+        // not in the filtered list), switch to the first available so
+        // getThreads doesn't 4xx on an inaccessible slug.
+        if (
+          ws.length > 0 &&
+          !ws.some((w) => w.slug === activeWorkspace)
+        ) {
+          setActiveWorkspace(ws[0].slug)
+        }
+      })
       .catch(console.error)
-  }, [setWorkspaces])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [setWorkspaces, setActiveWorkspace])
 
   // Load threads when active workspace changes
   useEffect(() => {
@@ -184,11 +200,15 @@ export function DashboardPage() {
     <div className="h-screen w-screen overflow-hidden flex flex-col bg-[#0a0a0f]">
       <SystemStatusBar />
       <div className="flex-1 flex overflow-hidden">
-        <WorkspaceSidebar
-          workspaces={workspaces}
-          activeWorkspace={activeWorkspace}
-          onWorkspaceChange={handleWorkspaceChange}
-        />
+        {/* Parker has only one workspace so the sidebar is suppressed —
+            keeps the simplified layout the spec calls for. */}
+        {!isParker && (
+          <WorkspaceSidebar
+            workspaces={workspaces}
+            activeWorkspace={activeWorkspace}
+            onWorkspaceChange={handleWorkspaceChange}
+          />
+        )}
         <ThreadList
           threads={threads}
           activeThread={activeThread}

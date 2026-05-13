@@ -63,6 +63,7 @@ JWT_SECRET = os.getenv("JWT_SECRET", "change-me-in-production")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "24"))
 DRIFT_PASSWORD = os.getenv("DRIFT_PASSWORD", "")
+PARKER_PASSWORD = os.getenv("PARKER_PASSWORD", "")
 
 # ── Workspaces ────────────────────────────────────────────────
 WORKSPACES = {
@@ -152,6 +153,35 @@ WORKSPACES = {
         ),
         "language": "unrestricted",
     },
+    "parker": {
+        "label": "Parker.exe",
+        "memory_mode": "isolated",
+        "tool_mode": "full",
+        "project_tag": "parker",
+        "agent_hints": [],
+        "threaded": True,
+        "isolated": True,
+        "entity_memory": False,
+        "personality": (
+            "You are operating in Parker.exe — this is Parker's "
+            "personal workspace. Parker is 9 years old and thinks "
+            "you are the coolest. Be his robot friend, game buddy, "
+            "and chill mentor all in one. Match his energy — when "
+            "he wants to talk about games, geek out with him. When "
+            "he's curious about something, explain it in a way "
+            "that's fun and makes him feel smart, not talked down "
+            "to. When he tells wild stories, play along and build "
+            "on them — add cool twists, ask what happens next, "
+            "make him the hero. Use gaming references, sci-fi "
+            "flavor, and light humor. Keep everything age-appropriate. "
+            "Never use profanity. Never discuss adult topics. "
+            "If he asks about something inappropriate, redirect "
+            "naturally without making it weird. Be the cool AI "
+            "friend every 9-year-old deserves."
+        ),
+        "language": "clean",
+        "user_restricted": "parker",
+    },
     "general": {
         "label": "Terminal",
         "memory_mode": "global",
@@ -177,4 +207,4 @@ WORKSPACES = {
     },
 }
 
-ISOLATED_WORKSPACES = {"health"}
+ISOLATED_WORKSPACES = {"health", "parker"}

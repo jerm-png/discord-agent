@@ -1,7 +1,36 @@
 import { useState, useEffect } from 'react'
-import { Wifi, Database, Cpu, Activity, Zap, Shield } from 'lucide-react'
+import { Wifi, Database, Cpu, Activity, Zap, Shield, ShieldAlert } from 'lucide-react'
+import { useAuthStore } from '../store/authStore'
+import { getUnreviewedFlags } from '../api/client'
+import type { ContentFlag } from '../api/client'
+import { FlagPanel } from './FlagPanel'
+import { cn } from '../lib/utils'
 
 export function SystemStatusBar() {
+  const role = useAuthStore((s) => s.role)
+  const isAdmin = role === 'admin'
+  const [flags, setFlags] = useState<ContentFlag[]>([])
+  const [panelOpen, setPanelOpen] = useState(false)
+
+  // Admin: poll unreviewed flags every 60s.
+  useEffect(() => {
+    if (!isAdmin) return
+    let cancelled = false
+    const load = () => {
+      getUnreviewedFlags()
+        .then((data) => {
+          if (!cancelled) setFlags(data)
+        })
+        .catch((e) => console.error('Failed to load flags:', e))
+    }
+    load()
+    const interval = window.setInterval(load, 60000)
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+    }
+  }, [isAdmin])
+
   const [time, setTime] = useState<string>('')
   const [memoryUsage, setMemoryUsage] = useState(73)
   const [latency, setLatency] = useState(12)
@@ -109,6 +138,41 @@ export function SystemStatusBar() {
 
       {/* Right section */}
       <div className="flex items-center gap-4">
+        {isAdmin && (
+          <button
+            onClick={() => setPanelOpen(true)}
+            title={
+              flags.length > 0
+                ? `${flags.length} unreviewed flag${flags.length === 1 ? '' : 's'}`
+                : 'No flags pending'
+            }
+            className={cn(
+              'relative flex items-center gap-2 px-3 py-1 industrial-inset border transition-all cursor-pointer',
+              flags.length > 0
+                ? 'border-neon-pink/50 text-neon-pink glow-pink hover:border-neon-pink/70'
+                : 'border-muted-foreground/20 text-muted-foreground hover:text-neon-cyan hover:border-neon-cyan/40',
+            )}
+          >
+            {flags.length > 0 ? (
+              <ShieldAlert className="w-3 h-3" />
+            ) : (
+              <Shield className="w-3 h-3" />
+            )}
+            <span className="text-muted-foreground">FLAGS:</span>
+            <span
+              className={cn(
+                'font-bold tabular-nums',
+                flags.length > 0 ? 'text-neon-pink glow-pink-text' : 'text-neon-cyan/70',
+              )}
+            >
+              {flags.length}
+            </span>
+            {flags.length > 0 && (
+              <span className="absolute -top-1 -right-1 w-2 h-2 bg-neon-pink rounded-full pulse-dot-pink" />
+            )}
+          </button>
+        )}
+
         <div className="flex items-center gap-2 px-3 py-1 industrial-inset border border-neon-cyan/20">
           <Wifi className="w-3 h-3 text-neon-green pulse-dot-green" />
           <span className="text-muted-foreground">SID:</span>
@@ -125,6 +189,16 @@ export function SystemStatusBar() {
           </span>
         </div>
       </div>
+
+      {isAdmin && panelOpen && (
+        <FlagPanel
+          flags={flags}
+          onClose={() => setPanelOpen(false)}
+          onReviewed={(id) =>
+            setFlags((prev) => prev.filter((f) => f.id !== id))
+          }
+        />
+      )}
     </div>
   )
 }
