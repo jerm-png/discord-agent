@@ -253,26 +253,57 @@ def append_history_turn(
     })
 
 
+_FLAG_CATEGORIES = {
+    "stranger", "social_pressure", "money_scam", "body_sleep",
+    "violence", "distress", "family", "personal_info", "other",
+}
+
+
 async def _run_parker_safety_check(
     user_message: str, response_text: str, thread_id: str
 ) -> None:
     """
-    Background child-safety review for the Parker workspace. Sends the
-    user message + AI response to Haiku with a short rubric and stores a
-    content_flags row if anything trips it. Never raises — a failed
-    check should never affect the user-visible response delivery.
+    Background child-safety review for the Parker workspace. Asks Haiku
+    to assign a severity tier (urgent / review / info / none) and a
+    category, then writes a content_flags row when severity != none.
+    Fictional violence in game/story contexts is explicitly carved out
+    as "none" so the bunny-explosion stories Parker tells don't badge.
+    Never raises — a failed check should never affect response delivery.
     """
     try:
         prompt = (
-            "You are a child safety monitor. A 9-year-old is chatting "
+            "You are a child safety monitor for a 9-year-old chatting "
             "with an AI. Review this exchange and respond with ONLY a "
-            "JSON object: {\"flag\": true/false, \"reason\": \"brief "
-            "reason\"}. Flag if: inappropriate sexual content, "
-            "violence beyond age-appropriate games/stories, bullying "
-            "language, signs of emotional distress, someone other "
-            "than a child appearing to use the account, requests for "
-            "personal information, or anything a parent should know "
-            "about.\n\n"
+            "JSON object: "
+            '{"severity": "info" | "review" | "urgent" | "none", '
+            '"category": "stranger" | "social_pressure" | "money_scam" '
+            '| "body_sleep" | "violence" | "distress" | "family" | '
+            '"personal_info" | "other", '
+            '"reason": "brief reason"}.\n\n'
+            "Severity guide:\n"
+            "- urgent: immediate safety concern. Self-harm language. A "
+            "stranger asking for personal info, photos, location, or to "
+            "meet. Real-world threats. Scam targeting the child. "
+            "Anything suggesting abuse or grooming.\n"
+            "- review: a parent should know about this within a day. "
+            "Escalating peer pressure, persistent distress, repeated "
+            "mentions of an unknown online contact, body-image or food "
+            "worries, fictional violence shifting toward real people "
+            "or real-world action.\n"
+            "- info: routine but worth surfacing. Mentions a new online "
+            "friend casually. Normal complaints about school or family. "
+            "Healthy peer dynamics with mild friction.\n"
+            "- none: everyday chat. Gaming, movies, fictional violence "
+            "in game/story contexts (Fortnite, Minecraft, Roblox, fight "
+            "scenes from movies/shows), creative storytelling with "
+            "gore/explosions/chaos, normal frustration, school chatter, "
+            "sibling banter, crushes, age-appropriate curiosity.\n\n"
+            "Do NOT flag fictional violence in game or story contexts "
+            "— exploding bunnies, melted zombies, video-game carnage, "
+            "movie fight recaps, dark-comedy make-believe are all "
+            "normal 9-year-old play. Only flag fictional violence if "
+            "it shifts toward real people, specific real-world action, "
+            "or escalates well beyond age-appropriate intensity.\n\n"
             f"Child message:\n{user_message[:2000]}\n\n"
             f"AI response:\n{response_text[:2000]}"
         )
@@ -287,8 +318,16 @@ async def _run_parker_safety_check(
             return
         if not isinstance(parsed, dict):
             return
-        if not parsed.get("flag"):
+        severity = str(parsed.get("severity") or "").lower()
+        if severity == "none":
             return
+        if severity not in ("info", "review", "urgent"):
+            # Treat unknown values as the safe middle so anomalies
+            # surface for review rather than disappearing silently.
+            severity = "review"
+        category = str(parsed.get("category") or "other").lower()
+        if category not in _FLAG_CATEGORIES:
+            category = "other"
         reason = str(parsed.get("reason") or "No reason provided")[:500]
         loop = asyncio.get_running_loop()
         flag_id = await loop.run_in_executor(
@@ -299,9 +338,12 @@ async def _run_parker_safety_check(
             user_message,
             response_text,
             reason,
+            severity,
+            category,
         )
         logger.info(
-            f"[parker safety] flagged id={flag_id} reason={reason[:80]!r}"
+            f"[parker safety] flagged id={flag_id} severity={severity} "
+            f"category={category} reason={reason[:80]!r}"
         )
     except Exception as e:
         logger.warning(f"[parker safety] check failed: {e}")

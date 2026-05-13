@@ -178,7 +178,8 @@ def init_db():
     """)
 
     # Child-safety content flags (Parker workspace). Admin reviews these
-    # via /api/v1/flags/* endpoints.
+    # via /api/v1/flags/* endpoints. severity is one of urgent/review/info;
+    # category names the rubric bucket (stranger/social_pressure/etc).
     c.execute("""
         CREATE TABLE IF NOT EXISTS content_flags (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -187,11 +188,26 @@ def init_db():
             message_content TEXT NOT NULL,
             response_content TEXT NOT NULL,
             reason TEXT NOT NULL,
+            severity TEXT NOT NULL DEFAULT 'review',
+            category TEXT NOT NULL DEFAULT 'other',
             flagged_at TEXT NOT NULL,
             reviewed INTEGER NOT NULL DEFAULT 0,
             reviewed_at TEXT
         )
     """)
+    # Idempotent migration for rows created before severity/category
+    # were added. "duplicate column" OperationalError is expected on
+    # subsequent boots and is swallowed.
+    for _stmt in (
+        "ALTER TABLE content_flags ADD COLUMN severity TEXT "
+        "NOT NULL DEFAULT 'review'",
+        "ALTER TABLE content_flags ADD COLUMN category TEXT "
+        "NOT NULL DEFAULT 'other'",
+    ):
+        try:
+            c.execute(_stmt)
+        except sqlite3.OperationalError:
+            pass
 
     for _table in ("strategic_memory", "operational_memory",
                    "analytical_memory", "experiences"):
@@ -1495,6 +1511,8 @@ def save_content_flag(
     message_content: str,
     response_content: str,
     reason: str,
+    severity: str = "review",
+    category: str = "other",
 ) -> int:
     """Insert a new unreviewed content_flags row. Returns the new id."""
     conn = sqlite3.connect(DB_PATH)
@@ -1503,12 +1521,12 @@ def save_content_flag(
         """
         INSERT INTO content_flags (
             user_id, thread_id, message_content, response_content,
-            reason, flagged_at, reviewed
-        ) VALUES (?, ?, ?, ?, ?, ?, 0)
+            reason, severity, category, flagged_at, reviewed
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
         """,
         (
             user_id, thread_id, message_content, response_content,
-            reason, datetime.now().isoformat(),
+            reason, severity, category, datetime.now().isoformat(),
         ),
     )
     flag_id = c.lastrowid
@@ -1518,16 +1536,27 @@ def save_content_flag(
 
 
 def get_unreviewed_flags() -> list:
-    """Return all unreviewed flags, newest first."""
+    """
+    Return all unreviewed flags ordered urgent -> review -> info, then
+    newest first within each tier. Backend ordering helps even if the
+    frontend doesn't group.
+    """
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute(
         """
         SELECT id, user_id, thread_id, message_content, response_content,
-               reason, flagged_at, reviewed, reviewed_at
+               reason, severity, category, flagged_at, reviewed, reviewed_at
         FROM content_flags
         WHERE reviewed = 0
-        ORDER BY flagged_at DESC
+        ORDER BY
+            CASE severity
+                WHEN 'urgent' THEN 0
+                WHEN 'review' THEN 1
+                WHEN 'info' THEN 2
+                ELSE 3
+            END,
+            flagged_at DESC
         """
     )
     rows = c.fetchall()
@@ -1540,9 +1569,11 @@ def get_unreviewed_flags() -> list:
             "message_content": r[3],
             "response_content": r[4],
             "reason": r[5],
-            "flagged_at": r[6],
-            "reviewed": bool(r[7]),
-            "reviewed_at": r[8],
+            "severity": r[6],
+            "category": r[7],
+            "flagged_at": r[8],
+            "reviewed": bool(r[9]),
+            "reviewed_at": r[10],
         }
         for r in rows
     ]

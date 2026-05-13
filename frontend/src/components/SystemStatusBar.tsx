@@ -150,40 +150,63 @@ export function SystemStatusBar() {
 
       {/* Right section */}
       <div className="flex items-center gap-4">
-        {isAdmin && (
-          <button
-            onClick={() => setPanelOpen(true)}
-            title={
-              flags.length > 0
-                ? `${flags.length} unreviewed flag${flags.length === 1 ? '' : 's'}`
-                : 'No flags pending'
-            }
-            className={cn(
-              'relative flex items-center gap-2 px-3 py-1 industrial-inset border transition-all cursor-pointer',
-              flags.length > 0
-                ? 'border-neon-pink/50 text-neon-pink glow-pink hover:border-neon-pink/70'
-                : 'border-muted-foreground/20 text-muted-foreground hover:text-neon-cyan hover:border-neon-cyan/40',
-            )}
-          >
-            {flags.length > 0 ? (
-              <ShieldAlert className="w-3 h-3" />
-            ) : (
-              <Shield className="w-3 h-3" />
-            )}
-            <span className="text-muted-foreground">FLAGS:</span>
-            <span
+        {isAdmin && (() => {
+          // Badge count = urgent + review only. Info-tier flags are
+          // browsable in the panel but don't bump the top-bar number,
+          // matching the "FYI" intent. Urgent presence flips the
+          // accent red so it's distinguishable from a review-only badge.
+          const reviewable = flags.filter((f) => f.severity !== 'info')
+          const hasUrgent = flags.some((f) => f.severity === 'urgent')
+          const count = reviewable.length
+          const accentClass = hasUrgent
+            ? 'border-[#ff0040]/70 text-[#ff0040] shadow-[0_0_12px_rgba(255,0,64,0.4)] hover:border-[#ff0040]'
+            : count > 0
+              ? 'border-neon-pink/50 text-neon-pink glow-pink hover:border-neon-pink/70'
+              : 'border-muted-foreground/20 text-muted-foreground hover:text-neon-cyan hover:border-neon-cyan/40'
+          return (
+            <button
+              onClick={() => setPanelOpen(true)}
+              title={
+                count > 0
+                  ? `${count} unreviewed flag${count === 1 ? '' : 's'}${hasUrgent ? ' (URGENT)' : ''}`
+                  : 'No flags pending'
+              }
               className={cn(
-                'font-bold tabular-nums',
-                flags.length > 0 ? 'text-neon-pink glow-pink-text' : 'text-neon-cyan/70',
+                'relative flex items-center gap-2 px-3 py-1 industrial-inset border transition-all cursor-pointer',
+                accentClass,
               )}
             >
-              {flags.length}
-            </span>
-            {flags.length > 0 && (
-              <span className="absolute -top-1 -right-1 w-2 h-2 bg-neon-pink rounded-full pulse-dot-pink" />
-            )}
-          </button>
-        )}
+              {count > 0 ? (
+                <ShieldAlert className="w-3 h-3" />
+              ) : (
+                <Shield className="w-3 h-3" />
+              )}
+              <span className="text-muted-foreground">FLAGS:</span>
+              <span
+                className={cn(
+                  'font-bold tabular-nums',
+                  hasUrgent
+                    ? 'text-[#ff0040]'
+                    : count > 0
+                      ? 'text-neon-pink glow-pink-text'
+                      : 'text-neon-cyan/70',
+                )}
+              >
+                {count}
+              </span>
+              {count > 0 && (
+                <span
+                  className={cn(
+                    'absolute -top-1 -right-1 w-2 h-2 rounded-full',
+                    hasUrgent
+                      ? 'bg-[#ff0040] pulse-dot-pink'
+                      : 'bg-neon-pink pulse-dot-pink',
+                  )}
+                />
+              )}
+            </button>
+          )
+        })()}
 
         <div className="flex items-center gap-2 px-3 py-1 industrial-inset border border-neon-cyan/20">
           <Wifi className="w-3 h-3 text-neon-green pulse-dot-green" />

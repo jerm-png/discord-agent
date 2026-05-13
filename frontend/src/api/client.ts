@@ -169,6 +169,19 @@ export async function postThreadAction(
   )
 }
 
+export type FlagSeverity = 'urgent' | 'review' | 'info'
+
+export type FlagCategory =
+  | 'stranger'
+  | 'social_pressure'
+  | 'money_scam'
+  | 'body_sleep'
+  | 'violence'
+  | 'distress'
+  | 'family'
+  | 'personal_info'
+  | 'other'
+
 export interface ContentFlag {
   id: number
   user_id: string
@@ -176,6 +189,8 @@ export interface ContentFlag {
   message_content: string
   response_content: string
   reason: string
+  severity: FlagSeverity
+  category: FlagCategory
   flagged_at: string
   reviewed: boolean
   reviewed_at: string | null
