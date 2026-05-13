@@ -19,6 +19,7 @@ interface UseWebSocketReturn {
   connect: (workspaceSlug: string, threadId: string) => void
   disconnect: () => void
   resetThinking: () => void
+  markThinking: (text?: string) => void
 }
 
 export function useWebSocket(
@@ -106,6 +107,11 @@ export function useWebSocket(
     setStatusText('')
   }, [])
 
+  const markThinking = useCallback((text: string = '') => {
+    setIsThinking(true)
+    setStatusText(text)
+  }, [])
+
   const sendMessage = useCallback((content: string, agentSlug?: string) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(
@@ -127,5 +133,6 @@ export function useWebSocket(
     connect,
     disconnect,
     resetThinking,
+    markThinking,
   }
 }

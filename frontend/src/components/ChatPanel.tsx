@@ -427,6 +427,13 @@ export function ChatPanel({
                           <span className="font-mono text-[10px] uppercase tracking-wider font-bold">Continue</span>
                         </button>
                         <button
+                          onClick={() => { setModifyTarget({ messageId: message.id, action: 'adjust' }); setModifyText('') }}
+                          className="px-3 py-1.5 industrial-raised border border-neon-cyan/40 text-neon-cyan hover:border-neon-cyan hover:glow-cyan transition-all flex items-center gap-1.5"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                          <span className="font-mono text-[10px] uppercase tracking-wider font-bold">Adjust</span>
+                        </button>
+                        <button
                           onClick={() => onAction('cancel')}
                           className="px-3 py-1.5 industrial-raised border border-neon-pink/40 text-neon-pink hover:border-neon-pink hover:glow-pink transition-all flex items-center gap-1.5"
                         >

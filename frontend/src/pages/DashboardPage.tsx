@@ -63,7 +63,7 @@ export function DashboardPage() {
     }
   }, [])
 
-  const { isConnected, isThinking, statusText, sendMessage, connect, disconnect, resetThinking } =
+  const { isConnected, isThinking, statusText, sendMessage, connect, disconnect, resetThinking, markThinking } =
     useWebSocket(handleWSMessage)
 
   // Load workspaces on mount
@@ -139,15 +139,22 @@ export function DashboardPage() {
           : m
       )
     )
+    // Show the thinking indicator immediately for actions that trigger backend
+    // work. From here on, the backend's WebSocket frames manage isThinking —
+    // status frames keep it on, plan/gate/response/error/message turn it off.
+    // Cancel is excluded because the backend emits a response frame instantly
+    // and we'd just flash the indicator. Don't reset in `finally` either, or
+    // we'd race the backend frames and kill the indicator the moment the HTTP
+    // response arrives.
+    if (action !== 'cancel') {
+      markThinking()
+    }
     try {
       const { postThreadAction } = await import('../api/client')
       await postThreadAction(activeThread.id, action, changes)
     } catch (e) {
       console.error('Action failed:', e)
-    } finally {
-      // The HTTP action runs the goal flow to completion on the backend, but
-      // the WebSocket path may not always emit a terminal `done`/`response`.
-      // Force-reset so the thinking indicator can never get stuck.
+      // Only reset on failure — otherwise the WS frames are the authority.
       resetThinking()
     }
   }
