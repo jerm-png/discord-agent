@@ -180,6 +180,9 @@ export type FlagCategory =
   | 'distress'
   | 'family'
   | 'personal_info'
+  | 'sexual_curiosity'
+  | 'adult_topics'
+  | 'trust_isolation'
   | 'other'
 
 export interface ContentFlag {

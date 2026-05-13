@@ -267,7 +267,8 @@ def append_history_turn(
 
 _FLAG_CATEGORIES = {
     "stranger", "social_pressure", "money_scam", "body_sleep",
-    "violence", "distress", "family", "personal_info", "other",
+    "violence", "distress", "family", "personal_info",
+    "sexual_curiosity", "adult_topics", "trust_isolation", "other",
 }
 
 
@@ -278,38 +279,70 @@ async def _run_parker_safety_check(
     Background child-safety review for the Parker workspace. Asks Haiku
     to assign a severity tier (urgent / review / info / none) and a
     category, then writes a content_flags row when severity != none.
-    Fictional violence in game/story contexts is explicitly carved out
-    as "none" so the bunny-explosion stories Parker tells don't badge.
+
+    The rubric explicitly tells Haiku to audit the CHILD's content,
+    independent of how the AI responded — otherwise well-handled
+    redirects ("the bot redirected nicely") get scored as none and the
+    parent never hears about the topics the kid is bringing up.
+
+    Fictional violence in game/story contexts is still carved out as
+    "none" so the bunny-explosion stories Parker tells don't badge.
     Never raises — a failed check should never affect response delivery.
     """
     try:
         prompt = (
             "You are a child safety monitor for a 9-year-old chatting "
-            "with an AI. Review this exchange and respond with ONLY a "
-            "JSON object: "
-            '{"severity": "info" | "review" | "urgent" | "none", '
-            '"category": "stranger" | "social_pressure" | "money_scam" '
-            '| "body_sleep" | "violence" | "distress" | "family" | '
-            '"personal_info" | "other", '
-            '"reason": "brief reason"}.\n\n'
-            "Severity guide:\n"
-            "- urgent: immediate safety concern. Self-harm language. A "
-            "stranger asking for personal info, photos, location, or to "
-            "meet. Real-world threats. Scam targeting the child. "
-            "Anything suggesting abuse or grooming.\n"
-            "- review: a parent should know about this within a day. "
-            "Escalating peer pressure, persistent distress, repeated "
-            "mentions of an unknown online contact, body-image or food "
-            "worries, fictional violence shifting toward real people "
-            "or real-world action.\n"
-            "- info: routine but worth surfacing. Mentions a new online "
-            "friend casually. Normal complaints about school or family. "
-            "Healthy peer dynamics with mild friction.\n"
+            "with an AI. Your job is to audit what the CHILD brings up, "
+            "INDEPENDENT of how the AI responded. The AI may have "
+            "redirected perfectly — that's the right behavior at the "
+            "response layer, but the parent still needs to know what "
+            "their kid is asking about. Flag based on the child's "
+            "content, not the conversation outcome.\n\n"
+            "Respond with ONLY a JSON object:\n"
+            '{"severity": "info" | "review" | "urgent" | "none",\n'
+            ' "category": "stranger" | "social_pressure" | "money_scam"'
+            ' | "body_sleep" | "violence" | "distress" | "family" | '
+            '"personal_info" | "sexual_curiosity" | "adult_topics" | '
+            '"trust_isolation" | "other",\n'
+            ' "reason": "brief reason"}.\n\n'
+            "Severity guide:\n\n"
+            "- urgent: immediate safety concern. Self-harm or suicidal "
+            "language. A stranger asking for personal info, photos, "
+            "location, or to meet. Real-world threats. Scam targeting "
+            "the child. Anything suggesting abuse or grooming. The "
+            "child describing being hurt by someone.\n\n"
+            "- review: a parent should know about this. THIS INCLUDES "
+            "even when the AI redirected well — flag the topic, not "
+            "the outcome. Specifically flag if the child asks about "
+            "or brings up:\n"
+            "  * sexual or anatomy topics (boobs, breasts, penis, "
+            "vagina, sex, reproduction, puberty, periods, erections, "
+            "porn, nudity) — category: sexual_curiosity\n"
+            "  * drugs, alcohol, vaping, smoking, getting drunk/high "
+            "— category: adult_topics\n"
+            "  * unusual trust placement or isolation from caregivers "
+            "(\"I trust you more than my parents\", \"don't tell my "
+            "mom\", \"you're the only one who gets me\") — category: "
+            "trust_isolation\n"
+            "  * escalating peer pressure, persistent distress, fear "
+            "of someone, repeated mentions of an unknown online "
+            "contact, body-image / food worries, fictional violence "
+            "shifting toward real people\n\n"
+            "- info: routine but worth surfacing. Mentions a new "
+            "online friend casually. Normal complaints about school "
+            "or family. Mild peer friction. First-time mention of a "
+            "topic the child is mildly curious about but didn't push.\n\n"
             "- none: everyday chat. Gaming, movies, fictional violence "
-            "in game/story contexts (Fortnite, Minecraft, Roblox, fight "
-            "scenes from movies/shows), creative storytelling with "
-            "gore/explosions/chaos, normal frustration, school chatter, "
-            "sibling banter, crushes, age-appropriate curiosity.\n\n"
+            "in game/story contexts (Fortnite, Minecraft, Roblox, "
+            "fight scenes from movies/shows), creative storytelling "
+            "with gore/explosions/chaos, normal frustration, school "
+            "chatter, sibling banter, age-appropriate crushes ('Sophie "
+            "is pretty'), age-appropriate non-adult curiosity (how "
+            "rockets work, why the sky is blue, dinosaur facts).\n\n"
+            "IMPORTANT: Flag based on what the CHILD said or asked. If "
+            "the AI handled it well, that's great — log it anyway. The "
+            "parent uses these flags to understand what their kid is "
+            "thinking about, not to grade the AI.\n\n"
             "Do NOT flag fictional violence in game or story contexts "
             "— exploding bunnies, melted zombies, video-game carnage, "
             "movie fight recaps, dark-comedy make-believe are all "

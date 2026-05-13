@@ -33,6 +33,9 @@ const CATEGORY_LABEL: Record<FlagCategory, string> = {
   distress: 'DISTRESS',
   family: 'FAMILY',
   personal_info: 'PERSONAL INFO',
+  sexual_curiosity: 'SEXUAL / ANATOMY',
+  adult_topics: 'ADULT TOPIC',
+  trust_isolation: 'TRUST / ISOLATION',
   other: 'OTHER',
 }
 
@@ -45,6 +48,9 @@ const CATEGORY_COLOR: Record<FlagCategory, string> = {
   distress: 'text-[#ff0040] border-[#ff0040]/40',
   family: 'text-neon-cyan border-neon-cyan/40',
   personal_info: 'text-[#ff0040] border-[#ff0040]/40',
+  sexual_curiosity: 'text-neon-pink border-neon-pink/40',
+  adult_topics: 'text-neon-orange border-neon-orange/40',
+  trust_isolation: 'text-[#ff0040] border-[#ff0040]/40',
   other: 'text-muted-foreground border-muted-foreground/40',
 }
 
