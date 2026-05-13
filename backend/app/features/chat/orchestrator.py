@@ -349,17 +349,16 @@ def _parse_goal_trigger(user_message: str):
 
 
 def _format_plan(goal: str, steps: list) -> str:
-    lines = [f"📋 Here's my plan for: **{goal}**\n"]
-    for step in steps:
-        num = step.get("step_number", "?")
-        stype = step.get("type", "unknown")
-        desc = step.get("description", "")
-        lines.append(f"Step {num} ({stype}): {desc}")
-    lines.append(
-        "\nReply `!approve` to execute, `!cancel` to abort, "
-        "or `!modify [changes]` to adjust the plan."
+    step_lines = "\n".join(
+        f"- **Step {step.get('step_number', '?')}** "
+        f"({step.get('type', 'unknown')}): "
+        f"{step.get('description', '')}"
+        for step in steps
     )
-    return "\n".join(lines)
+    return (
+        f"📋 **Here's my plan for:** {goal}\n\n"
+        f"{step_lines}"
+    )
 
 
 def _format_execution_context(
