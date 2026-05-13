@@ -1527,7 +1527,7 @@ async def execute_goal(
                     )
                     r = client.messages.create(
                         model=MAIN_MODEL,
-                        max_tokens=2048,
+                        max_tokens=4096,
                         **_analyze_kwargs,
                         messages=[{"role": "user", "content": (
                             f"Goal: {goal}\n\n"
@@ -1575,7 +1575,7 @@ async def execute_goal(
                             ]
                             retry_r = client.messages.create(
                                 model=MAIN_MODEL,
-                                max_tokens=2048,
+                                max_tokens=4096,
                                 messages=retry_messages
                             )
                             final_analyze_output = (
