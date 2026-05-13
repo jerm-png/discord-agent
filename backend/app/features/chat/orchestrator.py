@@ -1223,18 +1223,31 @@ async def _replan_remaining_steps(
 
     pg["steps"] = steps[:from_step_index] + new_steps
     pg["current_step"] = from_step_index
-    pg["status"] = "executing"
+    pg["status"] = "gated"
 
     step_lines = "\n".join(
         f"• Step {s.get('step_number', '?')} ({s.get('type', '?')}): "
         f"{s.get('description', '')}"
         for s in new_steps
     )
+    # Re-arm a gate so the user can confirm the revised plan before execution
+    # resumes. Without this, the frontend would render the adjusted plan as a
+    # regular message with no buttons and the goal would auto-resume — the
+    # user wants a checkpoint to verify the new steps first.
+    gate_pending[user_id] = {
+        "type": "adjust_gate",
+        "step_index": from_step_index,
+        "step_num": from_step_index + 1,
+        "author_display_name": author_display_name,
+    }
     await ws_manager.send(session_id, {
-        "type": "message",
-        "text": f"📋 Adjusted plan:\n{step_lines}\n\nContinuing..."
+        "type": "gate",
+        "text": (
+            f"📋 Adjusted plan:\n{step_lines}\n\n"
+            "Click Continue to run with these steps, "
+            "Adjust again, or Cancel to abort."
+        )
     })
-    asyncio.create_task(execute_goal(user_id, author_display_name))
 
 
 async def run_goal_planning(
@@ -1247,6 +1260,16 @@ async def run_goal_planning(
     Calls the planner model to decompose a goal into steps, validates
     the plan, stores it in pending_goals, and posts it for approval.
     """
+    # Clear any leftover state from a prior goal for this user. Without this,
+    # a stale pending_goals/gate_pending/execution_context entry from a
+    # previous !goal would bleed into the new flow (e.g. resume_goal_from_gate
+    # would see an old gate, or execute_goal would resume mid-flight with the
+    # new goal's steps). Any execute_goal task still iterating will notice the
+    # missing pending_goals on its next step check and exit cleanly.
+    pending_goals.pop(user_id, None)
+    gate_pending.pop(user_id, None)
+    execution_context.pop(user_id, None)
+
     try:
         response = client.messages.create(
             model=MAIN_MODEL,
@@ -1308,7 +1331,6 @@ async def run_goal_planning(
         "web_search_count": 0,
         "crew_mode": crew_mode,
     }
-    execution_context.pop(user_id, None)
 
     await ws_manager.send(session_id, {
         "type": "plan",
