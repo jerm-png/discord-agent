@@ -4,8 +4,10 @@ from app.core.auth import verify_password, create_token
 
 router = APIRouter()
 
+
 class LoginRequest(BaseModel):
     password: str
+
 
 @router.post("/login")
 async def login(request: LoginRequest, response: Response):
@@ -14,34 +16,21 @@ async def login(request: LoginRequest, response: Response):
     Returns a JWT token set as an httpOnly cookie.
     """
     if not verify_password(request.password):
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid password"
-        )
-
-    token = create_token()
-
-    import os
-
-@router.post("/login")
-async def login(request: LoginRequest, response: Response):
-    if not verify_password(request.password):
         raise HTTPException(status_code=401, detail="Invalid password")
 
     token = create_token()
-    
-    is_dev = os.getenv("ENV", "production") == "development"
-
     response.set_cookie(
         key="drift_token",
         value=token,
         httponly=True,
-        secure=not is_dev,
-        samesite="lax" if is_dev else "strict",
-        max_age=60 * 60 * 24,
+        secure=True,
+        samesite="lax",
+        path="/",
+        max_age=86400,
     )
 
     return {"message": "Authenticated"}
+
 
 @router.post("/logout")
 async def logout(response: Response):
