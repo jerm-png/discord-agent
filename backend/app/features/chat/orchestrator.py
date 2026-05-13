@@ -1572,42 +1572,81 @@ async def execute_goal(
                         return
 
                 elif step_type == "query_memory":
-                    # Scope memory retrieval to the goal text rather than the
-                    # planner's per-step query. Planner queries can be very
-                    # narrow or off-topic (e.g. "baking" for an apple-pie
-                    # goal), which surfaces unrelated chit-chat memories.
-                    # Using the goal anchors the semantic search to what the
-                    # user actually asked for.
-                    #
-                    # min_similarity=0.3 drops the long tail of low-relevance
-                    # results that ChromaDB returns regardless of query —
-                    # without this an apple-pie goal can surface a rabbit
-                    # memory just because it's the nearest neighbour in
-                    # embedding space.
+                    # Scope retrieval to the goal text — planner queries are
+                    # often too narrow or off-topic (e.g. "baking" for an
+                    # apple-pie goal) and surface unrelated chit-chat.
                     memories = await loop.run_in_executor(
                         None,
                         lambda q=goal: get_relevant_memories(
-                            q,
-                            channel_name=channel_name,
-                            min_similarity=0.3,
+                            q, channel_name=channel_name
                         )
                     )
-                    # Stale-flags can be non-empty even when every memory
-                    # layer is empty, so format_memory_for_prompt would still
-                    # return a non-empty string and bypass the "No relevant
-                    # memories" fallback. Treat as empty unless an actual
-                    # layer has content.
-                    has_real_memories = any(
-                        memories.get(layer)
-                        for layer in ("strategic", "operational", "analytical")
-                    )
-                    mem_text = (
-                        format_memory_for_prompt(memories)
-                        if has_real_memories else ""
-                    )
+
+                    # Flatten retrieved memories across layers with provenance
+                    # so we can rebuild the layered dict after filtering.
+                    indexed_memories = []
+                    for _layer in ("strategic", "operational", "analytical"):
+                        for _m in memories.get(_layer, []):
+                            indexed_memories.append((_layer, _m))
+
+                    if not indexed_memories:
+                        qm_content = "No relevant memories found."
+                    else:
+                        # LLM relevance filter. ChromaDB always returns top-N
+                        # nearest neighbours regardless of how related they
+                        # actually are — a fixed similarity threshold is too
+                        # blunt to apply across different query shapes, so
+                        # ask Haiku to judge per-result against the goal.
+                        numbered = "\n".join(
+                            f"{idx}. {text}"
+                            for idx, (_, text) in enumerate(indexed_memories)
+                        )
+                        filter_prompt = (
+                            f"Given this goal: '{goal}', which of the "
+                            f"following memories are relevant? Return ONLY "
+                            f"the indices of relevant memories as a JSON "
+                            f"array, or an empty array if none are "
+                            f"relevant.\n\nMemories:\n{numbered}"
+                        )
+                        try:
+                            raw = await call_background_model(filter_prompt)
+                            cleaned = (
+                                raw.replace("```json", "")
+                                   .replace("```", "")
+                                   .strip()
+                            )
+                            relevant_indices = json.loads(cleaned)
+                            if not isinstance(relevant_indices, list):
+                                relevant_indices = []
+                        except Exception:
+                            # Fail closed — if the filter can't decide, keep
+                            # nothing rather than leak low-relevance context.
+                            relevant_indices = []
+
+                        filtered = [
+                            indexed_memories[i] for i in relevant_indices
+                            if isinstance(i, int)
+                            and 0 <= i < len(indexed_memories)
+                        ]
+
+                        if not filtered:
+                            qm_content = "No relevant memories found."
+                        else:
+                            filtered_dict = {
+                                "strategic": [],
+                                "operational": [],
+                                "analytical": [],
+                            }
+                            for _layer, _text in filtered:
+                                filtered_dict[_layer].append(_text)
+                            qm_content = (
+                                format_memory_for_prompt(filtered_dict)
+                                or "No relevant memories found."
+                            )
+
                     execution_context[user_id]["steps"].append({
                         "step": step_num, "type": "query_memory",
-                        "content": mem_text or "No relevant memories found."
+                        "content": qm_content,
                     })
 
                 elif step_type == "analyze":
