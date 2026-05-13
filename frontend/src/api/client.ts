@@ -122,10 +122,13 @@ export async function archiveThread(threadId: string): Promise<void> {
 }
 
 export async function getMessages(threadId: string): Promise<ChatMessage[]> {
-  const data = await request<{ messages: ChatMessage[] }>(
+  const data = await request<{ messages?: ChatMessage[] }>(
     `/api/v1/threads/${threadId}/messages`
   )
-  return data.messages
+  // Fall back to [] if the response shape is unexpected — passing
+  // undefined into setMessages would break the `messages.length === 0`
+  // check downstream.
+  return data.messages ?? []
 }
 export type ThreadAction =
   | 'approve'

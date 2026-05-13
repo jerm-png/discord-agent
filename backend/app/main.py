@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.agents import load_agents
 from app.api.v1.router import router
 from app.db.threads import init_threads_table
+from app.db.memory_manager import load_all_conversation_histories
 import app.core.state as state
 from app.features.chat.orchestrator import (
     run_proactive_flag_surfacing,
@@ -46,6 +47,24 @@ async def lifespan(app: FastAPI):
     # Database tables
     init_threads_table()
     logger.info("Threads table ready")
+
+    # Restore conversation_history from the DB.
+    # The orchestrator writes to the in-memory dict with a TUPLE key
+    # (user_id, context_id) and persists to SQLite with a STRING key
+    # "user_id:context_id". Without this load, the dict starts empty on
+    # every restart and GET /threads/{id}/messages returns no history
+    # even though the rows exist in the conversation_history table.
+    try:
+        for combined_key, hist in load_all_conversation_histories().items():
+            if ":" in combined_key:
+                user_part, context_part = combined_key.split(":", 1)
+                state.conversation_history[(user_part, context_part)] = hist
+        logger.info(
+            f"Conversation history restored: "
+            f"{len(state.conversation_history)} thread(s)"
+        )
+    except Exception as e:
+        logger.warning(f"Conversation history load failed: {e}")
 
     # Agent definitions
     await load_agents()

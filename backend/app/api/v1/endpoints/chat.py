@@ -146,13 +146,19 @@ async def get_thread_messages(
 
         content = msg.get("content", "")
 
-        # Handle list-format content from Claude API
+        # Handle list-format content from Claude API. Blocks may arrive as
+        # dicts (when manually constructed for vision attachments / tool
+        # results) OR as Anthropic SDK Block objects (TextBlock, ToolUseBlock)
+        # when assistant turns are stored straight from response.content.
         if isinstance(content, list):
-            content = " ".join(
-                block.get("text", "")
-                for block in content
-                if isinstance(block, dict) and block.get("type") == "text"
-            )
+            parts = []
+            for block in content:
+                if isinstance(block, dict):
+                    if block.get("type") == "text":
+                        parts.append(block.get("text", ""))
+                elif getattr(block, "type", None) == "text":
+                    parts.append(getattr(block, "text", ""))
+            content = " ".join(parts)
 
         # Strip system context prefix from user messages
         if role == "user" and "Current message: " in content:
