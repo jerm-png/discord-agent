@@ -1,7 +1,7 @@
 import { useRef, useCallback, useState } from 'react'
 
 export interface WSMessage {
-  type: 'connected' | 'status' | 'response' | 'error' | 'done' | 'plan' | 'gate'
+  type: 'connected' | 'status' | 'response' | 'message' | 'error' | 'done' | 'plan' | 'gate'
   text?: string
   content?: string
   thread_id?: string
@@ -64,11 +64,13 @@ export function useWebSocket(
           setStatusText('')
         } else if (
           data.type === 'response' ||
+          data.type === 'message' ||
           data.type === 'error' ||
           data.type === 'plan' ||
           data.type === 'gate'
         ) {
-          // Terminal for this turn (plan/gate hand control back to the user)
+          // Terminal for this turn (plan/gate hand control back to the user;
+          // message is the goal-mode result emission from execute_goal).
           setIsThinking(false)
           setStatusText('')
           onMessage(data)

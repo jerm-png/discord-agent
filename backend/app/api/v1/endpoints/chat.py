@@ -79,12 +79,14 @@ async def chat_websocket(
             # Goal-mode triggers: !goal / !plan / !research route to the
             # planner so a `plan` WebSocket frame is emitted (which the
             # frontend renders with inline approve/modify/cancel buttons).
+            # Fire-and-forget so the WS receive loop is not blocked while the
+            # planner model runs; the plan/error frame is the terminal signal.
             if content.startswith("!"):
                 stripped = content[1:].lstrip()
                 goal_trigger = _parse_goal_trigger(stripped)
                 if goal_trigger:
                     _, goal_text = goal_trigger
-                    await run_goal_planning(
+                    asyncio.create_task(run_goal_planning(
                         goal_text=goal_text,
                         user_id="drift-owner",
                         author_display_name="Jerm",
@@ -92,8 +94,7 @@ async def chat_websocket(
                         memory_mode=memory_mode,
                         project_tag=project_tag,
                         channel_name=workspace_slug,
-                    )
-                    await ws_manager.send(thread_id, {"type": "done"})
+                    ))
                     continue
 
             await process_user_message(

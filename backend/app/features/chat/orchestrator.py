@@ -1798,6 +1798,15 @@ async def execute_goal(
         logger.error(
             f"Goal execution error | User: {author_display_name} | {str(e)}"
         )
+        # Surface the failure to the user — without this the thinking
+        # indicator stays on the last status text and the chat appears frozen.
+        try:
+            await ws_manager.send(session_id, {
+                "type": "error",
+                "text": f"Goal execution failed: {str(e)[:200]}",
+            })
+        except Exception:
+            pass
         pending_goals.pop(user_id, None)
         execution_context.pop(user_id, None)
         gate_pending.pop(user_id, None)

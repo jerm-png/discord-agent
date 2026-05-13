@@ -28,7 +28,7 @@ export function DashboardPage() {
   const [threadsLoading, setThreadsLoading] = useState(false)
 
   const handleWSMessage = useCallback((msg: WSMessage) => {
-    if (msg.type === 'response' || msg.type === 'error') {
+    if (msg.type === 'response' || msg.type === 'message' || msg.type === 'error') {
       setMessages((prev) => [
         ...prev,
         {
