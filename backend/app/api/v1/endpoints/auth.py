@@ -21,12 +21,23 @@ async def login(request: LoginRequest, response: Response):
 
     token = create_token()
 
+    import os
+
+@router.post("/login")
+async def login(request: LoginRequest, response: Response):
+    if not verify_password(request.password):
+        raise HTTPException(status_code=401, detail="Invalid password")
+
+    token = create_token()
+    
+    is_dev = os.getenv("ENV", "production") == "development"
+
     response.set_cookie(
         key="drift_token",
         value=token,
         httponly=True,
-        secure=True,
-        samesite="strict",
+        secure=not is_dev,
+        samesite="lax" if is_dev else "strict",
         max_age=60 * 60 * 24,
     )
 

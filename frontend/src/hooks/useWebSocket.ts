@@ -18,6 +18,7 @@ interface UseWebSocketReturn {
   sendMessage: (content: string, agentSlug?: string) => void
   connect: (workspaceSlug: string, threadId: string) => void
   disconnect: () => void
+  resetThinking: () => void
 }
 
 export function useWebSocket(
@@ -57,14 +58,17 @@ export function useWebSocket(
             setIsThinking(true)
             setStatusText(txt)
           }
-        } else if (data.type === 'response') {
-          setIsThinking(false)
-          setStatusText('')
-          onMessage(data)
         } else if (data.type === 'done') {
+          // Terminal signal — always resets thinking
           setIsThinking(false)
           setStatusText('')
-        } else if (data.type === 'error') {
+        } else if (
+          data.type === 'response' ||
+          data.type === 'error' ||
+          data.type === 'plan' ||
+          data.type === 'gate'
+        ) {
+          // Terminal for this turn (plan/gate hand control back to the user)
           setIsThinking(false)
           setStatusText('')
           onMessage(data)
@@ -91,6 +95,13 @@ export function useWebSocket(
     wsRef.current?.close()
     wsRef.current = null
     setIsConnected(false)
+    setIsThinking(false)
+    setStatusText('')
+  }, [])
+
+  const resetThinking = useCallback(() => {
+    setIsThinking(false)
+    setStatusText('')
   }, [])
 
   const sendMessage = useCallback((content: string, agentSlug?: string) => {
@@ -113,5 +124,6 @@ export function useWebSocket(
     sendMessage,
     connect,
     disconnect,
+    resetThinking,
   }
 }

@@ -14,7 +14,31 @@
       "Bash(ls venv *)",
       "Bash(.venv/Scripts/pip install *)",
       "Bash(ls .venv/Scripts/)",
-      "Bash(ls .venv/bin/)"
+      "Bash(ls .venv/bin/)",
+      "Bash(python -c \"import PyPDF2; import docx; print\\('imports OK'\\)\")",
+      "Bash(findstr \"Location\")",
+      "Bash(where python *)",
+      "Bash(pip --version)",
+      "Bash(python -m pip install PyPDF2 python-docx)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('agents/bot.py', encoding='utf-8'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
+      "Bash(python -m pip show pdf2image Pillow)",
+      "Bash(C:\\\\Projects\\\\discord-agent\\\\venv\\\\Scripts\\\\python.exe -c \"import pdf2image; from PIL import Image; print\\('venv imports OK'\\)\")",
+      "PowerShell(& \"C:\\\\Projects\\\\discord-agent\\\\venv\\\\Scripts\\\\python.exe\" -c \"import pdf2image; from PIL import Image; print\\('venv imports OK'\\)\")",
+      "PowerShell(& \"C:\\\\Projects\\\\discord-agent\\\\venv\\\\Scripts\\\\python.exe\" -c \"import PyPDF2; import docx; print\\('PyPDF2 and docx OK'\\)\")",
+      "Read(//c/poppler/poppler-25.12.0/Library/bin/**)",
+      "Bash(\"venv/Scripts/python.exe\" -c \"import ast; ast.parse\\(open\\('agents/bot.py', encoding='utf-8'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
+      "Read(//c/Users/Jerm/.claude/agents/**)",
+      "Bash(dir \"C:\\\\Users\\\\Jerm\\\\.claude\\\\agents\\\\\" /b 2>&1)",
+      "Bash(Get-ChildItem \"C:\\\\Users\\\\Jerm\\\\.claude\\\\agents\\\\\" -Filter \"*.md\" | Select-Object -ExpandProperty Name)",
+      "Bash(python -c \"import sys; sys.path.insert\\(0, '.'\\); from memory.memory_manager import log_conversation_turn, search_conversations, cleanup_old_conversation_log; print\\('imports OK'\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(python3 -c ' *)",
+      "Bash(git -C \"/c/Users/Jerm/.claude\" status)",
+      "Bash(git push *)",
+      "mcp__cocoindex-code__search"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\Jerm\\.claude\\agents"
     ]
   }
 }

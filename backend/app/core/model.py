@@ -1,13 +1,15 @@
 import json
 from anthropic import Anthropic
-from app.core.config import MAIN_MODEL, BACKGROUND_MODEL
+from app.core.config import MAIN_MODEL, BACKGROUND_MODEL, ANTHROPIC_API_KEY
 
 # ── Anthropic client ─────────────────────────────────────────
-client = Anthropic()
+client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
 # ── Background model functions ───────────────────────────────
-async def call_background_model(prompt: str, max_tokens: int = 1500) -> str:
+async def call_background_model(
+    prompt: str, max_tokens: int = 1500
+) -> str:
     response = client.messages.create(
         model=BACKGROUND_MODEL,
         max_tokens=max_tokens,
@@ -17,7 +19,7 @@ async def call_background_model(prompt: str, max_tokens: int = 1500) -> str:
 
 
 async def call_background_model_json(
-    prompt: str
+    prompt: str,
 ) -> dict | list | None:
     """
     Calls Haiku and parses the JSON response.

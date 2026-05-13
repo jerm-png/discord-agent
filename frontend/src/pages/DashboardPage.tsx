@@ -63,7 +63,7 @@ export function DashboardPage() {
     }
   }, [])
 
-  const { isConnected, isThinking, statusText, sendMessage, connect, disconnect } =
+  const { isConnected, isThinking, statusText, sendMessage, connect, disconnect, resetThinking } =
     useWebSocket(handleWSMessage)
 
   // Load workspaces on mount
@@ -140,6 +140,11 @@ export function DashboardPage() {
       )
     } catch (e) {
       console.error('Action failed:', e)
+    } finally {
+      // The HTTP action runs the goal flow to completion on the backend, but
+      // the WebSocket path may not always emit a terminal `done`/`response`.
+      // Force-reset so the thinking indicator can never get stuck.
+      resetThinking()
     }
   }
 
