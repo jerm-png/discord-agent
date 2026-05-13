@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.core.auth import require_auth
+from app.core.auth import CurrentUser, get_current_user
 from app.core.config import WORKSPACES
 from app.db.threads import (
     archive_thread,
@@ -22,39 +22,60 @@ class ThreadRename(BaseModel):
     title: str
 
 
+def _workspace_accessible(workspace_slug: str, user_id: str) -> bool:
+    """
+    Mirrors the visibility rules in workspaces.py: Parker only operates in
+    his own workspace; admin operates in everything except parker.
+    """
+    if workspace_slug not in WORKSPACES:
+        return False
+    restricted = WORKSPACES[workspace_slug].get("user_restricted")
+    if restricted is not None:
+        return user_id == restricted
+    return user_id != "parker"
+
+
 # Workspace-scoped routes — mounted under /workspaces
 @router.get("/{workspace_slug}/threads")
 async def get_workspace_threads(
     workspace_slug: str,
     status: str = "active",
-    _: str = Depends(require_auth),
+    user: CurrentUser = Depends(get_current_user),
 ):
     if workspace_slug not in WORKSPACES:
         raise HTTPException(
             status_code=404,
-            detail=f"Workspace '{workspace_slug}' not found"
+            detail=f"Workspace '{workspace_slug}' not found",
         )
-    return {"threads": list_threads(workspace_slug, status=status)}
+    if not _workspace_accessible(workspace_slug, user["user_id"]):
+        raise HTTPException(status_code=403, detail="Workspace not accessible")
+    return {
+        "threads": list_threads(
+            workspace_slug, user["user_id"], status=status
+        )
+    }
 
 
 @router.post("/{workspace_slug}/threads", status_code=201)
 async def create_workspace_thread(
     workspace_slug: str,
     body: ThreadCreate,
-    _: str = Depends(require_auth),
+    user: CurrentUser = Depends(get_current_user),
 ):
     if workspace_slug not in WORKSPACES:
         raise HTTPException(
             status_code=404,
-            detail=f"Workspace '{workspace_slug}' not found"
+            detail=f"Workspace '{workspace_slug}' not found",
         )
+    if not _workspace_accessible(workspace_slug, user["user_id"]):
+        raise HTTPException(status_code=403, detail="Workspace not accessible")
     title = body.title.strip()
     if not title:
         raise HTTPException(
             status_code=400,
-            detail="Thread title cannot be empty"
+            detail="Thread title cannot be empty",
         )
-    thread = create_thread(workspace_slug, title)
+    thread = create_thread(workspace_slug, title, user["user_id"])
     return {"thread": thread}
 
 
@@ -63,14 +84,11 @@ async def create_workspace_thread(
 @router.get("/threads/{thread_id}")
 async def get_thread_by_id(
     thread_id: str,
-    _: str = Depends(require_auth),
+    user: CurrentUser = Depends(get_current_user),
 ):
-    thread = get_thread(thread_id)
+    thread = get_thread(thread_id, user_id=user["user_id"])
     if not thread:
-        raise HTTPException(
-            status_code=404,
-            detail="Thread not found"
-        )
+        raise HTTPException(status_code=404, detail="Thread not found")
     return {"thread": thread}
 
 
@@ -78,32 +96,26 @@ async def get_thread_by_id(
 async def update_thread(
     thread_id: str,
     body: ThreadRename,
-    _: str = Depends(require_auth),
+    user: CurrentUser = Depends(get_current_user),
 ):
     title = body.title.strip()
     if not title:
         raise HTTPException(
             status_code=400,
-            detail="Thread title cannot be empty"
+            detail="Thread title cannot be empty",
         )
-    thread = rename_thread(thread_id, title)
+    thread = rename_thread(thread_id, title, user["user_id"])
     if not thread:
-        raise HTTPException(
-            status_code=404,
-            detail="Thread not found"
-        )
+        raise HTTPException(status_code=404, detail="Thread not found")
     return {"thread": thread}
 
 
 @router.delete("/threads/{thread_id}")
 async def delete_thread(
     thread_id: str,
-    _: str = Depends(require_auth),
+    user: CurrentUser = Depends(get_current_user),
 ):
-    ok = archive_thread(thread_id)
+    ok = archive_thread(thread_id, user["user_id"])
     if not ok:
-        raise HTTPException(
-            status_code=404,
-            detail="Thread not found"
-        )
+        raise HTTPException(status_code=404, detail="Thread not found")
     return {"message": "Thread archived"}

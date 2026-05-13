@@ -67,8 +67,9 @@ async def chat_websocket(
     memory_mode = ws_config["memory_mode"]
     project_tag = ws_config.get("project_tag")
 
-    # Thread validation
-    thread = get_thread(thread_id)
+    # Thread validation — user_id filter ensures the requested thread
+    # actually belongs to the authenticated user.
+    thread = get_thread(thread_id, user_id=user_id)
     if not thread or thread["workspace"] != workspace_slug:
         await websocket.close(code=1008)
         return
@@ -158,6 +159,14 @@ async def get_thread_messages(
     thread_id: str,
     user: CurrentUser = Depends(get_current_user),
 ):
+    # Verify the thread exists AND belongs to this user. Without this a
+    # caller could probe other users' thread ids — even though the
+    # conversation_history lookup is keyed by (user_id, thread_id) and
+    # would return an empty list, a 404 is the truthful response.
+    thread = get_thread(thread_id, user_id=user["user_id"])
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+
     from app.core.state import conversation_history
     key = (user["user_id"], thread_id)
     history = conversation_history.get(key, [])
@@ -208,10 +217,6 @@ async def thread_action(
     body: ThreadActionRequest,
     user: CurrentUser = Depends(get_current_user),
 ):
-    thread = get_thread(thread_id)
-    if not thread:
-        raise HTTPException(status_code=404, detail="Thread not found")
-
     if body.action not in ALLOWED_ACTIONS:
         raise HTTPException(
             status_code=400,
@@ -220,6 +225,12 @@ async def thread_action(
 
     user_id = user["user_id"]
     author_display_name = "Parker" if user_id == "parker" else "Jerm"
+
+    # User-scoped fetch — 404s on threads that aren't owned by the
+    # authenticated user even if the id is valid.
+    thread = get_thread(thread_id, user_id=user_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
 
     workspace_slug = thread["workspace"]
     ws_config = WORKSPACES.get(workspace_slug, {})
