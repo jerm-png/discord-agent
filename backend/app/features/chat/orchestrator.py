@@ -1578,13 +1578,33 @@ async def execute_goal(
                     # goal), which surfaces unrelated chit-chat memories.
                     # Using the goal anchors the semantic search to what the
                     # user actually asked for.
+                    #
+                    # min_similarity=0.3 drops the long tail of low-relevance
+                    # results that ChromaDB returns regardless of query —
+                    # without this an apple-pie goal can surface a rabbit
+                    # memory just because it's the nearest neighbour in
+                    # embedding space.
                     memories = await loop.run_in_executor(
                         None,
                         lambda q=goal: get_relevant_memories(
-                            q, channel_name=channel_name
+                            q,
+                            channel_name=channel_name,
+                            min_similarity=0.3,
                         )
                     )
-                    mem_text = format_memory_for_prompt(memories)
+                    # Stale-flags can be non-empty even when every memory
+                    # layer is empty, so format_memory_for_prompt would still
+                    # return a non-empty string and bypass the "No relevant
+                    # memories" fallback. Treat as empty unless an actual
+                    # layer has content.
+                    has_real_memories = any(
+                        memories.get(layer)
+                        for layer in ("strategic", "operational", "analytical")
+                    )
+                    mem_text = (
+                        format_memory_for_prompt(memories)
+                        if has_real_memories else ""
+                    )
                     execution_context[user_id]["steps"].append({
                         "step": step_num, "type": "query_memory",
                         "content": mem_text or "No relevant memories found."

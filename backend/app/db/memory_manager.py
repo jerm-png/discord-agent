@@ -1,3 +1,4 @@
+import math
 import sqlite3
 import json
 import re
@@ -998,7 +999,7 @@ def archive_memory(layer, memory_id, reason,
 # ============================================================
 
 def get_relevant_memories(query, max_results=TOP_N_MEMORIES,
-                          channel_name=None):
+                          channel_name=None, min_similarity=0.0):
     """
     Retrieves semantically relevant memories with bidirectional
     isolation for channels in HEALTH_ISOLATION_SET.
@@ -1017,11 +1018,30 @@ def get_relevant_memories(query, max_results=TOP_N_MEMORIES,
     Candidates are fetched and filtered post-retrieval: any doc
     whose project_tag is in HEALTH_ISOLATION_SET is excluded.
     Global memories (project_tag absent → None) correctly pass.
+
+    min_similarity: when > 0, drop results whose cosine similarity to
+    the query falls below this threshold. ChromaDB uses L2 distance by
+    default and these collections store sentence-transformers
+    (all-MiniLM-L6-v2) embeddings which are approximately unit-norm,
+    so we convert similarity to an L2 distance bound via the identity
+    sim ≈ 1 - L2² / 2 — i.e. max_distance = sqrt(2 * (1 - sim)).
+    Used by goal-mode query_memory steps to keep semantically near
+    matches but reject the long tail of low-similarity results that
+    ChromaDB always returns (e.g. unrelated chit-chat surfacing on a
+    cooking goal).
     """
     query_embedding = embedding_model.encode(query).tolist()
     results = {}
     is_isolated = channel_name in HEALTH_ISOLATION_SET
     is_restricted = channel_name in HEALTH_ISOLATION_SET
+
+    apply_threshold = min_similarity > 0
+    if apply_threshold:
+        max_distance = math.sqrt(max(0.0, 2.0 * (1.0 - min_similarity)))
+        include_fields = ["documents", "metadatas", "distances"]
+    else:
+        max_distance = None
+        include_fields = ["documents", "metadatas"]
 
     for layer_name, collection in [
         ("strategic", strategic_collection),
@@ -1043,10 +1063,18 @@ def get_relevant_memories(query, max_results=TOP_N_MEMORIES,
                     query_embeddings=[query_embedding],
                     n_results=min(max_results, count),
                     where={"project_tag": {"$eq": channel_name}},
-                    include=["documents", "metadatas"]
+                    include=include_fields,
                 )
                 docs = search_results["documents"][0]
                 metas = search_results["metadatas"][0]
+                if apply_threshold:
+                    dists = search_results["distances"][0]
+                    keep = [
+                        i for i, d in enumerate(dists)
+                        if d <= max_distance
+                    ]
+                    docs = [docs[i] for i in keep]
+                    metas = [metas[i] for i in keep]
                 pairs = sorted(
                     zip(docs, metas),
                     key=lambda p: (
@@ -1078,10 +1106,18 @@ def get_relevant_memories(query, max_results=TOP_N_MEMORIES,
                 search_results = collection.query(
                     query_embeddings=[query_embedding],
                     n_results=fetch_n,
-                    include=["documents", "metadatas"]
+                    include=include_fields,
                 )
                 docs = search_results["documents"][0]
                 metas = search_results["metadatas"][0]
+                if apply_threshold:
+                    dists = search_results["distances"][0]
+                    keep = [
+                        i for i, d in enumerate(dists)
+                        if d <= max_distance
+                    ]
+                    docs = [docs[i] for i in keep]
+                    metas = [metas[i] for i in keep]
                 pairs = sorted(
                     zip(docs, metas),
                     key=lambda p: (
