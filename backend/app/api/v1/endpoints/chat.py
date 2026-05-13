@@ -205,7 +205,10 @@ async def get_thread_messages(
             "id": f"msg-{i}",
             "role": role,
             "content": content,
-            "timestamp": "",
+            # ISO timestamp written by the orchestrator at append time.
+            # Pre-migration rows without the field fall back to "" so the
+            # frontend's formatTime guard renders nothing (no "Invalid date").
+            "timestamp": msg.get("timestamp", "") or "",
         })
 
     return {"messages": messages}

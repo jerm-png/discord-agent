@@ -237,19 +237,31 @@ def _saveable_history(history: list) -> list:
     ][-50:]
 
 
+def _now_iso() -> str:
+    """UTC ISO 8601 timestamp with offset, e.g. 2026-05-13T14:23:45+00:00.
+    Used as the canonical timestamp on every conversation_history entry
+    so the /messages endpoint can return real times to the frontend."""
+    from datetime import timezone as _tz
+    return datetime.now(_tz.utc).isoformat()
+
+
 def append_history_turn(
-    user_id: str, context_id: str, role: str, content: str
+    user_id: str, context_id: str, role: str, content: str,
+    timestamp: str | None = None,
 ) -> None:
     """Append a single turn to the in-memory conversation_history for
     (user_id, context_id). Used by goal-mode paths that bypass
     process_user_message — !goal trigger, run_goal_planning's plan emission,
-    execute_goal's final draft, and the cancel action confirmation."""
+    execute_goal's final draft, and the cancel action confirmation.
+    Each entry now carries an ISO timestamp so reloaded threads can
+    render proper times instead of empty strings."""
     hist_key = (user_id, context_id)
     if hist_key not in conversation_history:
         conversation_history[hist_key] = []
     conversation_history[hist_key].append({
         "role": role,
         "content": content,
+        "timestamp": timestamp or _now_iso(),
     })
 
 
@@ -2568,16 +2580,19 @@ async def process_user_message(
             conversation_history[_hist_key].append({
                 "role": "user",
                 "content": content_blocks,
+                "timestamp": _now_iso(),
             })
         else:
             conversation_history[_hist_key].append({
                 "role": "user",
                 "content": full_message,
+                "timestamp": _now_iso(),
             })
     else:
         conversation_history[_hist_key].append({
             "role": "user",
             "content": full_message,
+            "timestamp": _now_iso(),
         })
 
     await ws_manager.send(session_id, {
@@ -2673,7 +2688,14 @@ async def process_user_message(
                         "cache_control": {"type": "ephemeral"},
                     }
                 ],
-                "messages": conversation_history[_hist_key],
+                # Strip the timestamp field before sending — Anthropic's
+                # messages schema rejects extra keys. Timestamps live on
+                # the stored history for the /messages endpoint and the
+                # frontend; the model itself doesn't need them.
+                "messages": [
+                    {k: v for k, v in m.items() if k in ("role", "content")}
+                    for m in conversation_history[_hist_key]
+                ],
             }
             if active_tools:
                 api_params["tools"] = active_tools
@@ -2774,7 +2796,8 @@ async def process_user_message(
             if response.stop_reason == "tool_use":
                 conversation_history[_hist_key].append({
                     "role": "assistant",
-                    "content": response.content
+                    "content": response.content,
+                    "timestamp": _now_iso(),
                 })
                 tool_results, tool_call_count = \
                     await process_tool_calls(
@@ -2784,7 +2807,8 @@ async def process_user_message(
                     )
                 conversation_history[_hist_key].append({
                     "role": "user",
-                    "content": tool_results
+                    "content": tool_results,
+                    "timestamp": _now_iso(),
                 })
                 continue
 
@@ -2794,7 +2818,8 @@ async def process_user_message(
 
             conversation_history[_hist_key].append({
                 "role": "assistant",
-                "content": final_response_text
+                "content": final_response_text,
+                "timestamp": _now_iso(),
             })
             break
 
@@ -2866,6 +2891,7 @@ async def process_user_message(
                     {
                         "role": HISTORY_SUMMARY_ROLE,
                         "content": _merged,
+                        "timestamp": _now_iso(),
                     }
                 ] + _raw_tail
             else:
