@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
@@ -194,20 +195,37 @@ async def thread_action(
     action = body.action
 
     if action == "approve":
-        await execute_goal(
+        from app.core.state import pending_goals, execution_context
+        pg = pending_goals.get("drift-owner")
+        if not pg:
+            raise HTTPException(status_code=400, detail="No pending goal to approve.")
+        if pg.get("status") != "awaiting_approval":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Goal is not awaiting approval (status: {pg.get('status')}).",
+            )
+        pg["status"] = "executing"
+        pg["current_step"] = 0
+        execution_context.pop("drift-owner", None)
+        # Fire-and-forget: execute_goal runs the plan step-by-step and emits
+        # WebSocket frames as it progresses. Awaiting it would hold the HTTP
+        # response open for the entire goal duration.
+        asyncio.create_task(execute_goal(
             user_id="drift-owner",
             author_display_name="Jerm",
-            skip_gate_for_step=None,
-        )
+        ))
 
     elif action == "cancel":
         from app.core.state import pending_goals, gate_pending, execution_context
         pending_goals.pop("drift-owner", None)
         gate_pending.pop("drift-owner", None)
         execution_context.pop("drift-owner", None)
+        # Emit as `response` so handleWSMessage adds it to the chat as an
+        # assistant message. `status` frames only update the thinking indicator
+        # and never render in the message list.
         await ws_manager.send(thread_id, {
-            "type": "status",
-            "text": "Goal cancelled.",
+            "type": "response",
+            "text": "❌ Goal cancelled.",
         })
 
     elif action in ("continue", "adjust", "skip", "retry"):
