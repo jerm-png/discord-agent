@@ -8,10 +8,12 @@ from app.core.config import WORKSPACES
 from app.core.ws_manager import ws_manager
 from app.db.threads import get_thread, update_thread_activity
 from app.features.chat.orchestrator import (
+    _parse_goal_trigger,
     execute_goal,
     process_user_message,
     resume_goal_from_gate,
     run_goal_modification,
+    run_goal_planning,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,6 +74,26 @@ async def chat_websocket(
                 continue
 
             update_thread_activity(thread_id)
+
+            # Goal-mode triggers: !goal / !plan / !research route to the
+            # planner so a `plan` WebSocket frame is emitted (which the
+            # frontend renders with inline approve/modify/cancel buttons).
+            if content.startswith("!"):
+                stripped = content[1:].lstrip()
+                goal_trigger = _parse_goal_trigger(stripped)
+                if goal_trigger:
+                    _, goal_text = goal_trigger
+                    await run_goal_planning(
+                        goal_text=goal_text,
+                        user_id="drift-owner",
+                        author_display_name="Jerm",
+                        session_id=thread_id,
+                        memory_mode=memory_mode,
+                        project_tag=project_tag,
+                        channel_name=workspace_slug,
+                    )
+                    await ws_manager.send(thread_id, {"type": "done"})
+                    continue
 
             await process_user_message(
                 user_message=content,
