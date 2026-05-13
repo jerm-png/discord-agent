@@ -1226,8 +1226,8 @@ async def _replan_remaining_steps(
     pg["status"] = "gated"
 
     step_lines = "\n".join(
-        f"• Step {s.get('step_number', '?')} ({s.get('type', '?')}): "
-        f"{s.get('description', '')}"
+        f"- **Step {s.get('step_number', '?')}** "
+        f"({s.get('type', '?')}): {s.get('description', '')}"
         for s in new_steps
     )
     # Re-arm a gate so the user can confirm the revised plan before execution
@@ -1243,9 +1243,8 @@ async def _replan_remaining_steps(
     await ws_manager.send(session_id, {
         "type": "gate",
         "text": (
-            f"📋 Adjusted plan:\n{step_lines}\n\n"
-            "Click Continue to run with these steps, "
-            "Adjust again, or Cancel to abort."
+            f"📋 **Adjusted plan**\n\n"
+            f"{step_lines}"
         )
     })
 
@@ -1417,10 +1416,10 @@ async def execute_goal(
             if step_type == "draft" and i != skip_gate_for_step:
                 findings = execution_context.get(user_id, {}).get("steps", [])
                 bullets = "\n".join(
-                    f"• Step {f['step']} ({f['type']}): "
+                    f"- **Step {f['step']}** ({f['type']}): "
                     f"{f['content'][:120].rstrip()}..."
                     for f in findings
-                ) or "No findings gathered yet."
+                ) or "_No findings gathered yet._"
 
                 pg["status"] = "gated"
                 pg["current_step"] = i
@@ -1433,9 +1432,8 @@ async def execute_goal(
                 await ws_manager.send(session_id, {
                     "type": "gate",
                     "text": (
-                        f"📝 Ready to draft the final output based on:\n"
-                        f"{bullets}\n\n"
-                        "Click Continue to generate the draft or Cancel to abort."
+                        f"📝 **Ready to draft the final output**\n\n"
+                        f"**Based on:**\n\n{bullets}"
                     )
                 })
                 return
@@ -1489,11 +1487,11 @@ async def execute_goal(
                             goal, result_str
                         )
                         remaining_lines = "\n".join(
-                            f"• Step {s.get('step_number', '?')} "
+                            f"- **Step {s.get('step_number', '?')}** "
                             f"({s.get('type', '?')}): "
                             f"{s.get('description', '')}"
                             for s in steps[i + 1:]
-                        ) or "No remaining steps."
+                        ) or "_No remaining steps._"
 
                         pg["status"] = "gated"
                         pg["current_step"] = i + 1
@@ -1506,21 +1504,23 @@ async def execute_goal(
                         await ws_manager.send(session_id, {
                             "type": "gate",
                             "text": (
-                                f"🔍 Step {step_num} complete — "
-                                f"here's what I found:\n{summary}\n\n"
-                                f"Remaining steps:\n{remaining_lines}\n\n"
-                                "Does this look right? Reply:\n"
-                                "Continue — proceed with remaining steps\n"
-                                "Adjust — modify the remaining plan\n"
-                                "Cancel — abort the goal"
+                                f"🔍 **Step {step_num} complete**\n\n"
+                                f"**Findings:**\n\n{summary}\n\n"
+                                f"**Remaining steps:**\n\n{remaining_lines}"
                             )
                         })
                         return
 
                 elif step_type == "query_memory":
+                    # Scope memory retrieval to the goal text rather than the
+                    # planner's per-step query. Planner queries can be very
+                    # narrow or off-topic (e.g. "baking" for an apple-pie
+                    # goal), which surfaces unrelated chit-chat memories.
+                    # Using the goal anchors the semantic search to what the
+                    # user actually asked for.
                     memories = await loop.run_in_executor(
                         None,
-                        lambda q=step_query: get_relevant_memories(
+                        lambda q=goal: get_relevant_memories(
                             q, channel_name=channel_name
                         )
                     )
@@ -1791,7 +1791,7 @@ async def execute_goal(
             except Exception as e:
                 # ── STEP FAILURE GATE ────────────────────────────────────
                 remaining_descs = "\n".join(
-                    f"• Step {s.get('step_number', '?')} "
+                    f"- **Step {s.get('step_number', '?')}** "
                     f"({s.get('type', '?')}): {s.get('description', '')}"
                     for s in steps[i + 1:]
                 )
@@ -1806,12 +1806,12 @@ async def execute_goal(
                 await ws_manager.send(session_id, {
                     "type": "gate",
                     "text": (
-                        f"⚠️ Step {step_num} failed: {str(e)[:200]}"
-                        + (f"\n\nRemaining steps:\n{remaining_descs}" if remaining_descs else "")
-                        + "\n\nReply:\n"
-                        "Skip — skip this step and continue\n"
-                        "Retry — try this step again\n"
-                        "Cancel — abort the goal"
+                        f"⚠️ **Step {step_num} failed**\n\n"
+                        f"{str(e)[:200]}"
+                        + (
+                            f"\n\n**Remaining steps:**\n\n{remaining_descs}"
+                            if remaining_descs else ""
+                        )
                     )
                 })
                 return
