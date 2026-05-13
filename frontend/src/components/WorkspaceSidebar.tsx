@@ -5,8 +5,11 @@ import {
   Heart,
   Code2,
   MessageSquare,
+  Power,
   Terminal,
 } from 'lucide-react'
+import { logout } from '../api/client'
+import { useAuthStore } from '../store/authStore'
 import type { Workspace } from '../api/client'
 import type { ReactNode } from 'react'
 
@@ -45,6 +48,19 @@ export function WorkspaceSidebar({
   activeWorkspace,
   onWorkspaceChange,
 }: WorkspaceSidebarProps) {
+  const clearUser = useAuthStore((s) => s.clearUser)
+
+  const handleLogout = async () => {
+    try {
+      await logout()
+    } catch (e) {
+      // Even if the server clear fails, drop the client-side auth so
+      // the UI returns to LoginPage; the cookie will expire on its own.
+      console.error('Logout request failed:', e)
+    }
+    clearUser()
+  }
+
   return (
     <aside className="w-[220px] h-full bg-gradient-to-b from-[#0a0a10] to-[#06060a] flex flex-col relative scanlines industrial-panel">
       {/* Right edge thick divider */}
@@ -135,8 +151,8 @@ export function WorkspaceSidebar({
         })}
       </nav>
 
-      {/* Footer - recessed status */}
-      <div className="p-4 relative industrial-inset border-t-2 border-[#1a1a22]">
+      {/* Footer - recessed status + logout */}
+      <div className="p-4 relative industrial-inset border-t-2 border-[#1a1a22] space-y-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 bg-neon-green pulse-dot-green" />
@@ -148,6 +164,22 @@ export function WorkspaceSidebar({
             <span className="font-mono text-[9px] text-neon-cyan/70">{`{SYS_OK}`}</span>
           </div>
         </div>
+
+        <button
+          onClick={handleLogout}
+          title="Log out"
+          className={cn(
+            'w-full flex items-center justify-center gap-2 py-2',
+            'industrial-raised border border-neon-pink/30 text-neon-pink/70',
+            'hover:text-neon-pink hover:border-neon-pink/60 hover:glow-pink',
+            'transition-all cursor-pointer',
+          )}
+        >
+          <Power className="w-3.5 h-3.5" />
+          <span className="font-mono text-[10px] uppercase tracking-wider font-bold">
+            Log Out
+          </span>
+        </button>
       </div>
     </aside>
   )

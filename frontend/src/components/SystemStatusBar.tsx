@@ -1,14 +1,26 @@
 import { useState, useEffect } from 'react'
-import { Wifi, Database, Cpu, Activity, Zap, Shield, ShieldAlert } from 'lucide-react'
+import { Wifi, Database, Cpu, Activity, Zap, Shield, ShieldAlert, Power } from 'lucide-react'
 import { useAuthStore } from '../store/authStore'
-import { getUnreviewedFlags } from '../api/client'
+import { getUnreviewedFlags, logout } from '../api/client'
 import type { ContentFlag } from '../api/client'
 import { FlagPanel } from './FlagPanel'
 import { cn } from '../lib/utils'
 
 export function SystemStatusBar() {
   const role = useAuthStore((s) => s.role)
+  const userId = useAuthStore((s) => s.userId)
+  const clearUser = useAuthStore((s) => s.clearUser)
   const isAdmin = role === 'admin'
+  const isParker = userId === 'parker'
+
+  const handleLogout = async () => {
+    try {
+      await logout()
+    } catch (e) {
+      console.error('Logout request failed:', e)
+    }
+    clearUser()
+  }
   const [flags, setFlags] = useState<ContentFlag[]>([])
   const [panelOpen, setPanelOpen] = useState(false)
 
@@ -188,6 +200,21 @@ export function SystemStatusBar() {
             {time || '00:00:00'}
           </span>
         </div>
+
+        {isParker && (
+          <button
+            onClick={handleLogout}
+            title="Log out"
+            className={cn(
+              'flex items-center gap-2 px-3 py-1 industrial-inset border transition-all cursor-pointer',
+              'border-neon-pink/30 text-neon-pink/70',
+              'hover:text-neon-pink hover:border-neon-pink/60',
+            )}
+          >
+            <Power className="w-3 h-3" />
+            <span className="font-bold">LOGOUT</span>
+          </button>
+        )}
       </div>
 
       {isAdmin && panelOpen && (
