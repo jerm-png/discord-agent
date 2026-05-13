@@ -159,6 +159,10 @@ WORKSPACES = {
         "threaded": True,
         "isolated": False,
         "entity_memory": False,
+        # Skip the strategic layer during extract_and_store_memories so
+        # casual Terminal chat does not pollute the strategic store.
+        # Other layers (operational, experience) still flow normally.
+        "skip_layers": ["strategic"],
         "personality": (
             "You are operating in Terminal — the general "
             "catch-all workspace. Adapt to the conversation. "

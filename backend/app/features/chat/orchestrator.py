@@ -711,6 +711,18 @@ Return empty arrays if nothing meaningful to store."""
         ).replace("```", "").strip()
         extracted = json.loads(clean)
 
+        # Honor the workspace's skip_layers config — listed layers are
+        # dropped before the rubric pass so they never reach the saver.
+        # Scoped to extract_and_store_memories only; other memory paths
+        # (save_memory goal step, session-state, action-summary, etc.)
+        # are unaffected.
+        skip_layers = set(
+            WORKSPACES.get(channel_name, {}).get("skip_layers", [])
+        )
+        for _layer in skip_layers:
+            if _layer in extracted:
+                extracted[_layer] = [] if isinstance(extracted[_layer], list) else {}
+
         strategic_count = 0
         operational_count = 0
 
