@@ -76,6 +76,137 @@ export function ChatPanel({
   const [waveHeights, setWaveHeights] = useState<number[]>(Array(50).fill(0.3))
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
+  // ── Voice-to-text (Web Speech API) ────────────────────────────────
+  const [isRecording, setIsRecording] = useState(false)
+  const [voiceTooltip, setVoiceTooltip] = useState('')
+  // Loose ref type — lib.dom's SpeechRecognition interface exists but the
+  // constructor isn't a guaranteed global (vendor-prefixed in Chrome/Safari),
+  // and pinning to the strict interface trips ResultList iterator/error-code
+  // mismatches that don't matter for our duck-typed usage.
+  const recognitionRef = useRef<{
+    start: () => void
+    stop: () => void
+    abort: () => void
+  } | null>(null)
+  const finalTranscriptRef = useRef('')
+  const silenceTimerRef = useRef<number | null>(null)
+
+  const showVoiceTooltip = (msg: string) => {
+    setVoiceTooltip(msg)
+    window.setTimeout(() => {
+      setVoiceTooltip((current) => (current === msg ? '' : current))
+    }, 3000)
+  }
+
+  const clearSilenceTimer = () => {
+    if (silenceTimerRef.current !== null) {
+      window.clearTimeout(silenceTimerRef.current)
+      silenceTimerRef.current = null
+    }
+  }
+
+  const stopRecording = () => {
+    clearSilenceTimer()
+    try {
+      recognitionRef.current?.stop()
+    } catch {
+      // recognition may already be stopping — ignore
+    }
+  }
+
+  const resetSilenceTimer = () => {
+    clearSilenceTimer()
+    silenceTimerRef.current = window.setTimeout(() => {
+      // Auto-stop after a few seconds of silence; the recognition's onend
+      // handler will commit the final transcript into inputValue.
+      stopRecording()
+    }, 3000)
+  }
+
+  const startRecording = () => {
+    // Read through `any` to avoid the lib.dom vs vendor-prefix mismatch.
+    const w = window as unknown as {
+      SpeechRecognition?: new () => unknown
+      webkitSpeechRecognition?: new () => unknown
+    }
+    const Ctor = w.SpeechRecognition || w.webkitSpeechRecognition
+    if (!Ctor) {
+      showVoiceTooltip('Voice input not supported in this browser')
+      return
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rec: any = new Ctor()
+    rec.continuous = true
+    rec.interimResults = true
+    rec.lang = 'en-US'
+
+    finalTranscriptRef.current = ''
+
+    rec.onresult = (event: { results: ArrayLike<{ isFinal: boolean; 0: { transcript: string } }> }) => {
+      let finalText = ''
+      let interimText = ''
+      for (let i = 0; i < event.results.length; i++) {
+        const r = event.results[i]
+        const transcript = r[0].transcript
+        if (r.isFinal) finalText += transcript
+        else interimText += transcript
+      }
+      finalTranscriptRef.current = finalText
+      // Live display: final + interim. Textarea is styled italic/dim
+      // while isRecording is true so the user knows it's a draft.
+      setInputValue((finalText + interimText).trimStart())
+      resetSilenceTimer()
+    }
+
+    rec.onerror = (event: { error: string }) => {
+      if (
+        event.error === 'not-allowed' ||
+        event.error === 'service-not-allowed'
+      ) {
+        showVoiceTooltip('Microphone access denied')
+      } else if (event.error === 'no-speech') {
+        // Common and expected — onend will fire next; no tooltip.
+      } else {
+        showVoiceTooltip(`Voice error: ${event.error}`)
+      }
+    }
+
+    rec.onend = () => {
+      clearSilenceTimer()
+      setIsRecording(false)
+      setInputValue(finalTranscriptRef.current.trim())
+      recognitionRef.current = null
+    }
+
+    recognitionRef.current = rec
+    try {
+      rec.start()
+      setIsRecording(true)
+      resetSilenceTimer()
+    } catch {
+      showVoiceTooltip('Could not start voice input')
+      recognitionRef.current = null
+    }
+  }
+
+  const handleMicClick = () => {
+    if (isRecording) stopRecording()
+    else startRecording()
+  }
+
+  useEffect(() => {
+    // On unmount, make sure any in-flight recognition is aborted so the
+    // mic indicator doesn't stay green in the OS tray.
+    return () => {
+      clearSilenceTimer()
+      try {
+        recognitionRef.current?.abort()
+      } catch {
+        // ignore
+      }
+    }
+  }, [])
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, isThinking])
@@ -497,9 +628,30 @@ export function ChatPanel({
             <button className="p-2.5 industrial-inset border border-muted-foreground/20 text-muted-foreground hover:text-neon-pink hover:border-neon-pink/40 transition-all group">
               <Paperclip className="w-4 h-4 group-hover:rotate-45 transition-transform" />
             </button>
-            <button className="p-2.5 industrial-inset border border-muted-foreground/20 text-muted-foreground hover:text-neon-green hover:border-neon-green/40 transition-all">
-              <Mic className="w-4 h-4" />
-            </button>
+            <div className="relative">
+              {voiceTooltip && (
+                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 whitespace-nowrap px-2 py-1 industrial-inset border border-neon-pink/40 font-mono text-[10px] text-neon-pink glow-pink-text z-10">
+                  {voiceTooltip}
+                </div>
+              )}
+              <button
+                onClick={handleMicClick}
+                title={isRecording ? 'Stop recording' : 'Voice input'}
+                className={cn(
+                  'p-2.5 industrial-inset border transition-all',
+                  isRecording
+                    ? 'border-neon-pink/60 text-neon-pink glow-pink'
+                    : 'border-muted-foreground/20 text-muted-foreground hover:text-neon-green hover:border-neon-green/40',
+                )}
+              >
+                <Mic
+                  className={cn(
+                    'w-4 h-4',
+                    isRecording && 'animate-pulse',
+                  )}
+                />
+              </button>
+            </div>
           </div>
 
           <div className="flex-1 relative">
@@ -507,14 +659,17 @@ export function ChatPanel({
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Enter command..."
+              placeholder={isRecording ? 'Listening...' : 'Enter command...'}
               rows={1}
+              readOnly={isRecording}
               className={cn(
-                'w-full px-4 py-3 industrial-inset border-2 border-neon-cyan/30',
-                'text-foreground placeholder:text-muted-foreground/40',
+                'w-full px-4 py-3 industrial-inset border-2',
+                'placeholder:text-muted-foreground/40',
                 'font-sans text-sm resize-none',
-                'focus:outline-none focus:border-neon-pink/50 focus:shadow-[0_0_12px_rgba(255,42,109,0.2)]',
-                'transition-all duration-200'
+                'focus:outline-none transition-all duration-200',
+                isRecording
+                  ? 'border-neon-pink/50 italic text-muted-foreground/70 shadow-[0_0_12px_rgba(255,42,109,0.15)]'
+                  : 'border-neon-cyan/30 text-foreground focus:border-neon-pink/50 focus:shadow-[0_0_12px_rgba(255,42,109,0.2)]',
               )}
               style={{ minHeight: '48px', maxHeight: '150px' }}
             />
