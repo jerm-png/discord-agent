@@ -236,6 +236,38 @@ def _saveable_history(history: list) -> list:
     ][-50:]
 
 
+def append_history_turn(
+    user_id: str, context_id: str, role: str, content: str
+) -> None:
+    """Append a single turn to the in-memory conversation_history for
+    (user_id, context_id). Used by goal-mode paths that bypass
+    process_user_message — !goal trigger, run_goal_planning's plan emission,
+    execute_goal's final draft, and the cancel action confirmation."""
+    hist_key = (user_id, context_id)
+    if hist_key not in conversation_history:
+        conversation_history[hist_key] = []
+    conversation_history[hist_key].append({
+        "role": role,
+        "content": content,
+    })
+
+
+async def persist_history(user_id: str, context_id: str) -> None:
+    """Persist the in-memory conversation_history entry for (user_id,
+    context_id) to SQLite. Trims to the last 50 plain-string messages and
+    strips orphaned tool blocks first. No-op if the key has no entries."""
+    hist_key = (user_id, context_id)
+    if hist_key not in conversation_history:
+        return
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(
+        None,
+        save_conversation_history,
+        f"{user_id}:{context_id}",
+        _saveable_history(conversation_history[hist_key]),
+    )
+
+
 def tag_owner() -> str:
     return ""
 
@@ -1264,11 +1296,16 @@ async def run_goal_planning(
     goal_text: str, user_id: str, author_display_name: str,
     session_id: str, memory_mode: str, project_tag,
     channel_name: str = "general",
-    planner_prompt: str = None, crew_mode: bool = False
+    planner_prompt: str = None, crew_mode: bool = False,
+    user_message: str = "",
 ):
     """
     Calls the planner model to decompose a goal into steps, validates
     the plan, stores it in pending_goals, and posts it for approval.
+
+    user_message: the original raw input the user typed (e.g. "!goal X").
+    When provided, it is saved to conversation_history alongside the
+    emitted plan so the !goal command + plan response survive reloads.
     """
     # Clear any leftover state from a prior goal for this user. Without this,
     # a stale pending_goals/gate_pending/execution_context entry from a
@@ -1342,15 +1379,27 @@ async def run_goal_planning(
         "crew_mode": crew_mode,
     }
 
+    plan_text = _format_plan(goal_text, steps)
     await ws_manager.send(session_id, {
         "type": "plan",
         "steps": steps,
-        "text": _format_plan(goal_text, steps)
+        "text": plan_text,
     })
     logger.info(
         f"Goal plan generated | User: {author_display_name} | "
         f"Steps: {len(steps)} | Goal: {goal_text[:100]}"
     )
+
+    # Save the !goal turn (user input + plan response) to conversation
+    # history so it survives reload — the goal-trigger branch in chat.py
+    # skips process_user_message, so without this nothing gets persisted.
+    if user_message:
+        append_history_turn(
+            user_id, session_id, "user",
+            f"[Channel: #{channel_name}]\nCurrent message: {user_message}",
+        )
+    append_history_turn(user_id, session_id, "assistant", plan_text)
+    await persist_history(user_id, session_id)
 
 
 async def execute_goal(
@@ -1847,10 +1896,7 @@ async def execute_goal(
 
     # ── Deliver output ───────────────────────────────────────────────────────
     if final_output:
-        await ws_manager.send(session_id, {
-            "type": "message",
-            "text": final_output
-        })
+        completion_text = final_output
     else:
         findings = execution_context.get(user_id, {}).get("steps", [])
         if findings:
@@ -1860,15 +1906,20 @@ async def execute_goal(
                     f"**Step {f['step']} ({f['type']}):**\n"
                     f"{f['content'][:600]}"
                 )
-            await ws_manager.send(session_id, {
-                "type": "message",
-                "text": "\n\n".join(parts)
-            })
+            completion_text = "\n\n".join(parts)
         else:
-            await ws_manager.send(session_id, {
-                "type": "message",
-                "text": f"Goal complete: {goal}"
-            })
+            completion_text = f"Goal complete: {goal}"
+
+    await ws_manager.send(session_id, {
+        "type": "message",
+        "text": completion_text,
+    })
+
+    # Persist the final draft / completion text so reloading the thread
+    # restores the goal output. The !goal trigger and Approve click both
+    # bypass process_user_message, so without this the result is lost.
+    append_history_turn(user_id, session_id, "assistant", completion_text)
+    await persist_history(user_id, session_id)
 
     await ws_manager.send(session_id, {
         "type": "status",

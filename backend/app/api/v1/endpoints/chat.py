@@ -10,7 +10,9 @@ from app.core.ws_manager import ws_manager
 from app.db.threads import get_thread, update_thread_activity
 from app.features.chat.orchestrator import (
     _parse_goal_trigger,
+    append_history_turn,
     execute_goal,
+    persist_history,
     process_user_message,
     resume_goal_from_gate,
     run_goal_modification,
@@ -94,6 +96,12 @@ async def chat_websocket(
                         memory_mode=memory_mode,
                         project_tag=project_tag,
                         channel_name=workspace_slug,
+                        # Pass the raw "!goal X" so it gets persisted to
+                        # conversation_history alongside the plan response —
+                        # without this the user side of the !goal turn is
+                        # lost on reload (this branch skips
+                        # process_user_message which normally handles it).
+                        user_message=content,
                     ))
                     continue
 
@@ -227,13 +235,19 @@ async def thread_action(
         pending_goals.pop("drift-owner", None)
         gate_pending.pop("drift-owner", None)
         execution_context.pop("drift-owner", None)
+        cancel_text = "❌ Goal cancelled."
         # Emit as `response` so handleWSMessage adds it to the chat as an
         # assistant message. `status` frames only update the thinking indicator
         # and never render in the message list.
         await ws_manager.send(thread_id, {
             "type": "response",
-            "text": "❌ Goal cancelled.",
+            "text": cancel_text,
         })
+        # Persist the cancel confirmation to conversation history so it
+        # survives reload. The cancel handler doesn't go through
+        # process_user_message, so this is the only place it gets saved.
+        append_history_turn("drift-owner", thread_id, "assistant", cancel_text)
+        await persist_history("drift-owner", thread_id)
 
     elif action in ("continue", "adjust", "skip", "retry"):
         await resume_goal_from_gate(
