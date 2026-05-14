@@ -425,3 +425,33 @@ export async function completeMedbayFollowup(
     { method: 'PATCH' },
   )
 }
+
+// ── Uploads ──────────────────────────────────────────────────
+export type UploadedFileKind = 'image' | 'pdf' | 'document'
+
+export interface UploadedFile {
+  file_id: string
+  filename: string
+  file_type: UploadedFileKind
+  file_path: string
+  size: number
+}
+
+export async function uploadFile(file: File): Promise<UploadedFile> {
+  const form = new FormData()
+  form.append('file', file)
+  const res = await fetch(`${BASE_URL}/api/v1/upload`, {
+    method: 'POST',
+    credentials: 'include',
+    body: form,
+  })
+  if (!res.ok) {
+    let msg = `Upload failed (HTTP ${res.status})`
+    try {
+      const body = await res.json()
+      msg = body.detail || body.message || msg
+    } catch {}
+    throw new Error(msg)
+  }
+  return res.json() as Promise<UploadedFile>
+}

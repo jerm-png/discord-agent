@@ -41,6 +41,17 @@ FILE_CONTENT_CHAR_LIMIT = 50_000
 POPPLER_PATH = os.getenv("POPPLER_PATH", None)
 PDF_VISION_THRESHOLD = 50
 PDF_VISION_MAX_PAGES = 3
+UPLOAD_DIR = os.getenv(
+    "UPLOAD_DIR",
+    os.path.join(
+        os.path.dirname(__file__), "..", "..", "..", "..",
+        "memory", "uploads",
+    ),
+)
+# Hard ceiling on a single upload — keep aligned with the frontend
+# preview UX so the limit failure happens server-side and not on a
+# half-uploaded request.
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 
 # ── Paths ─────────────────────────────────────────────────────
 SOUL_PATH = os.getenv(

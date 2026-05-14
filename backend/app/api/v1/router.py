@@ -7,6 +7,7 @@ from app.api.v1.endpoints import (
     medbay,
     status,
     threads,
+    upload,
     workspaces,
 )
 
@@ -50,4 +51,9 @@ router.include_router(
     medbay.router,
     prefix="/medbay",
     tags=["medbay"],
+)
+router.include_router(
+    upload.router,
+    prefix="/upload",
+    tags=["upload"],
 )

@@ -10,6 +10,7 @@ from app.core.auth import (
 )
 from app.core.config import WORKSPACES
 from app.core.ws_manager import ws_manager
+import app.core.state as state
 from app.db.threads import get_thread, update_thread_activity
 from app.features.chat.orchestrator import process_user_message
 
@@ -77,6 +78,31 @@ async def chat_websocket(
                 continue
 
             update_thread_activity(thread_id)
+
+            # ── Resolve any file_ids the client referenced ────────────
+            # The upload endpoint stashes a parsed attached_files-shaped
+            # entry under each file_id; we append it (with the active
+            # workspace stamped on so isolation gates match) to the
+            # per-(user, thread) list the orchestrator reads.
+            raw_file_ids = data.get("file_ids") or []
+            if isinstance(raw_file_ids, str):
+                raw_file_ids = [raw_file_ids]
+            for fid in raw_file_ids:
+                if not isinstance(fid, str):
+                    continue
+                meta = state.uploaded_files.get(fid)
+                if not meta or meta.get("user_id") != user_id:
+                    logger.warning(
+                        "Unknown or unauthorized file_id on ws msg: %s", fid
+                    )
+                    continue
+                entry = dict(meta["entry"])
+                entry["channel_name"] = workspace_slug
+                state.attached_files[(user_id, thread_id)].append(entry)
+                # Single-shot consumption — drop the registry entry so a
+                # later message in the thread doesn't silently re-attach
+                # the same file. The on-disk copy is left in place.
+                state.uploaded_files.pop(fid, None)
 
             await process_user_message(
                 user_message=content,

@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.agents import load_agents
+from app.core.config import UPLOAD_DIR
 from app.api.v1.router import router
 from app.db.threads import init_threads_table
 from app.db.memory_manager import load_all_conversation_histories
@@ -47,6 +48,15 @@ async def lifespan(app: FastAPI):
     # Database tables
     init_threads_table()
     logger.info("Threads table ready")
+
+    # Upload directory — created once at boot so the /upload endpoint
+    # never has to handle a missing root directory. Per-user subdirs
+    # are created on demand inside the endpoint.
+    try:
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        logger.info(f"Upload dir ready: {UPLOAD_DIR}")
+    except Exception as e:
+        logger.warning(f"Upload dir init failed at {UPLOAD_DIR}: {e}")
 
     # Restore conversation_history from the DB.
     # The orchestrator writes to the in-memory dict with a TUPLE key

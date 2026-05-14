@@ -168,7 +168,7 @@ export function DashboardPage() {
     }
   }
     
-  function handleSendMessage(content: string) {
+  function handleSendMessage(content: string, fileIds?: string[]) {
     setMessages((prev) => [
       ...prev,
       {
@@ -182,7 +182,7 @@ export function DashboardPage() {
         }),
       },
     ])
-    sendMessage(content)
+    sendMessage(content, fileIds && fileIds.length ? { fileIds } : undefined)
   }
 
   const activeWorkspaceLabel =

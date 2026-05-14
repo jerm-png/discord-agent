@@ -11,6 +11,15 @@ from app.core.config import SOUL_PATH
 conversation_history: dict = {}
 attached_files: defaultdict = defaultdict(list)
 
+# ── Upload registry ──────────────────────────────────────────
+# Maps file_id → metadata produced by POST /api/v1/upload. The chat
+# WS handler reads from here to translate a file_id reference on an
+# inbound message into an attached_files entry the orchestrator can
+# consume. Entries persist in-process only; the on-disk file path
+# survives restarts so refs can be re-resolved if we ever decide to
+# rehydrate this map at startup.
+uploaded_files: dict = {}
+
 # ── Goal execution state ─────────────────────────────────────
 pending_goals: dict = {}
 execution_context: dict = {}

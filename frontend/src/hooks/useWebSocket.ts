@@ -21,7 +21,10 @@ interface UseWebSocketReturn {
   isConnected: boolean
   isThinking: boolean
   statusText: string
-  sendMessage: (content: string, agentSlug?: string) => void
+  sendMessage: (
+    content: string,
+    options?: { agentSlug?: string; fileIds?: string[] },
+  ) => void
   connect: (workspaceSlug: string, threadId: string) => void
   disconnect: () => void
 }
@@ -102,18 +105,25 @@ export function useWebSocket(
     setStatusText('')
   }, [])
 
-  const sendMessage = useCallback((content: string, agentSlug?: string) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({
-          type: 'message',
-          content,
-          agent_slug: agentSlug || null,
-        })
-      )
-      setIsThinking(true)
-    }
-  }, [])
+  const sendMessage = useCallback(
+    (
+      content: string,
+      options?: { agentSlug?: string; fileIds?: string[] },
+    ) => {
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(
+          JSON.stringify({
+            type: 'message',
+            content,
+            agent_slug: options?.agentSlug || null,
+            file_ids: options?.fileIds ?? [],
+          })
+        )
+        setIsThinking(true)
+      }
+    },
+    [],
+  )
 
   return {
     isConnected,

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { cn } from '../lib/utils'
 import {
   Send,
@@ -12,11 +12,18 @@ import {
   Network,
   Shield,
   Terminal,
+  X,
+  FileText,
+  Image as ImageIcon,
+  Loader2,
+  AlertTriangle,
+  Upload,
 } from 'lucide-react'
 import { CyberFrame } from './CyberFrame'
 import { CommandBar } from './CommandBar'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { uploadFile } from '../api/client'
 import type { ChatMessage as ApiChatMessage } from '../api/client'
 
 export type ChatMessage = ApiChatMessage
@@ -29,8 +36,55 @@ interface ChatPanelProps {
   workspaceLabel: string
   workspaceSlug: string
   threadTitle: string
-  onSendMessage: (content: string) => void
+  // fileIds carries server-assigned ids for any files the user attached
+  // to this message — the parent forwards them on the WS frame so the
+  // orchestrator can pull the parsed content out of state.uploaded_files.
+  onSendMessage: (content: string, fileIds?: string[]) => void
   onRosterClick?: () => void
+}
+
+// Allow-list mirrored from the backend upload endpoint. Used for the
+// <input accept=…> attribute AND a client-side gate so unsupported
+// files never hit the network.
+const ACCEPTED_EXTENSIONS = [
+  'pdf', 'txt', 'csv', 'json', 'md',
+  'jpg', 'jpeg', 'png', 'webp', 'gif',
+] as const
+const ACCEPT_ATTR =
+  '.pdf,.txt,.csv,.json,.md,.jpg,.jpeg,.png,.webp,.gif,' +
+  'application/pdf,image/jpeg,image/png,image/webp,image/gif,' +
+  'text/plain,text/csv,application/json,text/markdown'
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+
+type AttachmentStatus = 'uploading' | 'ready' | 'error'
+
+interface Attachment {
+  localId: string
+  file: File
+  kind: 'image' | 'pdf' | 'document'
+  status: AttachmentStatus
+  fileId?: string
+  error?: string
+  previewUrl?: string
+}
+
+function extOf(name: string): string {
+  const dot = name.lastIndexOf('.')
+  return dot >= 0 ? name.slice(dot + 1).toLowerCase() : ''
+}
+
+function classifyFile(file: File): Attachment['kind'] | null {
+  const ext = extOf(file.name)
+  if (!(ACCEPTED_EXTENSIONS as readonly string[]).includes(ext)) return null
+  if (['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(ext)) return 'image'
+  if (ext === 'pdf') return 'pdf'
+  return 'document'
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
 function formatTime(ts: string): string {
@@ -58,6 +112,29 @@ export function ChatPanel({
   onRosterClick,
 }: ChatPanelProps) {
   const [inputValue, setInputValue] = useState('')
+  // ── Attachments ──────────────────────────────────────────────────
+  // Per-message file queue. Files start as "uploading", flip to "ready"
+  // when the server returns a file_id, and stay until either the user
+  // clicks send (we ship the ids + clear) or the user removes them.
+  const [attachments, setAttachments] = useState<Attachment[]>([])
+  const [dragActive, setDragActive] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  // dragenter/dragleave fire for every child element, so count nesting
+  // depth to avoid the overlay flicker when crossing child boundaries.
+  const dragDepthRef = useRef(0)
+  // Revoke any object URLs we minted for image previews so we don't
+  // leak blobs when the component unmounts.
+  useEffect(() => {
+    return () => {
+      setAttachments((prev) => {
+        for (const a of prev) {
+          if (a.previewUrl) URL.revokeObjectURL(a.previewUrl)
+        }
+        return prev
+      })
+    }
+  }, [])
+
   const [cycles, setCycles] = useState(0)
   const [hexStream, setHexStream] = useState<string[]>([])
   const [activeNodes, setActiveNodes] = useState<number[]>([])
@@ -337,12 +414,169 @@ export function ChatPanel({
     }
   }, [isThinking])
 
+  // ── File upload helpers ─────────────────────────────────────────
+  const startUpload = useCallback((attachment: Attachment) => {
+    uploadFile(attachment.file)
+      .then((res) => {
+        setAttachments((prev) =>
+          prev.map((a) =>
+            a.localId === attachment.localId
+              ? { ...a, status: 'ready', fileId: res.file_id }
+              : a,
+          ),
+        )
+      })
+      .catch((err: Error) => {
+        setAttachments((prev) =>
+          prev.map((a) =>
+            a.localId === attachment.localId
+              ? { ...a, status: 'error', error: err.message }
+              : a,
+          ),
+        )
+      })
+  }, [])
+
+  const enqueueFiles = useCallback(
+    (files: FileList | File[]) => {
+      const list = Array.from(files)
+      const accepted: Attachment[] = []
+      const rejected: { name: string; reason: string }[] = []
+      for (const file of list) {
+        const kind = classifyFile(file)
+        if (!kind) {
+          rejected.push({
+            name: file.name,
+            reason: `Unsupported type (.${extOf(file.name) || '?'})`,
+          })
+          continue
+        }
+        if (file.size > MAX_UPLOAD_BYTES) {
+          rejected.push({ name: file.name, reason: 'Exceeds 10 MB' })
+          continue
+        }
+        const previewUrl = kind === 'image'
+          ? URL.createObjectURL(file)
+          : undefined
+        accepted.push({
+          localId: `${Date.now()}-${Math.random()}`,
+          file,
+          kind,
+          status: 'uploading',
+          previewUrl,
+        })
+      }
+      if (rejected.length) {
+        // Surface rejected files as error-status entries so the user
+        // sees why they didn't attach — they can dismiss with the X.
+        for (const r of rejected) {
+          accepted.push({
+            localId: `rej-${Date.now()}-${Math.random()}`,
+            file: new File([], r.name),
+            kind: 'document',
+            status: 'error',
+            error: r.reason,
+          })
+        }
+      }
+      if (accepted.length) {
+        setAttachments((prev) => [...prev, ...accepted])
+        for (const a of accepted) {
+          if (a.status === 'uploading') startUpload(a)
+        }
+      }
+    },
+    [startUpload],
+  )
+
+  const removeAttachment = (localId: string) => {
+    setAttachments((prev) => {
+      const target = prev.find((a) => a.localId === localId)
+      if (target?.previewUrl) URL.revokeObjectURL(target.previewUrl)
+      return prev.filter((a) => a.localId !== localId)
+    })
+  }
+
+  const retryAttachment = (localId: string) => {
+    setAttachments((prev) => {
+      const target = prev.find((a) => a.localId === localId)
+      if (!target || target.status !== 'error') return prev
+      const next: Attachment = {
+        ...target,
+        status: 'uploading',
+        error: undefined,
+      }
+      // Kick off upload outside the setter so React batches consistently.
+      queueMicrotask(() => startUpload(next))
+      return prev.map((a) => (a.localId === localId ? next : a))
+    })
+  }
+
+  const handlePickerChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length) {
+      enqueueFiles(e.target.files)
+    }
+    // Reset so picking the same file twice re-fires onChange.
+    e.target.value = ''
+  }
+
+  // ── Drag-and-drop on the chat area ──────────────────────────────
+  const handleDragEnter = (e: React.DragEvent) => {
+    if (!Array.from(e.dataTransfer?.types ?? []).includes('Files')) return
+    e.preventDefault()
+    dragDepthRef.current += 1
+    if (dragDepthRef.current === 1) setDragActive(true)
+  }
+  const handleDragLeave = (e: React.DragEvent) => {
+    if (!Array.from(e.dataTransfer?.types ?? []).includes('Files')) return
+    e.preventDefault()
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
+    if (dragDepthRef.current === 0) setDragActive(false)
+  }
+  const handleDragOver = (e: React.DragEvent) => {
+    if (!Array.from(e.dataTransfer?.types ?? []).includes('Files')) return
+    e.preventDefault()
+  }
+  const handleDrop = (e: React.DragEvent) => {
+    if (!Array.from(e.dataTransfer?.types ?? []).includes('Files')) return
+    e.preventDefault()
+    dragDepthRef.current = 0
+    setDragActive(false)
+    if (e.dataTransfer.files && e.dataTransfer.files.length) {
+      enqueueFiles(e.dataTransfer.files)
+    }
+  }
+
+  // ── Send ────────────────────────────────────────────────────────
+  const readyCount = attachments.filter((a) => a.status === 'ready').length
+  const uploadingCount = attachments.filter(
+    (a) => a.status === 'uploading',
+  ).length
+  const canSend =
+    (inputValue.trim().length > 0 || readyCount > 0) && uploadingCount === 0
+
   const handleSend = () => {
-    if (!inputValue.trim()) return
-    // Manual send pre-empts any pending auto-send.
+    if (!canSend) return
     if (autoSendIn !== null) cancelAutoSend()
-    onSendMessage(inputValue.trim())
+    const text = inputValue.trim()
+    const fileIds = attachments
+      .filter((a) => a.status === 'ready' && a.fileId)
+      .map((a) => a.fileId!) as string[]
+    onSendMessage(text, fileIds.length ? fileIds : undefined)
     setInputValue('')
+    // Drop only the attachments we shipped; keep any error rows so the
+    // user still sees the rejection message until they dismiss it.
+    setAttachments((prev) => {
+      const shipped = new Set(
+        prev.filter((a) => a.status === 'ready').map((a) => a.localId),
+      )
+      for (const a of prev) {
+        if (shipped.has(a.localId) && a.previewUrl) {
+          URL.revokeObjectURL(a.previewUrl)
+        }
+      }
+      return prev.filter((a) => !shipped.has(a.localId))
+    })
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -353,7 +587,24 @@ export function ChatPanel({
   }
 
   return (
-    <div className="flex-1 h-full flex flex-col bg-gradient-to-b from-[#0a0a10] to-[#08080d] relative scanlines">
+    <div
+      className="flex-1 h-full flex flex-col bg-gradient-to-b from-[#0a0a10] to-[#08080d] relative scanlines"
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
+      {dragActive && (
+        <div className="absolute inset-0 z-[200] pointer-events-none flex items-center justify-center">
+          <div className="absolute inset-3 border-2 border-dashed border-neon-cyan/70 bg-neon-cyan/[0.06] animate-pulse" />
+          <div className="relative industrial-raised border border-neon-cyan/60 bg-[#0a0a10]/90 px-5 py-3 flex items-center gap-3 glow-cyan">
+            <Upload className="w-5 h-5 text-neon-cyan glow-cyan-text" />
+            <span className="font-mono text-xs uppercase tracking-widest text-neon-cyan glow-cyan-text font-bold">
+              Drop to attach
+            </span>
+          </div>
+        </div>
+      )}
       {isThinking && (
         <div className="absolute top-0 left-0 right-0 z-50">
           <div className="h-8 w-full bg-gradient-to-b from-[#0c0c14] to-[#06060a] relative overflow-hidden flex items-center justify-center gap-[2px] px-6 border-b-2 border-[#1a1a22]">
@@ -618,9 +869,134 @@ export function ChatPanel({
       <div className="p-4 relative industrial-panel">
         <div className="absolute -top-[1px] left-0 right-0 industrial-divider-h" />
 
+        {attachments.length > 0 && (
+          <div className="mb-3 flex flex-wrap gap-2">
+            {attachments.map((a) => {
+              const isImage = a.kind === 'image'
+              const cardBorder = isImage
+                ? 'border-neon-pink/50'
+                : 'border-neon-cyan/40'
+              const accentText = isImage
+                ? 'text-neon-pink'
+                : 'text-neon-cyan'
+              return (
+                <div
+                  key={a.localId}
+                  className={cn(
+                    'relative group flex items-center gap-2 pr-7',
+                    'industrial-inset border bg-[#0a0a10]',
+                    a.status === 'error'
+                      ? 'border-neon-pink/60'
+                      : cardBorder,
+                  )}
+                  style={{ minWidth: 180, maxWidth: 260 }}
+                >
+                  <div
+                    className={cn(
+                      'w-10 h-10 shrink-0 flex items-center justify-center',
+                      'border-r',
+                      isImage
+                        ? 'border-neon-pink/30'
+                        : 'border-neon-cyan/30',
+                    )}
+                  >
+                    {isImage && a.previewUrl ? (
+                      <img
+                        src={a.previewUrl}
+                        alt={a.file.name}
+                        className="w-10 h-10 object-cover"
+                      />
+                    ) : a.status === 'error' ? (
+                      <AlertTriangle className="w-4 h-4 text-neon-pink" />
+                    ) : isImage ? (
+                      <ImageIcon className="w-4 h-4 text-neon-pink" />
+                    ) : (
+                      <FileText className="w-4 h-4 text-neon-cyan" />
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0 py-1 pr-1">
+                    <div
+                      className={cn(
+                        'font-sans text-[11px] font-bold truncate',
+                        a.status === 'error'
+                          ? 'text-neon-pink'
+                          : 'text-foreground',
+                      )}
+                      title={a.file.name}
+                    >
+                      {a.file.name}
+                    </div>
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      {a.status === 'uploading' && (
+                        <>
+                          <Loader2
+                            className={cn(
+                              'w-2.5 h-2.5 animate-spin',
+                              accentText,
+                            )}
+                          />
+                          <span
+                            className={cn(
+                              'font-mono text-[9px] uppercase tracking-wider',
+                              accentText,
+                            )}
+                          >
+                            Uploading…
+                          </span>
+                        </>
+                      )}
+                      {a.status === 'ready' && (
+                        <span
+                          className={cn(
+                            'font-mono text-[9px] uppercase tracking-wider',
+                            accentText,
+                          )}
+                        >
+                          {formatBytes(a.file.size)}
+                        </span>
+                      )}
+                      {a.status === 'error' && (
+                        <button
+                          type="button"
+                          onClick={() => retryAttachment(a.localId)}
+                          className="font-mono text-[9px] uppercase tracking-wider text-neon-pink hover:underline"
+                          title={a.error}
+                        >
+                          {a.error ?? 'Failed'} · retry
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => removeAttachment(a.localId)}
+                    title="Remove"
+                    className="absolute top-1 right-1 p-0.5 text-muted-foreground/70 hover:text-neon-pink transition-colors"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        )}
+
         <div className="flex items-end gap-3">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={ACCEPT_ATTR}
+            multiple
+            className="hidden"
+            onChange={handlePickerChange}
+          />
           <div className="flex items-center gap-1 pb-2">
-            <button className="p-2.5 industrial-inset border border-muted-foreground/20 text-muted-foreground hover:text-neon-pink hover:border-neon-pink/40 transition-all group">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              title="Attach files (PDF, images, txt/csv/json)"
+              className="p-2.5 industrial-inset border border-muted-foreground/20 text-muted-foreground hover:text-neon-pink hover:border-neon-pink/40 transition-all group"
+            >
               <Paperclip className="w-4 h-4 group-hover:rotate-45 transition-transform" />
             </button>
             <div className="relative inline-flex">
@@ -700,14 +1076,23 @@ export function ChatPanel({
 
           <button
             onClick={handleSend}
-            disabled={!inputValue.trim()}
+            disabled={!canSend}
+            title={
+              uploadingCount > 0
+                ? 'Waiting for uploads to finish…'
+                : 'Send'
+            }
             className={cn(
               'p-3.5 industrial-raised border-2 border-neon-cyan/50 text-neon-cyan cyber-button font-bold',
               'hover:border-neon-pink/50 hover:text-neon-pink hover:glow-pink transition-all duration-200',
               'disabled:opacity-30 disabled:cursor-not-allowed disabled:border-muted-foreground/20 disabled:hover:shadow-none'
             )}
           >
-            <Send className="w-5 h-5" />
+            {uploadingCount > 0 ? (
+              <Loader2 className="w-5 h-5 animate-spin" />
+            ) : (
+              <Send className="w-5 h-5" />
+            )}
           </button>
         </div>
 
