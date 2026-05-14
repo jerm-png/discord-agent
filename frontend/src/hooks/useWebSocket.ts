@@ -46,8 +46,12 @@ export function useWebSocket(
         const data = JSON.parse(event.data) as WSMessage
 
         if (data.type === 'status') {
+          // The orchestrator emits a trailing "Response delivered… Ready."
+          // status frame AFTER the terminal response/message/error. Treat
+          // those phrases as terminal here too, otherwise the indicator
+          // gets re-armed after the response has already landed.
           const txt = data.text || ''
-          if (/cancelled|cancel|aborted|complete/i.test(txt)) {
+          if (/cancelled|cancel|aborted|complete|delivered|ready/i.test(txt)) {
             setIsThinking(false)
             setStatusText('')
           } else {
