@@ -12,8 +12,6 @@ from app.core.auth import CurrentUser, get_current_user
 from app.core.config import (
     MAX_UPLOAD_BYTES,
     PDF_VISION_MAX_PAGES,
-    PDF_VISION_THRESHOLD,
-    POPPLER_PATH,
     UPLOAD_DIR,
 )
 import app.core.state as state
@@ -65,16 +63,84 @@ def _classify(ext: str) -> str:
 
 def _load_pdf_entry(filename: str, data: bytes) -> dict:
     """
-    Build the attached_files entry for a PDF. Short PDFs are extracted
-    as text (cheaper); long PDFs are rendered to images and sent to
-    Claude as vision input. Falls back to a text-only entry with a
-    truncation note when either path fails — we never reject the upload
-    on extraction failure.
+    Build the attached_files entry for a PDF using pdfplumber.
+
+    Path A — text-bearing PDF: extract per-page text and return a
+    document entry. This is the cheap path and handles ordinary
+    digital PDFs (lab reports, exports, etc.).
+
+    Path B — scanned / image-based PDF: pdfplumber returns no usable
+    text, so we render the first PDF_VISION_MAX_PAGES pages via
+    page.to_image() and ship them to Claude as vision input.
+
+    Any unexpected failure degrades to a text-only placeholder so the
+    upload itself is never rejected on extraction error.
     """
     try:
-        from PyPDF2 import PdfReader
-        reader = PdfReader(io.BytesIO(data))
-        page_count = len(reader.pages)
+        import pdfplumber
+    except ImportError as e:
+        logger.warning(f"pdfplumber unavailable for {filename}: {e}")
+        return {
+            "filename": filename,
+            "content_type": "document",
+            "text_content": "[PDF reader unavailable on this server.]",
+        }
+
+    try:
+        with pdfplumber.open(io.BytesIO(data)) as pdf:
+            page_count = len(pdf.pages)
+            text_parts: list[str] = []
+            for page in pdf.pages:
+                try:
+                    t = page.extract_text() or ""
+                except Exception:
+                    t = ""
+                if t.strip():
+                    text_parts.append(t)
+
+            text = "\n\n".join(text_parts).strip()
+            if text:
+                return {
+                    "filename": filename,
+                    "content_type": "document",
+                    "text_content": text,
+                }
+
+            # No extractable text — treat as scanned/image PDF and
+            # render the first few pages for the vision pipeline.
+            pages_out = []
+            for page in pdf.pages[:PDF_VISION_MAX_PAGES]:
+                try:
+                    page_img = page.to_image(resolution=150)
+                    buf = io.BytesIO()
+                    # `original` is the underlying PIL Image — saving
+                    # it directly avoids pdfplumber's annotation pass.
+                    page_img.original.save(buf, format="PNG")
+                    pages_out.append({
+                        "media_type": "image/png",
+                        "base64_data": base64.b64encode(
+                            buf.getvalue()
+                        ).decode(),
+                    })
+                except Exception as render_err:
+                    logger.warning(
+                        f"PDF page render failed for {filename}: {render_err}"
+                    )
+                    continue
+
+            if pages_out:
+                return {
+                    "filename": filename,
+                    "content_type": "pdf_vision",
+                    "pages": pages_out,
+                    "page_count": page_count,
+                }
+
+            return {
+                "filename": filename,
+                "content_type": "document",
+                "text_content": "[PDF contains no extractable text and could not be rendered for vision.]",
+            }
     except Exception as e:
         logger.warning(f"PDF parse failed for {filename}: {e}")
         return {
@@ -82,48 +148,6 @@ def _load_pdf_entry(filename: str, data: bytes) -> dict:
             "content_type": "document",
             "text_content": "[PDF could not be parsed.]",
         }
-
-    if page_count > PDF_VISION_THRESHOLD:
-        try:
-            from pdf2image import convert_from_bytes
-            kwargs = {"first_page": 1, "last_page": PDF_VISION_MAX_PAGES}
-            if POPPLER_PATH:
-                kwargs["poppler_path"] = POPPLER_PATH
-            images = convert_from_bytes(data, **kwargs)
-            pages = []
-            for img in images:
-                buf = io.BytesIO()
-                img.save(buf, format="PNG")
-                pages.append({
-                    "media_type": "image/png",
-                    "base64_data": base64.b64encode(buf.getvalue()).decode(),
-                })
-            return {
-                "filename": filename,
-                "content_type": "pdf_vision",
-                "pages": pages,
-                "page_count": page_count,
-            }
-        except Exception as e:
-            logger.warning(
-                f"PDF vision render failed for {filename}: {e}"
-            )
-            # Fall through to text extraction so the upload is not lost.
-
-    parts = []
-    for page in reader.pages:
-        try:
-            parts.append(page.extract_text() or "")
-        except Exception:
-            continue
-    text = "\n\n".join(p.strip() for p in parts if p.strip())
-    if not text:
-        text = "[PDF contains no extractable text.]"
-    return {
-        "filename": filename,
-        "content_type": "document",
-        "text_content": text,
-    }
 
 
 def _load_text_entry(filename: str, data: bytes) -> dict:
