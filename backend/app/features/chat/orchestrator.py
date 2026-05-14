@@ -784,6 +784,34 @@ async def _summarize_search_results(goal: str, result_str: str) -> str:
         return result_str[:300]
 
 
+_NUMBERED_Q_LINE_RE = re.compile(r"^\s*\d+[\.\)]\s.*\?\s*$", re.MULTILINE)
+
+
+def _agent_response_has_questions(text: str) -> bool:
+    """
+    True if an agent's reply is asking the user for input rather than
+    completing the step. Detects trailing question marks (the strongest
+    signal), question marks near the end of the message, or numbered
+    questions (e.g. "1. What is X?\n2. How long ...?"). A plain numbered
+    list with no question marks is treated as content, not a prompt.
+    """
+    if not text:
+        return False
+    t = text.strip()
+    if not t:
+        return False
+    if t.endswith("?"):
+        return True
+    # Look for ? in the last paragraph — agents often close with the ask
+    tail = t.rsplit("\n\n", 1)[-1]
+    if "?" in tail:
+        return True
+    # Numbered questions: at least 2 numbered lines that end with "?"
+    if len(_NUMBERED_Q_LINE_RE.findall(t)) >= 2:
+        return True
+    return False
+
+
 async def _save_session_state_async(
     user_id: str,
     context_id: int,
@@ -2269,6 +2297,31 @@ async def execute_goal(
                             "text": f"🤖 [{agent_name}]: {agent_response}"
                         })
 
+                    # ── QUESTION GATE ────────────────────────────────────
+                    # The agent asked the user for input before it can do
+                    # its work. Pause so the user can answer; their reply
+                    # is appended to execution_context on resume so the
+                    # next step has access to it.
+                    if _agent_response_has_questions(agent_response):
+                        pg["status"] = "gated"
+                        pg["current_step"] = i + 1
+                        gate_pending[user_id] = {
+                            "type": "question_gate",
+                            "step_index": i + 1,
+                            "step_num": step_num,
+                            "author_display_name": author_display_name,
+                        }
+                        _persist_goal_state(user_id)
+                        await ws_manager.send(session_id, {
+                            "type": "gate",
+                            "text": (
+                                f"❓ **The agent needs your input before "
+                                f"continuing (step {step_num})**\n\n"
+                                f"{agent_response}"
+                            ),
+                        })
+                        return
+
             except Exception as e:
                 # ── STEP FAILURE GATE ────────────────────────────────────
                 remaining_descs = "\n".join(
@@ -2446,6 +2499,28 @@ async def resume_goal_from_gate(
                     skip_gate_for_step=step_index
                 )
             )
+        elif gate_type == "question_gate":
+            # Append the user's answers to execution_context so subsequent
+            # steps see them via _format_execution_context. If the user
+            # didn't type anything we still continue — they may have
+            # answered the gate without text.
+            answer = (changes or "").strip()
+            if answer:
+                ctx = execution_context.setdefault(
+                    user_id, {"steps": [], "key_findings": []}
+                )
+                ctx["steps"].append({
+                    "step": gate.get("step_num", step_index),
+                    "type": "user_response",
+                    "content": answer,
+                })
+            pg["current_step"] = step_index
+            _persist_goal_state(user_id)
+            await ws_manager.send(session_id, {
+                "type": "status",
+                "text": "▶️ Continuing execution..."
+            })
+            asyncio.create_task(execute_goal(user_id, author_display_name))
         else:
             # research_gate: step_index already points to the next step
             pg["current_step"] = step_index
