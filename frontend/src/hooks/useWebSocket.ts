@@ -1,14 +1,11 @@
 import { useRef, useCallback, useState } from 'react'
 
 export interface WSMessage {
-  type: 'connected' | 'status' | 'response' | 'message' | 'error' | 'done' | 'plan' | 'gate'
+  type: 'connected' | 'status' | 'response' | 'message' | 'error'
   text?: string
   content?: string
   thread_id?: string
   workspace?: string
-  goal?: string
-  steps?: string[]
-  gate_kind?: string
 }
 
 interface UseWebSocketReturn {
@@ -18,8 +15,6 @@ interface UseWebSocketReturn {
   sendMessage: (content: string, agentSlug?: string) => void
   connect: (workspaceSlug: string, threadId: string) => void
   disconnect: () => void
-  resetThinking: () => void
-  markThinking: (text?: string) => void
 }
 
 export function useWebSocket(
@@ -59,19 +54,11 @@ export function useWebSocket(
             setIsThinking(true)
             setStatusText(txt)
           }
-        } else if (data.type === 'done') {
-          // Terminal signal — always resets thinking
-          setIsThinking(false)
-          setStatusText('')
         } else if (
           data.type === 'response' ||
           data.type === 'message' ||
-          data.type === 'error' ||
-          data.type === 'plan' ||
-          data.type === 'gate'
+          data.type === 'error'
         ) {
-          // Terminal for this turn (plan/gate hand control back to the user;
-          // message is the goal-mode result emission from execute_goal).
           setIsThinking(false)
           setStatusText('')
           onMessage(data)
@@ -102,16 +89,6 @@ export function useWebSocket(
     setStatusText('')
   }, [])
 
-  const resetThinking = useCallback(() => {
-    setIsThinking(false)
-    setStatusText('')
-  }, [])
-
-  const markThinking = useCallback((text: string = '') => {
-    setIsThinking(true)
-    setStatusText(text)
-  }, [])
-
   const sendMessage = useCallback((content: string, agentSlug?: string) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(
@@ -132,7 +109,5 @@ export function useWebSocket(
     sendMessage,
     connect,
     disconnect,
-    resetThinking,
-    markThinking,
   }
 }

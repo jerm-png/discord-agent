@@ -74,8 +74,6 @@ from app.db.memory_manager import (
     get_entity_tags,
     get_entity_timeline,
     save_entity_fact,
-    save_goal_state,
-    delete_goal_state,
     search_conversations,
     log_reasoning_trace,
     check_stale_memories,
@@ -249,6 +247,17 @@ def _now_iso() -> str:
     so the /messages endpoint can return real times to the frontend."""
     from datetime import timezone as _tz
     return datetime.now(_tz.utc).isoformat()
+
+
+# Goal-mode persistence is retired. The functions below are kept as dead
+# code for reference; these stubs let the dead paths still resolve at
+# import time without touching the database.
+def save_goal_state(*_args, **_kwargs) -> None:
+    return None
+
+
+def delete_goal_state(*_args, **_kwargs) -> None:
+    return None
 
 
 def _persist_goal_state(user_id: str) -> None:

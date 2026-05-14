@@ -101,18 +101,9 @@ export function CommandBar({
             <Search className="w-3.5 h-3.5" />
           </button>
 
-          {showRoster && (
+          {showRoster && onRosterClick && (
             <button
-              onClick={() => {
-                if (onRosterClick) {
-                  // Navigate back to the roster view by deselecting the
-                  // active thread (handled by parent). Falls back to the
-                  // legacy !roster chat command only if no handler is wired.
-                  onRosterClick()
-                } else {
-                  onSendMessage('!roster')
-                }
-              }}
+              onClick={onRosterClick}
               title="Roster"
               className={cn(
                 'p-1 industrial-inset border border-neon-cyan/20 text-neon-cyan/70',

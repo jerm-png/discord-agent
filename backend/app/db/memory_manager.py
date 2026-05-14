@@ -177,26 +177,6 @@ def init_db():
         )
     """)
 
-    # Goal-mode runtime state. pending_goals / execution_context /
-    # gate_pending in app.core.state were in-memory only — a server
-    # restart would wipe any active goal. This table mirrors each
-    # user's slice of those dicts so it can be rehydrated on startup.
-    # state_type is one of: pending_goal, execution_context, gate_pending.
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS goal_state (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL,
-            state_type TEXT NOT NULL,
-            state_json TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            UNIQUE(user_id, state_type)
-        )
-    """)
-    c.execute("""
-        CREATE INDEX IF NOT EXISTS idx_goal_state_user
-        ON goal_state(user_id)
-    """)
-
     # Child-safety content flags (Parker workspace). Admin reviews these
     # via /api/v1/flags/* endpoints. severity is one of urgent/review/info;
     # category names the rubric bucket (stranger/social_pressure/etc).
@@ -2693,81 +2673,6 @@ def get_entity_timeline(entity_id: int) -> list:
         }
         for r in rows
     ]
-
-
-def save_goal_state(
-    user_id: str, state_type: str, state
-) -> None:
-    """
-    Upsert one user's slice of pending_goals / execution_context /
-    gate_pending. If `state` is None or an empty dict, the row is
-    deleted instead — keeps the table tight when a goal completes,
-    cancels, or errors out and the in-memory entry is popped.
-    """
-    if state is None or (isinstance(state, (dict, list)) and not state):
-        delete_goal_state(user_id, state_type)
-        return
-    now = datetime.now().isoformat()
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        conn.execute(
-            """
-            INSERT INTO goal_state (
-                user_id, state_type, state_json, updated_at
-            )
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(user_id, state_type) DO UPDATE SET
-                state_json = excluded.state_json,
-                updated_at = excluded.updated_at
-            """,
-            (user_id, state_type, json.dumps(state), now),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def delete_goal_state(user_id: str, state_type: str | None = None) -> None:
-    """Remove the row(s) for this user. Pass state_type=None to clear
-    all three (used at goal completion / cancellation)."""
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        if state_type is None:
-            conn.execute(
-                "DELETE FROM goal_state WHERE user_id = ?", (user_id,)
-            )
-        else:
-            conn.execute(
-                "DELETE FROM goal_state "
-                "WHERE user_id = ? AND state_type = ?",
-                (user_id, state_type),
-            )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def load_all_goal_states() -> dict:
-    """
-    Returns {user_id: {pending_goal: ..., execution_context: ...,
-    gate_pending: ...}} for the lifespan hook to rehydrate the
-    in-memory state dicts on startup.
-    """
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        rows = conn.execute(
-            "SELECT user_id, state_type, state_json FROM goal_state"
-        ).fetchall()
-    finally:
-        conn.close()
-    result: dict = {}
-    for uid, stype, sjson in rows:
-        try:
-            data = json.loads(sjson)
-        except Exception:
-            continue
-        result.setdefault(uid, {})[stype] = data
-    return result
 
 
 def save_entity_fact(

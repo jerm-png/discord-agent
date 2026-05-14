@@ -1,9 +1,7 @@
-import asyncio
 import logging
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
 
 from app.core.auth import (
     CurrentUser,
@@ -13,29 +11,11 @@ from app.core.auth import (
 from app.core.config import WORKSPACES
 from app.core.ws_manager import ws_manager
 from app.db.threads import get_thread, update_thread_activity
-from app.features.chat.orchestrator import (
-    CREW_GOAL_PLANNER_SYSTEM_PROMPT,
-    _parse_goal_trigger,
-    _persist_goal_state,
-    append_history_turn,
-    execute_goal,
-    persist_history,
-    process_user_message,
-    resume_goal_from_gate,
-    run_goal_modification,
-    run_goal_planning,
-)
+from app.features.chat.orchestrator import process_user_message
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-ALLOWED_ACTIONS = {"approve", "cancel", "modify", "continue", "adjust", "skip", "retry"}
-
-
-class ThreadActionRequest(BaseModel):
-    action: str
-    changes: str = ""
 
 
 @router.websocket("/ws/{workspace_slug}/{thread_id}")
@@ -97,72 +77,6 @@ async def chat_websocket(
                 continue
 
             update_thread_activity(thread_id)
-
-            # Goal-mode triggers: !goal / !plan / !research route to the
-            # planner so a `plan` WebSocket frame is emitted (which the
-            # frontend renders with inline approve/modify/cancel buttons).
-            # Fire-and-forget so the WS receive loop is not blocked while the
-            # planner model runs; the plan/error frame is the terminal signal.
-            if content.startswith("!"):
-                stripped = content[1:].lstrip()
-
-                # !crew — same machinery as !goal but the planner is
-                # told to assign a specialist agent slug per step, and
-                # execute_goal then dispatches each step through that
-                # agent's system prompt. Prefix the user content with
-                # the available agent slugs so the planner picks from
-                # the real set, not hallucinated names.
-                if stripped.lower().startswith("crew "):
-                    crew_goal_text = stripped[5:].strip()
-                    if crew_goal_text:
-                        from app.core.state import AGENT_DEFINITIONS
-                        _agent_slugs = (
-                            ", ".join(sorted(AGENT_DEFINITIONS.keys()))
-                            or "none loaded"
-                        )
-                        _crew_user_content = (
-                            f"Available agent slugs: {_agent_slugs}\n\n"
-                            f"Goal: {crew_goal_text}"
-                        )
-                        asyncio.create_task(run_goal_planning(
-                            # Planner sees the agent-slug-prefixed content
-                            # so it can assign agents per step…
-                            goal_text=_crew_user_content,
-                            # …but the user-facing goal that shows up in
-                            # the plan header and completion text is the
-                            # raw request without the slug-list prefix.
-                            display_goal=crew_goal_text,
-                            user_id=user_id,
-                            author_display_name=author_display_name,
-                            session_id=thread_id,
-                            memory_mode=memory_mode,
-                            project_tag=project_tag,
-                            channel_name=workspace_slug,
-                            planner_prompt=CREW_GOAL_PLANNER_SYSTEM_PROMPT,
-                            crew_mode=True,
-                            user_message=content,
-                        ))
-                        continue
-
-                goal_trigger = _parse_goal_trigger(stripped)
-                if goal_trigger:
-                    _, goal_text = goal_trigger
-                    asyncio.create_task(run_goal_planning(
-                        goal_text=goal_text,
-                        user_id=user_id,
-                        author_display_name=author_display_name,
-                        session_id=thread_id,
-                        memory_mode=memory_mode,
-                        project_tag=project_tag,
-                        channel_name=workspace_slug,
-                        # Pass the raw "!goal X" so it gets persisted to
-                        # conversation_history alongside the plan response —
-                        # without this the user side of the !goal turn is
-                        # lost on reload (this branch skips
-                        # process_user_message which normally handles it).
-                        user_message=content,
-                    ))
-                    continue
 
             await process_user_message(
                 user_message=content,
@@ -278,92 +192,3 @@ async def get_thread_messages(
         })
 
     return {"messages": messages}
-
-
-@router.post("/threads/{thread_id}/action")
-async def thread_action(
-    thread_id: str,
-    body: ThreadActionRequest,
-    user: CurrentUser = Depends(get_current_user),
-):
-    if body.action not in ALLOWED_ACTIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid action. Must be one of: {', '.join(sorted(ALLOWED_ACTIONS))}",
-        )
-
-    user_id = user["user_id"]
-    author_display_name = "Parker" if user_id == "parker" else "Jerm"
-
-    # User-scoped fetch — 404s on threads that aren't owned by the
-    # authenticated user even if the id is valid.
-    thread = get_thread(thread_id, user_id=user_id)
-    if not thread:
-        raise HTTPException(status_code=404, detail="Thread not found")
-
-    workspace_slug = thread["workspace"]
-    ws_config = WORKSPACES.get(workspace_slug, {})
-    # Per-workspace user restriction: Parker only operates in parker.exe;
-    # admin cannot operate inside Parker's workspace.
-    restricted = ws_config.get("user_restricted")
-    if restricted is not None and user_id != restricted:
-        raise HTTPException(status_code=403, detail="Workspace not accessible")
-    if restricted is None and user_id == "parker":
-        raise HTTPException(status_code=403, detail="Workspace not accessible")
-    memory_mode = ws_config.get("memory_mode", "global")
-    project_tag = ws_config.get("project_tag")
-
-    action = body.action
-
-    if action == "approve":
-        from app.core.state import pending_goals, execution_context
-        pg = pending_goals.get(user_id)
-        if not pg:
-            raise HTTPException(status_code=400, detail="No pending goal to approve.")
-        if pg.get("status") != "awaiting_approval":
-            raise HTTPException(
-                status_code=400,
-                detail=f"Goal is not awaiting approval (status: {pg.get('status')}).",
-            )
-        pg["status"] = "executing"
-        pg["current_step"] = 0
-        execution_context.pop(user_id, None)
-        _persist_goal_state(user_id)
-        asyncio.create_task(execute_goal(
-            user_id=user_id,
-            author_display_name=author_display_name,
-        ))
-
-    elif action == "cancel":
-        from app.core.state import pending_goals, gate_pending, execution_context
-        pending_goals.pop(user_id, None)
-        gate_pending.pop(user_id, None)
-        execution_context.pop(user_id, None)
-        _persist_goal_state(user_id)
-        cancel_text = "❌ Goal cancelled."
-        await ws_manager.send(thread_id, {
-            "type": "response",
-            "text": cancel_text,
-        })
-        append_history_turn(user_id, thread_id, "assistant", cancel_text)
-        await persist_history(user_id, thread_id)
-
-    elif action in ("continue", "adjust", "skip", "retry"):
-        await resume_goal_from_gate(
-            user_id=user_id,
-            author_display_name=author_display_name,
-            action=action,
-            changes=body.changes,
-        )
-
-    elif action == "modify":
-        await run_goal_modification(
-            changes=body.changes,
-            user_id=user_id,
-            author_display_name=author_display_name,
-            session_id=thread_id,
-            memory_mode=memory_mode,
-            project_tag=project_tag,
-        )
-
-    return {"status": "ok", "action": action}

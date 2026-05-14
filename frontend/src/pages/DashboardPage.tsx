@@ -49,33 +49,10 @@ export function DashboardPage() {
           timestamp: new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' }),
         },
       ])
-    } else if (msg.type === 'plan') {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `plan-${Date.now()}`,
-          role: 'assistant',
-          content: msg.content || msg.text || 'Plan ready for approval.',
-          timestamp: new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' }),
-          actionType: 'plan',
-        },
-      ])
-    } else if (msg.type === 'gate') {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `gate-${Date.now()}`,
-          role: 'assistant',
-          content: msg.content || msg.text || 'Goal paused at gate.',
-          timestamp: new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' }),
-          actionType: 'gate',
-          gateKind: msg.gate_kind,
-        },
-      ])
     }
   }, [])
 
-  const { isConnected, isThinking, statusText, sendMessage, connect, disconnect, resetThinking, markThinking } =
+  const { isConnected, isThinking, statusText, sendMessage, connect, disconnect } =
     useWebSocket(handleWSMessage)
 
   // Load workspaces on mount
@@ -173,39 +150,6 @@ export function DashboardPage() {
     }
   }
     
-  async function handleAction(action: 'approve' | 'cancel' | 'modify' | 'continue' | 'adjust' | 'skip' | 'retry', changes?: string) {
-    if (!activeThread) return
-    // Resolve the CURRENT plan/gate messages synchronously, before the POST.
-    // If we did this after `await postThreadAction(...)`, a fresh `plan`/`gate`
-    // frame dispatched by the backend's fire-and-forget execute_goal could
-    // land in `messages` first and get incorrectly marked resolved by this map.
-    setMessages((prev) =>
-      prev.map((m) =>
-        m.actionType === 'plan' || m.actionType === 'gate'
-          ? { ...m, actionType: undefined, actionResolved: action }
-          : m
-      )
-    )
-    // Show the thinking indicator immediately for actions that trigger backend
-    // work. From here on, the backend's WebSocket frames manage isThinking —
-    // status frames keep it on, plan/gate/response/error/message turn it off.
-    // Cancel is excluded because the backend emits a response frame instantly
-    // and we'd just flash the indicator. Don't reset in `finally` either, or
-    // we'd race the backend frames and kill the indicator the moment the HTTP
-    // response arrives.
-    if (action !== 'cancel') {
-      markThinking()
-    }
-    try {
-      const { postThreadAction } = await import('../api/client')
-      await postThreadAction(activeThread.id, action, changes)
-    } catch (e) {
-      console.error('Action failed:', e)
-      // Only reset on failure — otherwise the WS frames are the authority.
-      resetThinking()
-    }
-  }
-
   function handleSendMessage(content: string) {
     setMessages((prev) => [
       ...prev,
@@ -266,7 +210,6 @@ export function DashboardPage() {
                 workspaceSlug={activeWorkspace}
                 threadTitle={activeThread.title}
                 onSendMessage={handleSendMessage}
-                onAction={handleAction}
                 onRosterClick={
                   activeWorkspace === 'director'
                     ? handleRosterClick

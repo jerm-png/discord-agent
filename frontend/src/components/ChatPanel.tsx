@@ -12,9 +12,6 @@ import {
   Network,
   Shield,
   Terminal,
-  Check,
-  X,
-  Edit3,
 } from 'lucide-react'
 import { CyberFrame } from './CyberFrame'
 import { CommandBar } from './CommandBar'
@@ -22,15 +19,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ChatMessage as ApiChatMessage } from '../api/client'
 
-export type ChatMessage = ApiChatMessage & {
-  actionType?: 'plan' | 'gate'
-  actionResolved?: string
-  // Sub-kind for gates. "question" means the agent is asking the user
-  // something — render an inline textarea so the answer rides on Continue.
-  gateKind?: string
-}
-
-type ActionKind = 'approve' | 'cancel' | 'modify' | 'continue' | 'adjust' | 'skip' | 'retry'
+export type ChatMessage = ApiChatMessage
 
 interface ChatPanelProps {
   messages: ChatMessage[]
@@ -41,7 +30,6 @@ interface ChatPanelProps {
   workspaceSlug: string
   threadTitle: string
   onSendMessage: (content: string) => void
-  onAction?: (action: ActionKind, changes?: string) => void
   onRosterClick?: () => void
 }
 
@@ -67,15 +55,9 @@ export function ChatPanel({
   workspaceSlug,
   threadTitle,
   onSendMessage,
-  onAction,
   onRosterClick,
 }: ChatPanelProps) {
   const [inputValue, setInputValue] = useState('')
-  const [modifyTarget, setModifyTarget] = useState<{ messageId: string; action: ActionKind } | null>(null)
-  const [modifyText, setModifyText] = useState('')
-  // Per-question-gate answer text, keyed by message id. Lets each gate
-  // keep its own draft if the user scrolls away or revisits.
-  const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>({})
   const [cycles, setCycles] = useState(0)
   const [hexStream, setHexStream] = useState<string[]>([])
   const [activeNodes, setActiveNodes] = useState<number[]>([])
@@ -593,93 +575,6 @@ export function ChatPanel({
                       </div>
                     )}
 
-                    {message.actionType === 'plan' && onAction && (
-                      <div className="mt-4 pt-3 border-t border-[#1a1a22] flex flex-wrap gap-2">
-                        <button
-                          onClick={() => onAction('approve')}
-                          className="px-3 py-1.5 industrial-raised border border-neon-green/40 text-neon-green hover:border-neon-green hover:glow-green transition-all flex items-center gap-1.5"
-                        >
-                          <Check className="w-3.5 h-3.5" />
-                          <span className="font-mono text-[10px] uppercase tracking-wider font-bold">Approve</span>
-                        </button>
-                        <button
-                          onClick={() => { setModifyTarget({ messageId: message.id, action: 'modify' }); setModifyText('') }}
-                          className="px-3 py-1.5 industrial-raised border border-neon-cyan/40 text-neon-cyan hover:border-neon-cyan hover:glow-cyan transition-all flex items-center gap-1.5"
-                        >
-                          <Edit3 className="w-3.5 h-3.5" />
-                          <span className="font-mono text-[10px] uppercase tracking-wider font-bold">Modify</span>
-                        </button>
-                        <button
-                          onClick={() => onAction('cancel')}
-                          className="px-3 py-1.5 industrial-raised border border-neon-pink/40 text-neon-pink hover:border-neon-pink hover:glow-pink transition-all flex items-center gap-1.5"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                          <span className="font-mono text-[10px] uppercase tracking-wider font-bold">Cancel</span>
-                        </button>
-                      </div>
-                    )}
-
-                    {message.actionType === 'gate' && onAction && (
-                      <div className="mt-4 pt-3 border-t border-[#1a1a22]">
-                        {message.gateKind === 'question' && (
-                          <textarea
-                            value={questionAnswers[message.id] ?? ''}
-                            onChange={(e) =>
-                              setQuestionAnswers((prev) => ({
-                                ...prev,
-                                [message.id]: e.target.value,
-                              }))
-                            }
-                            placeholder="Type your answers here..."
-                            rows={4}
-                            autoFocus
-                            className="w-full mb-3 px-3 py-2 industrial-inset border-2 border-neon-cyan/30 text-foreground placeholder:text-muted-foreground/40 font-sans text-sm resize-none focus:outline-none focus:border-neon-pink/50"
-                          />
-                        )}
-                        <div className="flex flex-wrap gap-2">
-                          <button
-                            onClick={() => {
-                              if (message.gateKind === 'question') {
-                                const answer = (questionAnswers[message.id] ?? '').trim()
-                                onAction('continue', answer || undefined)
-                                setQuestionAnswers((prev) => {
-                                  const { [message.id]: _, ...rest } = prev
-                                  return rest
-                                })
-                              } else {
-                                onAction('continue')
-                              }
-                            }}
-                            className="px-3 py-1.5 industrial-raised border border-neon-green/40 text-neon-green hover:border-neon-green hover:glow-green transition-all flex items-center gap-1.5"
-                          >
-                            <Check className="w-3.5 h-3.5" />
-                            <span className="font-mono text-[10px] uppercase tracking-wider font-bold">Continue</span>
-                          </button>
-                          <button
-                            onClick={() => { setModifyTarget({ messageId: message.id, action: 'adjust' }); setModifyText('') }}
-                            className="px-3 py-1.5 industrial-raised border border-neon-cyan/40 text-neon-cyan hover:border-neon-cyan hover:glow-cyan transition-all flex items-center gap-1.5"
-                          >
-                            <Edit3 className="w-3.5 h-3.5" />
-                            <span className="font-mono text-[10px] uppercase tracking-wider font-bold">Adjust</span>
-                          </button>
-                          <button
-                            onClick={() => onAction('cancel')}
-                            className="px-3 py-1.5 industrial-raised border border-neon-pink/40 text-neon-pink hover:border-neon-pink hover:glow-pink transition-all flex items-center gap-1.5"
-                          >
-                            <X className="w-3.5 h-3.5" />
-                            <span className="font-mono text-[10px] uppercase tracking-wider font-bold">Cancel</span>
-                          </button>
-                        </div>
-                      </div>
-                    )}
-
-                    {message.actionResolved && (
-                      <div className="mt-3 pt-2 border-t border-[#1a1a22]">
-                        <span className="font-mono text-[10px] text-muted-foreground/50 uppercase tracking-wider">
-                          → {message.actionResolved}
-                        </span>
-                      </div>
-                    )}
                   </div>
                 </CyberFrame>
 
@@ -837,52 +732,6 @@ export function ChatPanel({
         </div>
       </div>
 
-      {modifyTarget && onAction && (
-        <div
-          className="absolute inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm"
-          onClick={() => setModifyTarget(null)}
-        >
-          <div
-            className="industrial-raised border-2 border-neon-cyan/50 bg-[#0a0a10] w-full max-w-md mx-4 p-6"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center gap-2 mb-4">
-              <Edit3 className="w-4 h-4 text-neon-cyan" />
-              <span className="font-mono text-xs text-neon-cyan glow-cyan-text uppercase tracking-wider font-bold">
-                {modifyTarget.action === 'modify' ? 'Modify Plan' : 'Adjust Step'}
-              </span>
-            </div>
-            <textarea
-              value={modifyText}
-              onChange={(e) => setModifyText(e.target.value)}
-              placeholder="Describe the change..."
-              rows={4}
-              autoFocus
-              className="w-full px-3 py-2 industrial-inset border-2 border-neon-cyan/30 text-foreground placeholder:text-muted-foreground/40 font-sans text-sm resize-none focus:outline-none focus:border-neon-pink/50"
-            />
-            <div className="flex justify-end gap-2 mt-4">
-              <button
-                onClick={() => setModifyTarget(null)}
-                className="px-3 py-1.5 industrial-inset border border-muted-foreground/30 text-muted-foreground hover:text-foreground transition-all"
-              >
-                <span className="font-mono text-[10px] uppercase tracking-wider font-bold">Cancel</span>
-              </button>
-              <button
-                onClick={() => {
-                  if (modifyText.trim()) {
-                    onAction(modifyTarget.action, modifyText.trim())
-                    setModifyTarget(null)
-                  }
-                }}
-                disabled={!modifyText.trim()}
-                className="px-3 py-1.5 industrial-raised border border-neon-green/50 text-neon-green hover:border-neon-green hover:glow-green transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-              >
-                <span className="font-mono text-[10px] uppercase tracking-wider font-bold">Submit</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
