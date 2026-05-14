@@ -70,6 +70,9 @@ from app.db.memory_manager import (
     get_consolidation_candidates,
     archive_memory,
     log_conversation_turn,
+    get_entity_by_id,
+    get_entity_tags,
+    get_entity_timeline,
     search_conversations,
     log_reasoning_trace,
     check_stale_memories,
@@ -2516,7 +2519,68 @@ async def process_user_message(
                 + "\n[Use these records to verify claims about what you previously said.]\n\n"
             )
 
-    full_message = user_message
+    # ── Thread-linked entity context ──────────────────────────────
+    # If this thread was opened from the roster (entity_id set on the
+    # row), pull the entity's facts + active tags + timeline tail and
+    # inject them so Drift knows who the conversation is about. This
+    # is independent of the keyword-detect _entity_context above and
+    # is the authoritative source when the link is explicit.
+    _thread_entity_context = ""
+    try:
+        from app.db.threads import get_thread as _get_thread
+        _thread_row = _get_thread(str(context_id)) if context_id else None
+        _ent_id = _thread_row.get("entity_id") if _thread_row else None
+        if _ent_id:
+            _ent = get_entity_by_id(int(_ent_id))
+            if _ent:
+                _tags = get_entity_tags(int(_ent_id))
+                _timeline = get_entity_timeline(int(_ent_id))[-6:]
+                _rel = (_ent.get("relationship_type") or "")
+                _rel_label = _rel.replace("_", " ").title() if _rel else ""
+                _role = _ent.get("role") or ""
+                if _role and _rel_label:
+                    _ident = f"{_ent['name']} ({_role}, {_rel_label})"
+                elif _role:
+                    _ident = f"{_ent['name']} ({_role})"
+                elif _rel_label:
+                    _ident = f"{_ent['name']} ({_rel_label})"
+                else:
+                    _ident = _ent["name"]
+                _lines = [
+                    f"[Entity context: This thread is about {_ident}."
+                ]
+                if _tags:
+                    _lines.append(
+                        "Active situations: " + ", ".join(_tags) + "."
+                    )
+                if _timeline:
+                    _lines.append("Recent timeline:")
+                    for _entry in _timeline:
+                        _date = (_entry.get("recorded_at") or "")[:10]
+                        _cat = _entry.get("category", "note")
+                        _fact = (_entry.get("fact") or "").strip()
+                        _status_suffix = (
+                            " [superseded]"
+                            if _entry.get("status") != "active" else ""
+                        )
+                        _lines.append(
+                            f"  • [{_date}] {_cat}: {_fact}{_status_suffix}"
+                        )
+                _lines.append(
+                    "Use this context to inform your responses — "
+                    "this is who Jerm is talking about.]"
+                )
+                _thread_entity_context = "\n".join(_lines) + "\n\n"
+    except Exception as _ee:
+        logger.warning(f"[entity_ctx] lookup failed: {_ee}")
+
+    # Always wrap user_message with the "Current message:" marker so the
+    # /threads/{id}/messages endpoint can reliably split the channel /
+    # entity / memory prefix off when returning stored history. Without
+    # this, a turn with no memory_context stored the raw user text right
+    # after the channel block and the prefix leaked into the chat bubble
+    # on reload.
+    full_message = f"Current message: {user_message}"
     if memory_context:
         full_message = (
             f"{memory_context}\n\n"
@@ -2525,6 +2589,7 @@ async def process_user_message(
 
     full_message = (
         f"{channel_ctx}\n"
+        f"{_thread_entity_context}"
         f"{_entity_context}"
         f"{_search_context}"
         f"{full_message}"

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
@@ -193,9 +194,33 @@ async def get_thread_messages(
                     parts.append(getattr(block, "text", ""))
             content = " ".join(parts)
 
-        # Strip system context prefix from user messages
-        if role == "user" and "Current message: " in content:
-            content = content.split("Current message: ", 1)[1]
+        # Strip system-context prefix from user messages so the chat
+        # bubble shows only what the user typed.
+        if role == "user":
+            if "Current message: " in content:
+                # Standard path — orchestrator wraps every user turn
+                # with this marker, the tail is the raw text.
+                content = content.split("Current message: ", 1)[1]
+            else:
+                # Pre-migration fallback: messages stored before the
+                # orchestrator started always-wrapping with "Current
+                # message:". Strip the leading [Channel: #X | Purpose:
+                # ...] block (workspace personalities don't contain ']'
+                # chars, so the first ']' is the closing bracket), then
+                # the [SESSION ARCHIVE ... [Use these records ...]]
+                # block if a confabulation check fired. Anything else
+                # gracefully degrades to "first turn looks a bit noisy."
+                _channel_re = re.compile(
+                    r"^\[Channel: #[^\]]*\]\s*", re.DOTALL
+                )
+                _archive_re = re.compile(
+                    r"^\[SESSION ARCHIVE[\s\S]*?\[Use these records[^\]]*\]\s*",
+                    re.DOTALL,
+                )
+                for _r in (_channel_re, _archive_re):
+                    m = _r.match(content)
+                    if m:
+                        content = content[m.end():]
 
         content = content.strip()
         if not content:
