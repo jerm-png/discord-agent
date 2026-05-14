@@ -5,6 +5,7 @@ import { cn } from '../lib/utils'
 interface CommandBarProps {
   onSendMessage: (content: string) => void
   workspaceSlug: string
+  onRosterClick?: () => void
 }
 
 type ActiveCmd = 'remember' | 'search' | null
@@ -14,7 +15,11 @@ const PLACEHOLDERS: Record<Exclude<ActiveCmd, null>, string> = {
   search: 'Search query...',
 }
 
-export function CommandBar({ onSendMessage, workspaceSlug }: CommandBarProps) {
+export function CommandBar({
+  onSendMessage,
+  workspaceSlug,
+  onRosterClick,
+}: CommandBarProps) {
   const [active, setActive] = useState<ActiveCmd>(null)
   const [value, setValue] = useState('')
 
@@ -98,8 +103,17 @@ export function CommandBar({ onSendMessage, workspaceSlug }: CommandBarProps) {
 
           {showRoster && (
             <button
-              onClick={() => onSendMessage('!roster')}
-              title="Roster (!roster)"
+              onClick={() => {
+                if (onRosterClick) {
+                  // Navigate back to the roster view by deselecting the
+                  // active thread (handled by parent). Falls back to the
+                  // legacy !roster chat command only if no handler is wired.
+                  onRosterClick()
+                } else {
+                  onSendMessage('!roster')
+                }
+              }}
+              title="Roster"
               className={cn(
                 'p-1 industrial-inset border border-neon-cyan/20 text-neon-cyan/70',
                 'hover:text-neon-cyan hover:border-neon-cyan/60 hover:glow-cyan transition-all',

@@ -2,6 +2,7 @@ from fastapi import APIRouter
 from app.api.v1.endpoints import (
     auth,
     chat,
+    entities,
     flags,
     status,
     threads,
@@ -38,4 +39,9 @@ router.include_router(
     flags.router,
     prefix="/flags",
     tags=["flags"],
+)
+router.include_router(
+    entities.router,
+    prefix="/entities",
+    tags=["entities"],
 )

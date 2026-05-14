@@ -39,6 +39,7 @@ interface ChatPanelProps {
   threadTitle: string
   onSendMessage: (content: string) => void
   onAction?: (action: ActionKind, changes?: string) => void
+  onRosterClick?: () => void
 }
 
 function formatTime(ts: string): string {
@@ -64,6 +65,7 @@ export function ChatPanel({
   threadTitle,
   onSendMessage,
   onAction,
+  onRosterClick,
 }: ChatPanelProps) {
   const [inputValue, setInputValue] = useState('')
   const [modifyTarget, setModifyTarget] = useState<{ messageId: string; action: ActionKind } | null>(null)
@@ -678,7 +680,11 @@ export function ChatPanel({
         )}
       </div>
 
-      <CommandBar onSendMessage={onSendMessage} workspaceSlug={workspaceSlug} />
+      <CommandBar
+        onSendMessage={onSendMessage}
+        workspaceSlug={workspaceSlug}
+        onRosterClick={onRosterClick}
+      />
 
       <div className="p-4 relative industrial-panel">
         <div className="absolute -top-[1px] left-0 right-0 industrial-divider-h" />

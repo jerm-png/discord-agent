@@ -305,9 +305,37 @@ def init_db():
             entity_type TEXT NOT NULL DEFAULT 'person',
             role TEXT,
             context TEXT,
+            accent_color TEXT NOT NULL DEFAULT 'cyan',
+            relationship_type TEXT NOT NULL DEFAULT 'direct_report',
+            status TEXT NOT NULL DEFAULT 'active',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
+    """)
+    # Idempotent migrations for databases predating the roster fields.
+    for _stmt in (
+        "ALTER TABLE entities ADD COLUMN accent_color TEXT NOT NULL DEFAULT 'cyan'",
+        "ALTER TABLE entities ADD COLUMN relationship_type TEXT NOT NULL DEFAULT 'direct_report'",
+        "ALTER TABLE entities ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
+    ):
+        try:
+            c.execute(_stmt)
+        except sqlite3.OperationalError:
+            pass
+
+    # Situation tags — short labels admin can attach/remove from an entity.
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS entity_tags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_id INTEGER NOT NULL REFERENCES entities(id),
+            tag_name TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(entity_id, tag_name)
+        )
+    """)
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_entity_tags_entity
+        ON entity_tags(entity_id)
     """)
 
     c.execute("""
@@ -2424,6 +2452,227 @@ def get_entity_profile(name: str) -> dict:
         return profile
     finally:
         conn.close()
+
+
+def create_entity(
+    name: str,
+    role: str | None = None,
+    relationship_type: str = "direct_report",
+    accent_color: str = "cyan",
+    first_note: str | None = None,
+) -> dict:
+    """Create a new entity row + optionally seed an entity_fact 'note'
+    for the first_note value. Returns the freshly-fetched row."""
+    now = datetime.now().isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(
+            """
+            INSERT INTO entities (
+                name, entity_type, role, context,
+                accent_color, relationship_type, status,
+                created_at, updated_at
+            )
+            VALUES (?, 'person', ?, NULL, ?, ?, 'active', ?, ?)
+            """,
+            (name, role, accent_color, relationship_type, now, now),
+        )
+        entity_id = cur.lastrowid
+        if first_note:
+            conn.execute(
+                """
+                INSERT INTO entity_facts (
+                    entity_id, category, fact, status,
+                    recorded_at, updated_at, source_channel, confidence
+                )
+                VALUES (?, 'note', ?, 'active', ?, ?, 'director', 0.9)
+                """,
+                (entity_id, first_note, now, now),
+            )
+        conn.commit()
+        row = conn.execute(
+            "SELECT id, name, role, accent_color, relationship_type, "
+            "status, created_at, updated_at FROM entities WHERE id = ?",
+            (entity_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    return {
+        "id": row[0], "name": row[1], "role": row[2],
+        "accent_color": row[3], "relationship_type": row[4],
+        "status": row[5], "created_at": row[6], "updated_at": row[7],
+    }
+
+
+def update_entity(entity_id: int, fields: dict) -> dict | None:
+    """Partial update — accepts any subset of {name, role, accent_color,
+    relationship_type, status, context}. Returns the updated row or None
+    if the entity doesn't exist."""
+    allowed = {
+        "name", "role", "accent_color", "relationship_type",
+        "status", "context",
+    }
+    sets = [(k, v) for k, v in fields.items() if k in allowed]
+    if not sets:
+        return get_entity_by_id(entity_id)
+    now = datetime.now().isoformat()
+    set_clause = ", ".join(f"{k} = ?" for k, _ in sets)
+    params = [v for _, v in sets] + [now, entity_id]
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(
+            f"UPDATE entities SET {set_clause}, updated_at = ? WHERE id = ?",
+            params,
+        )
+        if cur.rowcount == 0:
+            return None
+        conn.commit()
+    finally:
+        conn.close()
+    return get_entity_by_id(entity_id)
+
+
+def get_entity_by_id(entity_id: int) -> dict | None:
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        row = conn.execute(
+            "SELECT id, name, role, accent_color, relationship_type, "
+            "status, created_at, updated_at, context "
+            "FROM entities WHERE id = ?",
+            (entity_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0], "name": row[1], "role": row[2],
+            "accent_color": row[3], "relationship_type": row[4],
+            "status": row[5], "created_at": row[6],
+            "updated_at": row[7], "context": row[8],
+        }
+    finally:
+        conn.close()
+
+
+def list_entities_full(include_archived: bool = True) -> list:
+    """
+    Returns every entity (filtered to entity_type='person') with the
+    roster-page fields: accent_color, relationship_type, status,
+    timestamps, active fact_count, and active situation tags.
+    Thread counts are joined separately because they live in the
+    threads table (different file).
+    """
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        sql = (
+            "SELECT e.id, e.name, e.role, e.accent_color, "
+            "e.relationship_type, e.status, e.created_at, e.updated_at, "
+            "COUNT(DISTINCT f.id) AS fact_count "
+            "FROM entities e "
+            "LEFT JOIN entity_facts f "
+            "  ON f.entity_id = e.id AND f.status = 'active' "
+            "WHERE e.entity_type = 'person' "
+        )
+        if not include_archived:
+            sql += "AND e.status = 'active' "
+        sql += "GROUP BY e.id ORDER BY e.name"
+        rows = conn.execute(sql).fetchall()
+        entities = [
+            {
+                "id": r[0], "name": r[1], "role": r[2],
+                "accent_color": r[3], "relationship_type": r[4],
+                "status": r[5], "created_at": r[6],
+                "updated_at": r[7], "fact_count": r[8],
+                "tags": [],
+            }
+            for r in rows
+        ]
+        # Attach tags in a single follow-up query.
+        if entities:
+            id_list = [e["id"] for e in entities]
+            placeholders = ",".join("?" * len(id_list))
+            tag_rows = conn.execute(
+                f"SELECT entity_id, tag_name FROM entity_tags "
+                f"WHERE entity_id IN ({placeholders}) "
+                f"ORDER BY created_at ASC",
+                id_list,
+            ).fetchall()
+            by_eid: dict = {}
+            for eid, tname in tag_rows:
+                by_eid.setdefault(eid, []).append(tname)
+            for e in entities:
+                e["tags"] = by_eid.get(e["id"], [])
+        return entities
+    finally:
+        conn.close()
+
+
+def get_entity_tags(entity_id: int) -> list:
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        rows = conn.execute(
+            "SELECT tag_name FROM entity_tags WHERE entity_id = ? "
+            "ORDER BY created_at ASC",
+            (entity_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [r[0] for r in rows]
+
+
+def add_entity_tag(entity_id: int, tag_name: str) -> bool:
+    """Add a tag. Returns True if newly inserted, False if duplicate."""
+    tag = tag_name.strip()
+    if not tag:
+        return False
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        try:
+            conn.execute(
+                "INSERT INTO entity_tags (entity_id, tag_name, created_at) "
+                "VALUES (?, ?, ?)",
+                (entity_id, tag, datetime.now().isoformat()),
+            )
+            conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+    finally:
+        conn.close()
+
+
+def remove_entity_tag(entity_id: int, tag_name: str) -> bool:
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(
+            "DELETE FROM entity_tags WHERE entity_id = ? AND tag_name = ?",
+            (entity_id, tag_name),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def get_entity_timeline(entity_id: int) -> list:
+    """Full timeline = every entity_fact ever recorded for this entity,
+    oldest first, used by the expanded card view."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        rows = conn.execute(
+            "SELECT id, category, fact, status, recorded_at "
+            "FROM entity_facts WHERE entity_id = ? "
+            "ORDER BY recorded_at ASC",
+            (entity_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [
+        {
+            "id": r[0], "category": r[1], "fact": r[2],
+            "status": r[3], "recorded_at": r[4],
+        }
+        for r in rows
+    ]
 
 
 def list_entities(entity_type: str = "person") -> list:

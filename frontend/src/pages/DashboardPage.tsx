@@ -3,12 +3,20 @@ import { SystemStatusBar } from '../components/SystemStatusBar'
 import { WorkspaceSidebar } from '../components/WorkspaceSidebar'
 import { ThreadList } from '../components/ThreadList'
 import { ChatPanel } from '../components/ChatPanel'
+import { RosterPage } from '../components/RosterPage'
+import { EntityHeader } from '../components/EntityHeader'
 import { useWebSocket } from '../hooks/useWebSocket'
 import type { WSMessage } from '../hooks/useWebSocket'
 import { useDriftStore } from '../store/driftStore'
 import { useAuthStore } from '../store/authStore'
-import { getWorkspaces, getThreads, createThread, archiveThread, getMessages } from '../api/client'
-import type { Thread } from '../api/client'
+import {
+  getWorkspaces,
+  getThreads,
+  createThread,
+  archiveThread,
+  getMessages,
+} from '../api/client'
+import type { Thread, Entity } from '../api/client'
 import type { ChatMessage } from '../components/ChatPanel'
 
 export function DashboardPage() {
@@ -141,6 +149,28 @@ export function DashboardPage() {
       console.error('Failed to create thread:', e)
     }
   }
+
+  // Roster: deselect any active thread so the empty-state branch renders
+  // RosterPage. Only meaningful in the director workspace.
+  function handleRosterClick() {
+    setActiveThread(null)
+  }
+
+  // Create a new thread pre-linked to an entity, then open it. Used by
+  // the EntityCard "+ New Thread" button on the roster page.
+  async function handleCreateEntityThread(entity: Entity) {
+    try {
+      const thread = await createThread(
+        activeWorkspace,
+        `Coaching: ${entity.name}`,
+        entity.id,
+      )
+      addThread(thread)
+      setActiveThread(thread)
+    } catch (e) {
+      console.error('Failed to create entity-linked thread:', e)
+    }
+  }
     
   async function handleAction(action: 'approve' | 'cancel' | 'modify' | 'continue' | 'adjust' | 'skip' | 'retry', changes?: string) {
     if (!activeThread) return
@@ -219,16 +249,35 @@ export function DashboardPage() {
           isLoading={threadsLoading}
         />
         {activeThread ? (
-          <ChatPanel
-            messages={messages}
-            isThinking={isThinking}
-            statusText={statusText}
-            isConnected={isConnected}
-            workspaceLabel={activeWorkspaceLabel}
-            workspaceSlug={activeWorkspace}
-            threadTitle={activeThread.title}
-            onSendMessage={handleSendMessage}
-            onAction={handleAction}
+          <div className="flex-1 flex flex-col overflow-hidden">
+            {/* Collapsible entity profile bar — only when the thread is
+                linked to a roster entity. */}
+            {activeThread.entity_id != null && (
+              <EntityHeader entityId={activeThread.entity_id} />
+            )}
+            <div className="flex-1 flex flex-col overflow-hidden">
+              <ChatPanel
+                messages={messages}
+                isThinking={isThinking}
+                statusText={statusText}
+                isConnected={isConnected}
+                workspaceLabel={activeWorkspaceLabel}
+                workspaceSlug={activeWorkspace}
+                threadTitle={activeThread.title}
+                onSendMessage={handleSendMessage}
+                onAction={handleAction}
+                onRosterClick={
+                  activeWorkspace === 'director'
+                    ? handleRosterClick
+                    : undefined
+                }
+              />
+            </div>
+          </div>
+        ) : activeWorkspace === 'director' ? (
+          <RosterPage
+            onOpenThread={(t) => setActiveThread(t)}
+            onCreateEntityThread={handleCreateEntityThread}
           />
         ) : (
           <div className="flex-1 flex items-center justify-center bg-[#0a0a0f] scanlines">

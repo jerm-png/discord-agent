@@ -24,6 +24,7 @@ export interface Thread {
   last_message_at: string | null
   status: string
   message_count: number
+  entity_id?: number | null
 }
 
 async function request<T>(
@@ -111,11 +112,18 @@ export async function getThreads(workspaceSlug: string): Promise<Thread[]> {
 
 export async function createThread(
   workspaceSlug: string,
-  title: string
+  title: string,
+  entityId?: number | null,
 ): Promise<Thread> {
   const data = await request<{ thread: Thread }>(
     `/api/v1/workspaces/${workspaceSlug}/threads`,
-    { method: 'POST', body: JSON.stringify({ title }) }
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        title,
+        entity_id: entityId ?? null,
+      }),
+    }
   )
   return data.thread
 }
@@ -210,4 +218,114 @@ export async function reviewFlag(flagId: number): Promise<void> {
   await request<unknown>(`/api/v1/flags/${flagId}/review`, {
     method: 'POST',
   })
+}
+
+// ── Entities (Admin Prime roster) ──────────────────────────────
+
+export type EntityAccentColor = 'cyan' | 'pink' | 'green' | 'yellow'
+
+export type EntityRelationshipType =
+  | 'direct_report'
+  | 'peer'
+  | 'skip_level'
+  | 'stakeholder'
+  | 'external'
+
+export interface Entity {
+  id: number
+  name: string
+  role: string | null
+  accent_color: EntityAccentColor
+  relationship_type: EntityRelationshipType
+  status: 'active' | 'archived'
+  created_at: string
+  updated_at: string
+  fact_count: number
+  thread_count: number
+  tags: string[]
+}
+
+export interface EntityTimelineEntry {
+  id: number
+  category: string
+  fact: string
+  status: string
+  recorded_at: string
+}
+
+export async function getEntities(): Promise<Entity[]> {
+  const data = await request<{ entities: Entity[] }>(`/api/v1/entities`)
+  return data.entities ?? []
+}
+
+export async function createEntity(payload: {
+  name: string
+  title?: string
+  relationship_type: EntityRelationshipType
+  accent_color: EntityAccentColor
+  first_note?: string
+}): Promise<Entity> {
+  const data = await request<{ entity: Entity }>(`/api/v1/entities`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+  return data.entity
+}
+
+export async function patchEntity(
+  entityId: number,
+  fields: Partial<{
+    name: string
+    role: string
+    accent_color: EntityAccentColor
+    relationship_type: EntityRelationshipType
+    status: 'active' | 'archived'
+    context: string
+  }>,
+): Promise<Entity> {
+  const data = await request<{ entity: Entity }>(
+    `/api/v1/entities/${entityId}`,
+    { method: 'PATCH', body: JSON.stringify(fields) },
+  )
+  return data.entity
+}
+
+export async function addEntityTag(
+  entityId: number,
+  tag: string,
+): Promise<string[]> {
+  const data = await request<{ tags: string[] }>(
+    `/api/v1/entities/${entityId}/tags`,
+    { method: 'POST', body: JSON.stringify({ tag }) },
+  )
+  return data.tags ?? []
+}
+
+export async function removeEntityTag(
+  entityId: number,
+  tag: string,
+): Promise<string[]> {
+  const data = await request<{ tags: string[] }>(
+    `/api/v1/entities/${entityId}/tags/${encodeURIComponent(tag)}`,
+    { method: 'DELETE' },
+  )
+  return data.tags ?? []
+}
+
+export async function getEntityTimeline(
+  entityId: number,
+): Promise<EntityTimelineEntry[]> {
+  const data = await request<{ timeline: EntityTimelineEntry[] }>(
+    `/api/v1/entities/${entityId}/timeline`,
+  )
+  return data.timeline ?? []
+}
+
+export async function getEntityThreads(
+  entityId: number,
+): Promise<Thread[]> {
+  const data = await request<{ threads: Thread[] }>(
+    `/api/v1/entities/${entityId}/threads`,
+  )
+  return data.threads ?? []
 }

@@ -16,6 +16,7 @@ router = APIRouter()
 
 class ThreadCreate(BaseModel):
     title: str
+    entity_id: int | None = None
 
 
 class ThreadRename(BaseModel):
@@ -75,7 +76,9 @@ async def create_workspace_thread(
             status_code=400,
             detail="Thread title cannot be empty",
         )
-    thread = create_thread(workspace_slug, title, user["user_id"])
+    thread = create_thread(
+        workspace_slug, title, user["user_id"], entity_id=body.entity_id
+    )
     return {"thread": thread}
 
 

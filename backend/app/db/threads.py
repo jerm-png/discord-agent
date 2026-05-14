@@ -22,6 +22,7 @@ def init_threads_table() -> None:
                 id TEXT PRIMARY KEY,
                 workspace TEXT NOT NULL,
                 user_id TEXT NOT NULL DEFAULT 'drift-owner',
+                entity_id INTEGER,
                 title TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -30,39 +31,72 @@ def init_threads_table() -> None:
                 message_count INTEGER NOT NULL DEFAULT 0
             )
         """)
-        # Migration: older databases were created before user-scoping.
-        # Idempotent — second run raises OperationalError ("duplicate
-        # column name"), which we swallow.
-        try:
-            conn.execute(
-                "ALTER TABLE threads ADD COLUMN user_id TEXT "
-                "NOT NULL DEFAULT 'drift-owner'"
-            )
-        except sqlite3.OperationalError:
-            pass
+        # Idempotent migrations for pre-existing databases.
+        for _stmt in (
+            "ALTER TABLE threads ADD COLUMN user_id TEXT "
+            "NOT NULL DEFAULT 'drift-owner'",
+            "ALTER TABLE threads ADD COLUMN entity_id INTEGER",
+        ):
+            try:
+                conn.execute(_stmt)
+            except sqlite3.OperationalError:
+                pass
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_threads_workspace_user "
             "ON threads(workspace, user_id, status)"
         )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_threads_entity "
+            "ON threads(entity_id, status)"
+        )
 
 
-def create_thread(workspace: str, title: str, user_id: str) -> dict:
+def create_thread(
+    workspace: str, title: str, user_id: str,
+    entity_id: int | None = None,
+) -> dict:
     now = datetime.now(timezone.utc).isoformat()
     thread_id = str(uuid.uuid4())
     with _conn() as conn:
         conn.execute(
             """
             INSERT INTO threads
-                (id, workspace, user_id, title, created_at,
+                (id, workspace, user_id, entity_id, title, created_at,
                  updated_at, status, message_count)
-            VALUES (?, ?, ?, ?, ?, ?, 'active', 0)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 0)
             """,
-            (thread_id, workspace, user_id, title, now, now),
+            (thread_id, workspace, user_id, entity_id, title, now, now),
         )
         row = conn.execute(
             "SELECT * FROM threads WHERE id = ?", (thread_id,)
         ).fetchone()
     return _row_to_dict(row)
+
+
+def list_threads_for_entity(entity_id: int, user_id: str) -> list[dict]:
+    """All active threads linked to this entity, scoped to the user."""
+    with _conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM threads
+            WHERE entity_id = ? AND user_id = ? AND status = 'active'
+            ORDER BY last_message_at DESC, updated_at DESC
+            """,
+            (entity_id, user_id),
+        ).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def count_threads_for_entity(entity_id: int, user_id: str) -> int:
+    with _conn() as conn:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) FROM threads
+            WHERE entity_id = ? AND user_id = ? AND status = 'active'
+            """,
+            (entity_id, user_id),
+        ).fetchone()
+    return int(row[0]) if row else 0
 
 
 def get_thread(thread_id: str, user_id: str | None = None) -> dict | None:
