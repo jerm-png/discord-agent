@@ -69,6 +69,7 @@ export function DashboardPage() {
           content: msg.content || msg.text || 'Goal paused at gate.',
           timestamp: new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' }),
           actionType: 'gate',
+          gateKind: msg.gate_kind,
         },
       ])
     }

@@ -25,6 +25,9 @@ import type { ChatMessage as ApiChatMessage } from '../api/client'
 export type ChatMessage = ApiChatMessage & {
   actionType?: 'plan' | 'gate'
   actionResolved?: string
+  // Sub-kind for gates. "question" means the agent is asking the user
+  // something — render an inline textarea so the answer rides on Continue.
+  gateKind?: string
 }
 
 type ActionKind = 'approve' | 'cancel' | 'modify' | 'continue' | 'adjust' | 'skip' | 'retry'
@@ -70,6 +73,9 @@ export function ChatPanel({
   const [inputValue, setInputValue] = useState('')
   const [modifyTarget, setModifyTarget] = useState<{ messageId: string; action: ActionKind } | null>(null)
   const [modifyText, setModifyText] = useState('')
+  // Per-question-gate answer text, keyed by message id. Lets each gate
+  // keep its own draft if the user scrolls away or revisits.
+  const [questionAnswers, setQuestionAnswers] = useState<Record<string, string>>({})
   const [cycles, setCycles] = useState(0)
   const [hexStream, setHexStream] = useState<string[]>([])
   const [activeNodes, setActiveNodes] = useState<number[]>([])
@@ -614,28 +620,56 @@ export function ChatPanel({
                     )}
 
                     {message.actionType === 'gate' && onAction && (
-                      <div className="mt-4 pt-3 border-t border-[#1a1a22] flex flex-wrap gap-2">
-                        <button
-                          onClick={() => onAction('continue')}
-                          className="px-3 py-1.5 industrial-raised border border-neon-green/40 text-neon-green hover:border-neon-green hover:glow-green transition-all flex items-center gap-1.5"
-                        >
-                          <Check className="w-3.5 h-3.5" />
-                          <span className="font-mono text-[10px] uppercase tracking-wider font-bold">Continue</span>
-                        </button>
-                        <button
-                          onClick={() => { setModifyTarget({ messageId: message.id, action: 'adjust' }); setModifyText('') }}
-                          className="px-3 py-1.5 industrial-raised border border-neon-cyan/40 text-neon-cyan hover:border-neon-cyan hover:glow-cyan transition-all flex items-center gap-1.5"
-                        >
-                          <Edit3 className="w-3.5 h-3.5" />
-                          <span className="font-mono text-[10px] uppercase tracking-wider font-bold">Adjust</span>
-                        </button>
-                        <button
-                          onClick={() => onAction('cancel')}
-                          className="px-3 py-1.5 industrial-raised border border-neon-pink/40 text-neon-pink hover:border-neon-pink hover:glow-pink transition-all flex items-center gap-1.5"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                          <span className="font-mono text-[10px] uppercase tracking-wider font-bold">Cancel</span>
-                        </button>
+                      <div className="mt-4 pt-3 border-t border-[#1a1a22]">
+                        {message.gateKind === 'question' && (
+                          <textarea
+                            value={questionAnswers[message.id] ?? ''}
+                            onChange={(e) =>
+                              setQuestionAnswers((prev) => ({
+                                ...prev,
+                                [message.id]: e.target.value,
+                              }))
+                            }
+                            placeholder="Type your answers here..."
+                            rows={4}
+                            autoFocus
+                            className="w-full mb-3 px-3 py-2 industrial-inset border-2 border-neon-cyan/30 text-foreground placeholder:text-muted-foreground/40 font-sans text-sm resize-none focus:outline-none focus:border-neon-pink/50"
+                          />
+                        )}
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            onClick={() => {
+                              if (message.gateKind === 'question') {
+                                const answer = (questionAnswers[message.id] ?? '').trim()
+                                onAction('continue', answer || undefined)
+                                setQuestionAnswers((prev) => {
+                                  const { [message.id]: _, ...rest } = prev
+                                  return rest
+                                })
+                              } else {
+                                onAction('continue')
+                              }
+                            }}
+                            className="px-3 py-1.5 industrial-raised border border-neon-green/40 text-neon-green hover:border-neon-green hover:glow-green transition-all flex items-center gap-1.5"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                            <span className="font-mono text-[10px] uppercase tracking-wider font-bold">Continue</span>
+                          </button>
+                          <button
+                            onClick={() => { setModifyTarget({ messageId: message.id, action: 'adjust' }); setModifyText('') }}
+                            className="px-3 py-1.5 industrial-raised border border-neon-cyan/40 text-neon-cyan hover:border-neon-cyan hover:glow-cyan transition-all flex items-center gap-1.5"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                            <span className="font-mono text-[10px] uppercase tracking-wider font-bold">Adjust</span>
+                          </button>
+                          <button
+                            onClick={() => onAction('cancel')}
+                            className="px-3 py-1.5 industrial-raised border border-neon-pink/40 text-neon-pink hover:border-neon-pink hover:glow-pink transition-all flex items-center gap-1.5"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                            <span className="font-mono text-[10px] uppercase tracking-wider font-bold">Cancel</span>
+                          </button>
+                        </div>
                       </div>
                     )}
 

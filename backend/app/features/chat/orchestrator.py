@@ -2314,6 +2314,7 @@ async def execute_goal(
                         _persist_goal_state(user_id)
                         await ws_manager.send(session_id, {
                             "type": "gate",
+                            "gate_kind": "question",
                             "text": (
                                 f"❓ **The agent needs your input before "
                                 f"continuing (step {step_num})**\n\n"
