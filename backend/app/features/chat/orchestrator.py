@@ -74,6 +74,8 @@ from app.db.memory_manager import (
     get_entity_tags,
     get_entity_timeline,
     save_entity_fact,
+    save_goal_state,
+    delete_goal_state,
     search_conversations,
     log_reasoning_trace,
     check_stale_memories,
@@ -247,6 +249,28 @@ def _now_iso() -> str:
     so the /messages endpoint can return real times to the frontend."""
     from datetime import timezone as _tz
     return datetime.now(_tz.utc).isoformat()
+
+
+def _persist_goal_state(user_id: str) -> None:
+    """
+    Snapshot the in-memory pending_goals / execution_context /
+    gate_pending entries for this user_id and write them to SQLite.
+    Empty / popped entries are deleted from the table by save_goal_state.
+
+    Called after every mutation of those dicts in the goal-mode flow so
+    a server restart can rehydrate exactly where it left off. Cheap —
+    each call is at most three SQLite UPSERTs against indexed rows.
+    Wrapped in try/except so a transient DB failure can never block
+    goal execution.
+    """
+    try:
+        save_goal_state(user_id, "pending_goal", pending_goals.get(user_id))
+        save_goal_state(
+            user_id, "execution_context", execution_context.get(user_id)
+        )
+        save_goal_state(user_id, "gate_pending", gate_pending.get(user_id))
+    except Exception as e:
+        logger.warning(f"[goal state persist] {user_id}: {e}")
 
 
 def append_history_turn(
@@ -1564,6 +1588,7 @@ async def _replan_remaining_steps(
         "step_num": from_step_index + 1,
         "author_display_name": author_display_name,
     }
+    _persist_goal_state(user_id)
     await ws_manager.send(session_id, {
         "type": "gate",
         "text": (
@@ -1597,6 +1622,7 @@ async def run_goal_planning(
     pending_goals.pop(user_id, None)
     gate_pending.pop(user_id, None)
     execution_context.pop(user_id, None)
+    _persist_goal_state(user_id)
 
     try:
         response = client.messages.create(
@@ -1659,6 +1685,7 @@ async def run_goal_planning(
         "web_search_count": 0,
         "crew_mode": crew_mode,
     }
+    _persist_goal_state(user_id)
 
     plan_text = _format_plan(goal_text, steps)
     await ws_manager.send(session_id, {
@@ -1716,6 +1743,7 @@ async def execute_goal(
             "steps": [],
             "key_findings": [],
         }
+        _persist_goal_state(user_id)
 
     loop = asyncio.get_running_loop()
     final_output = ""
@@ -1770,6 +1798,7 @@ async def execute_goal(
                     "step_num": step_num,
                     "author_display_name": author_display_name,
                 }
+                _persist_goal_state(user_id)
                 await ws_manager.send(session_id, {
                     "type": "gate",
                     "text": (
@@ -1842,6 +1871,7 @@ async def execute_goal(
                             "step_num": step_num,
                             "author_display_name": author_display_name,
                         }
+                        _persist_goal_state(user_id)
                         await ws_manager.send(session_id, {
                             "type": "gate",
                             "text": (
@@ -2239,6 +2269,7 @@ async def execute_goal(
                     "step_num": step_num,
                     "author_display_name": author_display_name,
                 }
+                _persist_goal_state(user_id)
                 await ws_manager.send(session_id, {
                     "type": "gate",
                     "text": (
@@ -2268,6 +2299,7 @@ async def execute_goal(
         pending_goals.pop(user_id, None)
         execution_context.pop(user_id, None)
         gate_pending.pop(user_id, None)
+        delete_goal_state(user_id)
         return
 
     # ── Deliver output ───────────────────────────────────────────────────────
@@ -2335,6 +2367,7 @@ async def execute_goal(
     pending_goals.pop(user_id, None)
     execution_context.pop(user_id, None)
     gate_pending.pop(user_id, None)
+    delete_goal_state(user_id)
 
 
 async def resume_goal_from_gate(
@@ -2355,10 +2388,12 @@ async def resume_goal_from_gate(
     session_id = pg["session_id"]
 
     gate_pending.pop(user_id, None)
+    _persist_goal_state(user_id)
 
     if action == "skip" and gate_type == "step_failure":
         pg["current_step"] = step_index + 1
         pg["status"] = "executing"
+        _persist_goal_state(user_id)
         remaining_count = len(pg["steps"]) - (step_index + 1)
         await ws_manager.send(session_id, {
             "type": "status",
@@ -2373,6 +2408,7 @@ async def resume_goal_from_gate(
     if action == "retry" and gate_type == "step_failure":
         pg["current_step"] = step_index
         pg["status"] = "executing"
+        _persist_goal_state(user_id)
         await ws_manager.send(session_id, {
             "type": "status",
             "text": "🔄 Retrying step..."
@@ -2384,6 +2420,7 @@ async def resume_goal_from_gate(
         pg["status"] = "executing"
         if gate_type == "draft_gate":
             pg["current_step"] = step_index
+            _persist_goal_state(user_id)
             await ws_manager.send(session_id, {
                 "type": "status",
                 "text": "✍️ Generating draft..."
@@ -2397,6 +2434,7 @@ async def resume_goal_from_gate(
         else:
             # research_gate: step_index already points to the next step
             pg["current_step"] = step_index
+            _persist_goal_state(user_id)
             await ws_manager.send(session_id, {
                 "type": "status",
                 "text": "▶️ Continuing execution..."

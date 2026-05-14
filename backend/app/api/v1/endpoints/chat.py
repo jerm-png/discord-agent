@@ -14,7 +14,9 @@ from app.core.config import WORKSPACES
 from app.core.ws_manager import ws_manager
 from app.db.threads import get_thread, update_thread_activity
 from app.features.chat.orchestrator import (
+    CREW_GOAL_PLANNER_SYSTEM_PROMPT,
     _parse_goal_trigger,
+    _persist_goal_state,
     append_history_turn,
     execute_goal,
     persist_history,
@@ -103,6 +105,39 @@ async def chat_websocket(
             # planner model runs; the plan/error frame is the terminal signal.
             if content.startswith("!"):
                 stripped = content[1:].lstrip()
+
+                # !crew — same machinery as !goal but the planner is
+                # told to assign a specialist agent slug per step, and
+                # execute_goal then dispatches each step through that
+                # agent's system prompt. Prefix the user content with
+                # the available agent slugs so the planner picks from
+                # the real set, not hallucinated names.
+                if stripped.lower().startswith("crew "):
+                    crew_goal_text = stripped[5:].strip()
+                    if crew_goal_text:
+                        from app.core.state import AGENT_DEFINITIONS
+                        _agent_slugs = (
+                            ", ".join(sorted(AGENT_DEFINITIONS.keys()))
+                            or "none loaded"
+                        )
+                        _crew_user_content = (
+                            f"Available agent slugs: {_agent_slugs}\n\n"
+                            f"Goal: {crew_goal_text}"
+                        )
+                        asyncio.create_task(run_goal_planning(
+                            goal_text=_crew_user_content,
+                            user_id=user_id,
+                            author_display_name=author_display_name,
+                            session_id=thread_id,
+                            memory_mode=memory_mode,
+                            project_tag=project_tag,
+                            channel_name=workspace_slug,
+                            planner_prompt=CREW_GOAL_PLANNER_SYSTEM_PROMPT,
+                            crew_mode=True,
+                            user_message=content,
+                        ))
+                        continue
+
                 goal_trigger = _parse_goal_trigger(stripped)
                 if goal_trigger:
                     _, goal_text = goal_trigger
@@ -287,6 +322,7 @@ async def thread_action(
         pg["status"] = "executing"
         pg["current_step"] = 0
         execution_context.pop(user_id, None)
+        _persist_goal_state(user_id)
         asyncio.create_task(execute_goal(
             user_id=user_id,
             author_display_name=author_display_name,
@@ -297,6 +333,7 @@ async def thread_action(
         pending_goals.pop(user_id, None)
         gate_pending.pop(user_id, None)
         execution_context.pop(user_id, None)
+        _persist_goal_state(user_id)
         cancel_text = "❌ Goal cancelled."
         await ws_manager.send(thread_id, {
             "type": "response",
