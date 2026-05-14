@@ -1604,10 +1604,20 @@ async def run_goal_planning(
     channel_name: str = "general",
     planner_prompt: str = None, crew_mode: bool = False,
     user_message: str = "",
+    display_goal: str | None = None,
 ):
     """
     Calls the planner model to decompose a goal into steps, validates
     the plan, stores it in pending_goals, and posts it for approval.
+
+    goal_text: the content sent to the planner model. For !crew this is
+    wrapped with "Available agent slugs: ...\\n\\nGoal: ..." so the
+    planner can assign per-step agents from the real set.
+
+    display_goal: optional override for what gets stored on the
+    pending_goal row and rendered in the plan header. Defaults to
+    goal_text. !crew uses this to keep the agent-slugs prefix out of
+    the user-facing "Here's my plan for: ..." title.
 
     user_message: the original raw input the user typed (e.g. "!goal X").
     When provided, it is saved to conversation_history alongside the
@@ -1673,8 +1683,13 @@ async def run_goal_planning(
             )
         })
 
+    # Use display_goal for storage + rendering so the !crew prefix
+    # ("Available agent slugs: ...") never bleeds into the plan header
+    # or the goal field referenced by execute_goal's completion text.
+    visible_goal = display_goal if display_goal else goal_text
+
     pending_goals[user_id] = {
-        "goal": goal_text,
+        "goal": visible_goal,
         "steps": steps,
         "session_id": session_id,
         "channel_name": channel_name,
@@ -1687,7 +1702,7 @@ async def run_goal_planning(
     }
     _persist_goal_state(user_id)
 
-    plan_text = _format_plan(goal_text, steps)
+    plan_text = _format_plan(visible_goal, steps)
     await ws_manager.send(session_id, {
         "type": "plan",
         "steps": steps,

@@ -125,7 +125,13 @@ async def chat_websocket(
                             f"Goal: {crew_goal_text}"
                         )
                         asyncio.create_task(run_goal_planning(
+                            # Planner sees the agent-slug-prefixed content
+                            # so it can assign agents per step…
                             goal_text=_crew_user_content,
+                            # …but the user-facing goal that shows up in
+                            # the plan header and completion text is the
+                            # raw request without the slug-list prefix.
+                            display_goal=crew_goal_text,
                             user_id=user_id,
                             author_display_name=author_display_name,
                             session_id=thread_id,
