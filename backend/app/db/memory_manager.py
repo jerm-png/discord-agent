@@ -2675,6 +2675,38 @@ def get_entity_timeline(entity_id: int) -> list:
     ]
 
 
+def save_entity_fact(
+    entity_id: int,
+    category: str,
+    fact: str,
+    source_channel: str = "director",
+    confidence: float = 0.8,
+) -> int:
+    """Insert a single entity_fact row + bump entities.updated_at so the
+    roster grid surfaces the change. Returns the new fact id."""
+    now = datetime.now().isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(
+            """
+            INSERT INTO entity_facts (
+                entity_id, category, fact, status,
+                recorded_at, updated_at, source_channel, confidence
+            )
+            VALUES (?, ?, ?, 'active', ?, ?, ?, ?)
+            """,
+            (entity_id, category, fact, now, now, source_channel, confidence),
+        )
+        conn.execute(
+            "UPDATE entities SET updated_at = ? WHERE id = ?",
+            (now, entity_id),
+        )
+        conn.commit()
+        return cur.lastrowid or 0
+    finally:
+        conn.close()
+
+
 def list_entities(entity_type: str = "person") -> list:
     """
     Returns all entities of a given type with their

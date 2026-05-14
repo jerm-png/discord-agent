@@ -73,6 +73,7 @@ from app.db.memory_manager import (
     get_entity_by_id,
     get_entity_tags,
     get_entity_timeline,
+    save_entity_fact,
     search_conversations,
     log_reasoning_trace,
     check_stale_memories,
@@ -273,6 +274,141 @@ _FLAG_CATEGORIES = {
     "violence", "distress", "family", "personal_info",
     "sexual_curiosity", "adult_topics", "trust_isolation", "other",
 }
+
+
+def _clean_generated_title(raw: str) -> str:
+    """Strip the most common framing the model wraps around a title:
+    quotes, leading 'Title:' label, asterisks, surrounding whitespace.
+    Returns the cleaned single-line title capped at 100 chars."""
+    t = (raw or "").strip()
+    if not t:
+        return ""
+    t = t.splitlines()[0].strip()
+    for prefix in ("Title:", "title:", "Thread title:", "**"):
+        if t.lower().startswith(prefix.lower()):
+            t = t[len(prefix):].strip()
+    t = t.strip('"\'`*').strip()
+    return t[:100].strip()
+
+
+async def _run_entity_thread_rename(
+    thread_id: str,
+    user_id: str,
+    user_message: str,
+    entity_name: str,
+    current_title: str,
+) -> None:
+    """
+    Background task: ask Haiku for a short topic-shaped title for an
+    entity-linked thread on its first user message, then update the
+    thread row via rename_thread. Never raises — a failure leaves the
+    placeholder "Coaching: Name" title in place.
+    """
+    try:
+        prompt = (
+            "Generate a short, specific title (5-7 words MAX) for a "
+            f"coaching conversation about {entity_name}. The opening "
+            "message is below. Prefer the format "
+            f"'{entity_name.split()[0]} — <Topic>' when natural, "
+            "otherwise just the topic.\n\n"
+            "Examples of the style:\n"
+            "  Jay — AD Promotion Path\n"
+            "  Sarah — Q4 Goal Recalibration\n"
+            "  Delegation 90-Day Plan\n\n"
+            "Return ONLY the title text. No quotes, no explanation, no "
+            "label.\n\n"
+            f"Opening message:\n{user_message[:600]}"
+        )
+        raw = await call_background_model(prompt)
+        new_title = _clean_generated_title(raw)
+        if not new_title or new_title == current_title:
+            return
+        from app.db.threads import rename_thread
+        loop = asyncio.get_running_loop()
+        updated = await loop.run_in_executor(
+            None, rename_thread, thread_id, new_title, user_id,
+        )
+        if updated:
+            logger.info(
+                f"[entity rename] thread={thread_id} -> {new_title!r}"
+            )
+        else:
+            logger.warning(
+                f"[entity rename] rename returned None for "
+                f"thread={thread_id} (ownership mismatch?)"
+            )
+    except Exception as e:
+        logger.warning(f"[entity rename] failed: {e}")
+
+
+_COACHING_CATEGORIES = {"note", "decision", "goal", "milestone"}
+
+
+async def _run_entity_coaching_logger(
+    entity_id: int,
+    entity_name: str,
+    user_message: str,
+    response_text: str,
+) -> None:
+    """
+    Background task: ask Haiku whether this exchange contains a
+    significant coaching moment for the linked entity. If yes, append
+    an entity_fact so the moment shows up on the roster timeline.
+    Routine clarification / small-talk lands as record=false and
+    nothing is written. Never raises.
+    """
+    try:
+        prompt = (
+            f"You are reviewing a coaching conversation about "
+            f"{entity_name}. Identify whether this exchange contains a "
+            f"significant coaching decision, action item, status "
+            f"update, or milestone worth recording to {entity_name}'s "
+            f"timeline. Routine clarification questions, venting, or "
+            f"general chat do NOT count — only flag concrete "
+            f"developments.\n\n"
+            f"Respond with ONLY a JSON object:\n"
+            '  {"record": true, "summary": "one-line summary", '
+            '"category": "note" | "decision" | "goal" | "milestone"}\n'
+            "OR\n"
+            '  {"record": false}\n\n'
+            f"User said:\n{user_message[:1500]}\n\n"
+            f"Coach responded:\n{response_text[:1500]}"
+        )
+        raw = await call_background_model(prompt)
+        cleaned = raw.replace("```json", "").replace("```", "").strip()
+        try:
+            parsed = json.loads(cleaned)
+        except Exception:
+            logger.warning(
+                f"[coaching log] non-JSON response: {raw[:200]!r}"
+            )
+            return
+        if not isinstance(parsed, dict) or not parsed.get("record"):
+            return
+        summary = str(parsed.get("summary") or "").strip()
+        if not summary:
+            return
+        category = (
+            str(parsed.get("category") or "note").strip().lower()
+        )
+        if category not in _COACHING_CATEGORIES:
+            category = "note"
+        loop = asyncio.get_running_loop()
+        fact_id = await loop.run_in_executor(
+            None,
+            save_entity_fact,
+            entity_id,
+            category,
+            summary[:500],
+            "director",
+            0.85,
+        )
+        logger.info(
+            f"[coaching log] entity={entity_id} fact={fact_id} "
+            f"category={category} summary={summary[:80]!r}"
+        )
+    except Exception as e:
+        logger.warning(f"[coaching log] failed: {e}")
 
 
 async def _run_parker_safety_check(
@@ -2525,14 +2661,27 @@ async def process_user_message(
     # inject them so Drift knows who the conversation is about. This
     # is independent of the keyword-detect _entity_context above and
     # is the authoritative source when the link is explicit.
+    # Captured for the post-response hooks (rename + coaching logger).
+    _entity_thread_entity_id: int | None = None
+    _entity_thread_name: str = ""
+    _entity_thread_title: str = ""
+    _entity_thread_msg_count: int = 0
+
     _thread_entity_context = ""
     try:
         from app.db.threads import get_thread as _get_thread
         _thread_row = _get_thread(str(context_id)) if context_id else None
         _ent_id = _thread_row.get("entity_id") if _thread_row else None
+        if _thread_row:
+            _entity_thread_title = str(_thread_row.get("title") or "")
+            _entity_thread_msg_count = int(
+                _thread_row.get("message_count") or 0
+            )
         if _ent_id:
             _ent = get_entity_by_id(int(_ent_id))
             if _ent:
+                _entity_thread_entity_id = int(_ent_id)
+                _entity_thread_name = str(_ent.get("name") or "")
                 _tags = get_entity_tags(int(_ent_id))
                 _timeline = get_entity_timeline(int(_ent_id))[-6:]
                 _rel = (_ent.get("relationship_type") or "")
@@ -3030,6 +3179,39 @@ async def process_user_message(
                         thread_id=str(context_id),
                     )
                 )
+
+            # Entity-linked thread hooks. Both are fire-and-forget so
+            # they never block the response delivery.
+            if _entity_thread_entity_id is not None:
+                # Coaching logger fires on EVERY turn in an entity-
+                # linked thread; the Haiku check decides whether the
+                # exchange is significant enough to record.
+                asyncio.create_task(
+                    _run_entity_coaching_logger(
+                        entity_id=_entity_thread_entity_id,
+                        entity_name=_entity_thread_name,
+                        user_message=user_message,
+                        response_text=final_response_text,
+                    )
+                )
+                # Renamer fires ONCE — on the very first user message
+                # (message_count == 1 because chat.py just incremented
+                # it) AND only if the title is still the placeholder
+                # "Coaching: <name>" shape. Manual renames or repeated
+                # messages no longer match either condition.
+                if (
+                    _entity_thread_msg_count == 1
+                    and _entity_thread_title.startswith("Coaching: ")
+                ):
+                    asyncio.create_task(
+                        _run_entity_thread_rename(
+                            thread_id=str(context_id),
+                            user_id=str(user_id),
+                            user_message=user_message,
+                            entity_name=_entity_thread_name,
+                            current_title=_entity_thread_title,
+                        )
+                    )
         else:
             await ws_manager.send(session_id, {
                 "type": "error",
