@@ -270,6 +270,79 @@ def init_db():
         )
     """)
 
+    # ── Med-Bay dashboard tables ─────────────────────────────────
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS health_active_protocol (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            supplement_name TEXT NOT NULL,
+            dose TEXT,
+            frequency TEXT,
+            reason TEXT,
+            target_marker TEXT,
+            started_at TEXT NOT NULL,
+            stopped_at TEXT,
+            status TEXT NOT NULL DEFAULT 'active'
+        )
+    """)
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_hap_user_status
+        ON health_active_protocol(user_id, status)
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS health_lab_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            marker_name TEXT NOT NULL,
+            value REAL NOT NULL,
+            unit TEXT,
+            reference_low REAL,
+            reference_high REAL,
+            status TEXT,
+            test_date TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    """)
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_hlr_user_marker_date
+        ON health_lab_results(user_id, marker_name, test_date)
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS health_followups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            description TEXT NOT NULL,
+            reason TEXT,
+            suggested_date TEXT,
+            completed INTEGER NOT NULL DEFAULT 0,
+            completed_at TEXT,
+            created_at TEXT NOT NULL
+        )
+    """)
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_hfu_user_completed
+        ON health_followups(user_id, completed)
+    """)
+
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS health_changes_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            change_type TEXT NOT NULL,
+            item_name TEXT NOT NULL,
+            old_value TEXT,
+            new_value TEXT,
+            reason TEXT,
+            created_at TEXT NOT NULL
+        )
+    """)
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_hcl_user_created
+        ON health_changes_log(user_id, created_at)
+    """)
+
     c.execute("""
         CREATE VIRTUAL TABLE IF NOT EXISTS conversation_log USING fts5(
             user_id UNINDEXED,
@@ -2766,6 +2839,375 @@ def format_entity_profile_for_prompt(name: str) -> str:
             lines.append(f"  • [{date}] {f['fact']}")
 
     return "\n".join(lines)
+
+
+# ============================================================
+# MED-BAY DASHBOARD HELPERS
+# ============================================================
+
+def _now_iso() -> str:
+    return datetime.utcnow().isoformat()
+
+
+# ── health_active_protocol ────────────────────────────────────
+def medbay_list_protocol(user_id: str, status: str | None = "active") -> list:
+    """List protocol items for a user. status=None returns all rows."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        if status is None:
+            rows = conn.execute(
+                "SELECT id, user_id, supplement_name, dose, frequency, "
+                "reason, target_marker, started_at, stopped_at, status "
+                "FROM health_active_protocol WHERE user_id = ? "
+                "ORDER BY status = 'active' DESC, started_at DESC",
+                (user_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, user_id, supplement_name, dose, frequency, "
+                "reason, target_marker, started_at, stopped_at, status "
+                "FROM health_active_protocol WHERE user_id = ? AND status = ? "
+                "ORDER BY started_at DESC",
+                (user_id, status),
+            ).fetchall()
+    finally:
+        conn.close()
+    return [
+        {
+            "id": r[0], "user_id": r[1], "supplement_name": r[2],
+            "dose": r[3], "frequency": r[4], "reason": r[5],
+            "target_marker": r[6], "started_at": r[7],
+            "stopped_at": r[8], "status": r[9],
+        }
+        for r in rows
+    ]
+
+
+def medbay_add_protocol(
+    user_id: str, supplement_name: str, dose: str | None = None,
+    frequency: str | None = None, reason: str | None = None,
+    target_marker: str | None = None,
+) -> int:
+    """Add a new active protocol item and log it in the changes log."""
+    now = _now_iso()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(
+            "INSERT INTO health_active_protocol "
+            "(user_id, supplement_name, dose, frequency, reason, "
+            "target_marker, started_at, stopped_at, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'active')",
+            (user_id, supplement_name, dose, frequency,
+             reason, target_marker, now),
+        )
+        new_id = cur.lastrowid
+        conn.execute(
+            "INSERT INTO health_changes_log "
+            "(user_id, change_type, item_name, old_value, new_value, "
+            "reason, created_at) VALUES (?, 'added', ?, NULL, ?, ?, ?)",
+            (user_id, supplement_name,
+             f"{dose or ''} {frequency or ''}".strip(),
+             reason, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return new_id
+
+
+def medbay_update_protocol_dose(
+    user_id: str, protocol_id: int, new_dose: str,
+    reason: str | None = None,
+) -> bool:
+    """Change the dose on an active protocol item; log the change."""
+    now = _now_iso()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        row = conn.execute(
+            "SELECT supplement_name, dose FROM health_active_protocol "
+            "WHERE id = ? AND user_id = ?",
+            (protocol_id, user_id),
+        ).fetchone()
+        if not row:
+            return False
+        name, old_dose = row
+        conn.execute(
+            "UPDATE health_active_protocol SET dose = ? WHERE id = ?",
+            (new_dose, protocol_id),
+        )
+        conn.execute(
+            "INSERT INTO health_changes_log "
+            "(user_id, change_type, item_name, old_value, new_value, "
+            "reason, created_at) "
+            "VALUES (?, 'dose_change', ?, ?, ?, ?, ?)",
+            (user_id, name, old_dose, new_dose, reason, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return True
+
+
+def medbay_stop_protocol(
+    user_id: str, protocol_id: int, reason: str | None = None,
+) -> bool:
+    """Mark a protocol item stopped and log it."""
+    now = _now_iso()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        row = conn.execute(
+            "SELECT supplement_name FROM health_active_protocol "
+            "WHERE id = ? AND user_id = ? AND status = 'active'",
+            (protocol_id, user_id),
+        ).fetchone()
+        if not row:
+            return False
+        name = row[0]
+        conn.execute(
+            "UPDATE health_active_protocol "
+            "SET status = 'stopped', stopped_at = ? WHERE id = ?",
+            (now, protocol_id),
+        )
+        conn.execute(
+            "INSERT INTO health_changes_log "
+            "(user_id, change_type, item_name, old_value, new_value, "
+            "reason, created_at) "
+            "VALUES (?, 'stopped', ?, NULL, NULL, ?, ?)",
+            (user_id, name, reason, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return True
+
+
+# ── health_lab_results ────────────────────────────────────────
+def _classify_lab_status(
+    value: float, low: float | None, high: float | None,
+) -> str:
+    if low is not None and value < low:
+        return "low"
+    if high is not None and value > high:
+        return "high"
+    return "normal"
+
+
+def medbay_add_lab_result(
+    user_id: str, marker_name: str, value: float,
+    unit: str | None = None, reference_low: float | None = None,
+    reference_high: float | None = None, test_date: str | None = None,
+) -> int:
+    """Insert a lab result. Status is auto-classified if not provided."""
+    now = _now_iso()
+    status = _classify_lab_status(value, reference_low, reference_high)
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(
+            "INSERT INTO health_lab_results "
+            "(user_id, marker_name, value, unit, reference_low, "
+            "reference_high, status, test_date, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, marker_name, value, unit, reference_low,
+             reference_high, status, test_date or now, now),
+        )
+        new_id = cur.lastrowid
+        conn.commit()
+    finally:
+        conn.close()
+    return new_id
+
+
+def medbay_list_labs(
+    user_id: str, marker: str | None = None, limit: int = 200,
+) -> list:
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        if marker:
+            rows = conn.execute(
+                "SELECT id, user_id, marker_name, value, unit, "
+                "reference_low, reference_high, status, test_date, created_at "
+                "FROM health_lab_results "
+                "WHERE user_id = ? AND marker_name = ? "
+                "ORDER BY test_date DESC LIMIT ?",
+                (user_id, marker, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, user_id, marker_name, value, unit, "
+                "reference_low, reference_high, status, test_date, created_at "
+                "FROM health_lab_results WHERE user_id = ? "
+                "ORDER BY test_date DESC LIMIT ?",
+                (user_id, limit),
+            ).fetchall()
+    finally:
+        conn.close()
+    return [
+        {
+            "id": r[0], "user_id": r[1], "marker_name": r[2],
+            "value": r[3], "unit": r[4], "reference_low": r[5],
+            "reference_high": r[6], "status": r[7],
+            "test_date": r[8], "created_at": r[9],
+        }
+        for r in rows
+    ]
+
+
+def medbay_latest_labs(user_id: str) -> list:
+    """
+    Most recent value for each tracked marker, plus the previous value
+    (if any) so the UI can show a trend arrow.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        # All rows for this user, newest first — we'll pick the top
+        # two per marker in Python to keep the SQL portable.
+        rows = conn.execute(
+            "SELECT id, marker_name, value, unit, reference_low, "
+            "reference_high, status, test_date "
+            "FROM health_lab_results WHERE user_id = ? "
+            "ORDER BY marker_name, test_date DESC",
+            (user_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    by_marker: dict[str, list] = {}
+    for r in rows:
+        by_marker.setdefault(r[1], []).append(r)
+    out = []
+    for marker, items in by_marker.items():
+        latest = items[0]
+        prev = items[1] if len(items) > 1 else None
+        out.append({
+            "marker_name": marker,
+            "id": latest[0],
+            "value": latest[2],
+            "unit": latest[3],
+            "reference_low": latest[4],
+            "reference_high": latest[5],
+            "status": latest[6],
+            "test_date": latest[7],
+            "previous_value": prev[2] if prev else None,
+            "previous_date": prev[7] if prev else None,
+        })
+    return out
+
+
+# ── health_followups ──────────────────────────────────────────
+def medbay_list_followups(
+    user_id: str, include_completed: bool = False,
+) -> list:
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        if include_completed:
+            rows = conn.execute(
+                "SELECT id, user_id, description, reason, suggested_date, "
+                "completed, completed_at, created_at "
+                "FROM health_followups WHERE user_id = ? "
+                "ORDER BY completed ASC, suggested_date ASC, created_at DESC",
+                (user_id,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, user_id, description, reason, suggested_date, "
+                "completed, completed_at, created_at "
+                "FROM health_followups "
+                "WHERE user_id = ? AND completed = 0 "
+                "ORDER BY suggested_date ASC, created_at DESC",
+                (user_id,),
+            ).fetchall()
+    finally:
+        conn.close()
+    return [
+        {
+            "id": r[0], "user_id": r[1], "description": r[2],
+            "reason": r[3], "suggested_date": r[4],
+            "completed": bool(r[5]), "completed_at": r[6],
+            "created_at": r[7],
+        }
+        for r in rows
+    ]
+
+
+def medbay_add_followup(
+    user_id: str, description: str, reason: str | None = None,
+    suggested_date: str | None = None,
+) -> int:
+    now = _now_iso()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(
+            "INSERT INTO health_followups "
+            "(user_id, description, reason, suggested_date, "
+            "completed, completed_at, created_at) "
+            "VALUES (?, ?, ?, ?, 0, NULL, ?)",
+            (user_id, description, reason, suggested_date, now),
+        )
+        new_id = cur.lastrowid
+        conn.commit()
+    finally:
+        conn.close()
+    return new_id
+
+
+def medbay_complete_followup(user_id: str, followup_id: int) -> bool:
+    now = _now_iso()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(
+            "UPDATE health_followups "
+            "SET completed = 1, completed_at = ? "
+            "WHERE id = ? AND user_id = ? AND completed = 0",
+            (now, followup_id, user_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+# ── health_changes_log ────────────────────────────────────────
+def medbay_list_changes(user_id: str, limit: int = 100) -> list:
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        rows = conn.execute(
+            "SELECT id, user_id, change_type, item_name, old_value, "
+            "new_value, reason, created_at "
+            "FROM health_changes_log WHERE user_id = ? "
+            "ORDER BY created_at DESC LIMIT ?",
+            (user_id, limit),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [
+        {
+            "id": r[0], "user_id": r[1], "change_type": r[2],
+            "item_name": r[3], "old_value": r[4], "new_value": r[5],
+            "reason": r[6], "created_at": r[7],
+        }
+        for r in rows
+    ]
+
+
+def medbay_log_change(
+    user_id: str, change_type: str, item_name: str,
+    old_value: str | None = None, new_value: str | None = None,
+    reason: str | None = None,
+) -> int:
+    now = _now_iso()
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cur = conn.execute(
+            "INSERT INTO health_changes_log "
+            "(user_id, change_type, item_name, old_value, new_value, "
+            "reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (user_id, change_type, item_name, old_value, new_value,
+             reason, now),
+        )
+        new_id = cur.lastrowid
+        conn.commit()
+    finally:
+        conn.close()
+    return new_id
 
 
 # INITIALISE ON IMPORT

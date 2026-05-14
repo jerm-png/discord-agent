@@ -1,11 +1,20 @@
 import { useRef, useCallback, useState } from 'react'
 
 export interface WSMessage {
-  type: 'connected' | 'status' | 'response' | 'message' | 'error'
+  type:
+    | 'connected'
+    | 'status'
+    | 'response'
+    | 'message'
+    | 'error'
+    | 'medbay_update'
   text?: string
   content?: string
   thread_id?: string
   workspace?: string
+  // medbay_update: list of side-panel sections that need refetching,
+  // e.g. ['protocol', 'changes']
+  sections?: string[]
 }
 
 interface UseWebSocketReturn {

@@ -306,3 +306,122 @@ export async function getEntityThreads(
   )
   return data.threads ?? []
 }
+
+// ── Med-Bay ───────────────────────────────────────────────────
+export interface MedbayProtocolItem {
+  id: number
+  user_id: string
+  supplement_name: string
+  dose: string | null
+  frequency: string | null
+  reason: string | null
+  target_marker: string | null
+  started_at: string
+  stopped_at: string | null
+  status: 'active' | 'stopped'
+}
+
+export interface MedbayLabResult {
+  id: number
+  user_id: string
+  marker_name: string
+  value: number
+  unit: string | null
+  reference_low: number | null
+  reference_high: number | null
+  status: 'low' | 'normal' | 'high' | null
+  test_date: string
+  created_at: string
+}
+
+export interface MedbayLatestLab {
+  marker_name: string
+  id: number
+  value: number
+  unit: string | null
+  reference_low: number | null
+  reference_high: number | null
+  status: 'low' | 'normal' | 'high' | null
+  test_date: string
+  previous_value: number | null
+  previous_date: string | null
+}
+
+export interface MedbayFollowup {
+  id: number
+  user_id: string
+  description: string
+  reason: string | null
+  suggested_date: string | null
+  completed: boolean
+  completed_at: string | null
+  created_at: string
+}
+
+export type MedbayChangeType = 'added' | 'dose_change' | 'stopped'
+
+export interface MedbayChange {
+  id: number
+  user_id: string
+  change_type: MedbayChangeType | string
+  item_name: string
+  old_value: string | null
+  new_value: string | null
+  reason: string | null
+  created_at: string
+}
+
+export async function getMedbayProtocol(
+  includeStopped = false,
+): Promise<MedbayProtocolItem[]> {
+  const qs = includeStopped ? '?include_stopped=true' : ''
+  const data = await request<{ protocol: MedbayProtocolItem[] }>(
+    `/api/v1/medbay/protocol${qs}`,
+  )
+  return data.protocol ?? []
+}
+
+export async function getMedbayLabs(
+  marker?: string,
+): Promise<MedbayLabResult[]> {
+  const qs = marker ? `?marker=${encodeURIComponent(marker)}` : ''
+  const data = await request<{ labs: MedbayLabResult[] }>(
+    `/api/v1/medbay/labs${qs}`,
+  )
+  return data.labs ?? []
+}
+
+export async function getMedbayLatestLabs(): Promise<MedbayLatestLab[]> {
+  const data = await request<{ labs: MedbayLatestLab[] }>(
+    `/api/v1/medbay/labs/latest`,
+  )
+  return data.labs ?? []
+}
+
+export async function getMedbayFollowups(
+  includeCompleted = false,
+): Promise<MedbayFollowup[]> {
+  const qs = includeCompleted ? '?include_completed=true' : ''
+  const data = await request<{ followups: MedbayFollowup[] }>(
+    `/api/v1/medbay/followups${qs}`,
+  )
+  return data.followups ?? []
+}
+
+export async function getMedbayChanges(
+  limit = 100,
+): Promise<MedbayChange[]> {
+  const data = await request<{ changes: MedbayChange[] }>(
+    `/api/v1/medbay/changes?limit=${limit}`,
+  )
+  return data.changes ?? []
+}
+
+export async function completeMedbayFollowup(
+  followupId: number,
+): Promise<void> {
+  await request<{ status: string }>(
+    `/api/v1/medbay/followups/${followupId}/complete`,
+    { method: 'PATCH' },
+  )
+}

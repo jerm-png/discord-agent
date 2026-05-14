@@ -94,6 +94,12 @@ from app.db.memory_manager import (
     record_rubric_rejection,
     check_operational_duplicate,
     set_pending_reflection,
+    medbay_add_protocol,
+    medbay_update_protocol_dose,
+    medbay_stop_protocol,
+    medbay_add_lab_result,
+    medbay_add_followup,
+    medbay_list_protocol,
 )
 from app.features.tools.tool_definitions import (
     TOOL_DEFINITIONS,
@@ -564,6 +570,271 @@ async def _run_parker_safety_check(
         )
     except Exception as e:
         logger.warning(f"[parker safety] check failed: {e}")
+
+
+_MEDBAY_CHANGE_TYPES = {
+    "protocol_add", "protocol_change", "protocol_stop",
+    "followup", "lab_result",
+}
+# Maps each extracted change-type to the side-panel section that needs
+# refetching. Drives the medbay_update WS frame.
+_MEDBAY_SECTION_BY_TYPE = {
+    "protocol_add": {"protocol", "changes"},
+    "protocol_change": {"protocol", "changes"},
+    "protocol_stop": {"protocol", "changes"},
+    "followup": {"followups"},
+    "lab_result": {"labs"},
+}
+
+
+def _format_medbay_transcript(turns: list) -> str:
+    """Render the last few conversation turns as 'User:'/'AI:' lines for
+    the extraction prompt. Skips empty/tool-only entries."""
+    lines = []
+    for turn in turns:
+        role = turn.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        content = turn.get("content", "")
+        if isinstance(content, list):
+            parts = []
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    parts.append(block.get("text", ""))
+                elif getattr(block, "type", None) == "text":
+                    parts.append(getattr(block, "text", ""))
+            content = " ".join(parts)
+        content = (content or "").strip()
+        if not content:
+            continue
+        # Strip the channel prefix the orchestrator prepends to user msgs
+        # so the extractor sees clean text.
+        if role == "user" and "Current message: " in content:
+            content = content.split("Current message: ", 1)[1]
+        label = "User" if role == "user" else "AI"
+        lines.append(f"{label}: {content[:600]}")
+    return "\n\n".join(lines)
+
+
+async def _run_medbay_extraction(
+    user_id: str,
+    session_id: str,
+    user_message: str,
+    response_text: str,
+    recent_turns: list,
+) -> None:
+    """
+    Background task: ask Haiku whether the user CONFIRMED any
+    protocol/follow-up/lab changes in the latest exchange. Saves any
+    confirmed items to the medbay tables and emits a medbay_update
+    WebSocket frame so the side panel refetches the affected section.
+
+    Never raises — failures are logged and silently ignored.
+    """
+    try:
+        # Build a 4-turn transcript ending with the current exchange.
+        # recent_turns is the conversation_history list snapshot from
+        # the caller; the current user/AI turn is appended below in
+        # case the snapshot was taken before that.
+        transcript_turns = list(recent_turns[-4:]) if recent_turns else []
+        transcript = _format_medbay_transcript(transcript_turns)
+        if not transcript:
+            # Fall back to the current exchange only when history is empty
+            transcript = (
+                f"User: {user_message[:600]}\n\nAI: {response_text[:600]}"
+            )
+
+        prompt = (
+            "Review this exchange between a user and their health AI "
+            "assistant. Did the user CONFIRM or APPROVE any of the "
+            "following: a supplement change (new, dose change, or stop), "
+            "a follow-up test, or a lab result interpretation? Only "
+            "extract items the user explicitly agreed to, not "
+            "suggestions the AI made that weren't confirmed.\n\n"
+            "Respond with ONLY a JSON object in this exact shape:\n"
+            '{"confirmed": true | false, "items": [\n'
+            '  {"type": "protocol_add", "details": {"supplement_name": '
+            '"...", "dose": "...", "frequency": "...", "reason": "...", '
+            '"target_marker": "..."}},\n'
+            '  {"type": "protocol_change", "details": {"supplement_name": '
+            '"...", "new_dose": "...", "reason": "..."}},\n'
+            '  {"type": "protocol_stop", "details": {"supplement_name": '
+            '"...", "reason": "..."}},\n'
+            '  {"type": "followup", "details": {"description": "...", '
+            '"reason": "...", "suggested_date": "YYYY-MM-DD or null"}},\n'
+            '  {"type": "lab_result", "details": {"marker_name": "...", '
+            '"value": 0.0, "unit": "...", "reference_low": 0.0 or null, '
+            '"reference_high": 0.0 or null, "test_date": '
+            '"YYYY-MM-DD or null"}}\n'
+            "]}\n"
+            "If nothing was confirmed, return "
+            '{"confirmed": false, "items": []}.\n\n'
+            f"Conversation:\n{transcript}"
+        )
+        parsed = await call_background_model_json(prompt)
+        if not isinstance(parsed, dict):
+            return
+        if not parsed.get("confirmed"):
+            return
+        items = parsed.get("items") or []
+        if not isinstance(items, list) or not items:
+            return
+
+        loop = asyncio.get_running_loop()
+        affected_sections: set[str] = set()
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            itype = str(item.get("type") or "").strip()
+            if itype not in _MEDBAY_CHANGE_TYPES:
+                continue
+            details = item.get("details") or {}
+            if not isinstance(details, dict):
+                continue
+            try:
+                if itype == "protocol_add":
+                    name = str(details.get("supplement_name") or "").strip()
+                    if not name:
+                        continue
+                    await loop.run_in_executor(
+                        None,
+                        lambda: medbay_add_protocol(
+                            user_id=user_id,
+                            supplement_name=name,
+                            dose=details.get("dose"),
+                            frequency=details.get("frequency"),
+                            reason=details.get("reason"),
+                            target_marker=details.get("target_marker"),
+                        ),
+                    )
+                    affected_sections |= _MEDBAY_SECTION_BY_TYPE[itype]
+                elif itype == "protocol_change":
+                    name = str(details.get("supplement_name") or "").strip()
+                    new_dose = str(details.get("new_dose") or "").strip()
+                    if not name or not new_dose:
+                        continue
+                    # Match the most recent active row for this supplement.
+                    current = await loop.run_in_executor(
+                        None,
+                        lambda: medbay_list_protocol(user_id, status="active"),
+                    )
+                    target = next(
+                        (
+                            p for p in current
+                            if (p["supplement_name"] or "").lower()
+                            == name.lower()
+                        ),
+                        None,
+                    )
+                    if target is None:
+                        # No active row to update — record it as an add
+                        # so the change still shows in the panel.
+                        await loop.run_in_executor(
+                            None,
+                            lambda: medbay_add_protocol(
+                                user_id=user_id,
+                                supplement_name=name,
+                                dose=new_dose,
+                                reason=details.get("reason"),
+                            ),
+                        )
+                    else:
+                        await loop.run_in_executor(
+                            None,
+                            lambda tid=target["id"]: (
+                                medbay_update_protocol_dose(
+                                    user_id=user_id,
+                                    protocol_id=tid,
+                                    new_dose=new_dose,
+                                    reason=details.get("reason"),
+                                )
+                            ),
+                        )
+                    affected_sections |= _MEDBAY_SECTION_BY_TYPE[itype]
+                elif itype == "protocol_stop":
+                    name = str(details.get("supplement_name") or "").strip()
+                    if not name:
+                        continue
+                    current = await loop.run_in_executor(
+                        None,
+                        lambda: medbay_list_protocol(user_id, status="active"),
+                    )
+                    target = next(
+                        (
+                            p for p in current
+                            if (p["supplement_name"] or "").lower()
+                            == name.lower()
+                        ),
+                        None,
+                    )
+                    if target is None:
+                        continue
+                    await loop.run_in_executor(
+                        None,
+                        lambda tid=target["id"]: medbay_stop_protocol(
+                            user_id=user_id,
+                            protocol_id=tid,
+                            reason=details.get("reason"),
+                        ),
+                    )
+                    affected_sections |= _MEDBAY_SECTION_BY_TYPE[itype]
+                elif itype == "followup":
+                    desc = str(details.get("description") or "").strip()
+                    if not desc:
+                        continue
+                    await loop.run_in_executor(
+                        None,
+                        lambda: medbay_add_followup(
+                            user_id=user_id,
+                            description=desc,
+                            reason=details.get("reason"),
+                            suggested_date=details.get("suggested_date"),
+                        ),
+                    )
+                    affected_sections |= _MEDBAY_SECTION_BY_TYPE[itype]
+                elif itype == "lab_result":
+                    marker = str(details.get("marker_name") or "").strip()
+                    raw_value = details.get("value")
+                    if not marker or raw_value is None:
+                        continue
+                    try:
+                        value = float(raw_value)
+                    except (TypeError, ValueError):
+                        continue
+                    await loop.run_in_executor(
+                        None,
+                        lambda: medbay_add_lab_result(
+                            user_id=user_id,
+                            marker_name=marker,
+                            value=value,
+                            unit=details.get("unit"),
+                            reference_low=details.get("reference_low"),
+                            reference_high=details.get("reference_high"),
+                            test_date=details.get("test_date"),
+                        ),
+                    )
+                    affected_sections |= _MEDBAY_SECTION_BY_TYPE[itype]
+            except Exception as inner:
+                logger.warning(
+                    f"[medbay extract] failed to save {itype}: {inner}"
+                )
+                continue
+
+        if affected_sections:
+            try:
+                await ws_manager.send(session_id, {
+                    "type": "medbay_update",
+                    "sections": sorted(affected_sections),
+                })
+            except Exception as ws_err:
+                logger.warning(f"[medbay extract] ws send failed: {ws_err}")
+            logger.info(
+                f"[medbay extract] saved {len(items)} item(s), "
+                f"sections={sorted(affected_sections)}"
+            )
+    except Exception as e:
+        logger.warning(f"[medbay extract] failed: {e}")
 
 
 async def persist_history(user_id: str, context_id: str) -> None:
@@ -3358,6 +3629,30 @@ async def process_user_message(
                     "trouble forming a response."
                 )
             })
+
+        # ── Med-Bay auto-extraction (fire-and-forget) ─────────────────────
+        # Run a background Haiku pass over the last few turns to detect
+        # protocol changes / follow-ups / lab readings the user just
+        # confirmed, and push them into the medbay tables. Emits a
+        # medbay_update WS frame on success so the side panel refetches
+        # the affected section.
+        if (
+            effective_channel_name == "health"
+            and final_response_text
+        ):
+            try:
+                _recent_turns = list(conversation_history[_hist_key])[-8:]
+            except Exception:
+                _recent_turns = []
+            asyncio.create_task(
+                _run_medbay_extraction(
+                    user_id=str(user_id),
+                    session_id=session_id,
+                    user_message=user_message,
+                    response_text=final_response_text,
+                    recent_turns=_recent_turns,
+                )
+            )
 
         # ── Auto-detect clinical specifics in health-tracking ─────────────
         if effective_channel_name == "health-tracking" and final_response_text:

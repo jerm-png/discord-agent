@@ -4,6 +4,7 @@ from app.api.v1.endpoints import (
     chat,
     entities,
     flags,
+    medbay,
     status,
     threads,
     workspaces,
@@ -44,4 +45,9 @@ router.include_router(
     entities.router,
     prefix="/entities",
     tags=["entities"],
+)
+router.include_router(
+    medbay.router,
+    prefix="/medbay",
+    tags=["medbay"],
 )

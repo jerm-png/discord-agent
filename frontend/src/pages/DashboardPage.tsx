@@ -5,6 +5,7 @@ import { ThreadList } from '../components/ThreadList'
 import { ChatPanel } from '../components/ChatPanel'
 import { RosterPage } from '../components/RosterPage'
 import { EntityHeader } from '../components/EntityHeader'
+import { MedBayPage, type MedbaySection } from './MedBayPage'
 import { useWebSocket } from '../hooks/useWebSocket'
 import type { WSMessage } from '../hooks/useWebSocket'
 import { useDriftStore } from '../store/driftStore'
@@ -37,6 +38,11 @@ export function DashboardPage() {
 
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [threadsLoading, setThreadsLoading] = useState(false)
+  // medbay_update WS frames bump these counters per section; MedBayPage
+  // watches the matching counter in a useEffect and refetches.
+  const [medbayTokens, setMedbayTokens] = useState<
+    Record<MedbaySection, number>
+  >({ protocol: 0, labs: 0, followups: 0, changes: 0 })
 
   const handleWSMessage = useCallback((msg: WSMessage) => {
     if (msg.type === 'response' || msg.type === 'message' || msg.type === 'error') {
@@ -49,6 +55,18 @@ export function DashboardPage() {
           timestamp: new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' }),
         },
       ])
+    } else if (msg.type === 'medbay_update') {
+      const sections = msg.sections ?? []
+      if (sections.length === 0) return
+      setMedbayTokens((prev) => {
+        const next = { ...prev }
+        for (const s of sections) {
+          if (s === 'protocol' || s === 'labs' || s === 'followups' || s === 'changes') {
+            next[s] = (prev[s] ?? 0) + 1
+          }
+        }
+        return next
+      })
     }
   }, [])
 
@@ -193,7 +211,23 @@ export function DashboardPage() {
           workspaceLabel={activeWorkspaceLabel}
           isLoading={threadsLoading}
         />
-        {activeThread ? (
+        {activeWorkspace === 'health' ? (
+          <MedBayPage
+            hasActiveThread={!!activeThread}
+            messages={messages}
+            isThinking={isThinking}
+            statusText={statusText}
+            isConnected={isConnected}
+            workspaceLabel={activeWorkspaceLabel}
+            workspaceSlug={activeWorkspace}
+            threadTitle={activeThread?.title ?? ''}
+            onSendMessage={handleSendMessage}
+            onNewThread={() => handleCreateThread('New conversation')}
+            threads={threads}
+            onOpenThread={(t) => setActiveThread(t)}
+            refetchTokens={medbayTokens}
+          />
+        ) : activeThread ? (
           <div className="flex-1 flex flex-col overflow-hidden">
             {/* Collapsible entity profile bar — only when the thread is
                 linked to a roster entity. */}
