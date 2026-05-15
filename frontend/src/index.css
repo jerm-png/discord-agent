@@ -111,6 +111,14 @@
     @apply border-border outline-ring/50;
     box-sizing: border-box;
   }
+  /* Explicit html + body background. The Tailwind `bg-background`
+     class below resolves to var(--background) (#040406) — but we set
+     the literal value here too so anything that escapes the React
+     tree (modals, portals, scroll overhang) lands on the canonical
+     base color and not a Tailwind/browser default. */
+  html, body {
+    background-color: #040406;
+  }
   body {
     @apply bg-background text-foreground;
     margin: 0;

@@ -688,7 +688,7 @@ export function ChatPanel({
                           : node % 3 === 1
                             ? 'bg-neon-pink border-neon-pink glow-pink'
                             : 'bg-neon-green border-neon-green glow-green'
-                        : 'bg-[#0a0a0e] border-[#2a2a35]'
+                        : 'bg-[#0a0a0e] border-[#12121a]'
                     )}
                   />
                 ))}
@@ -1096,16 +1096,19 @@ export function ChatPanel({
               // interim transcript grows it naturally pushes the
               // waveform's flex region narrower until the text fills
               // the bar and the waveform compresses to a sliver.
+              // Recording wrapper uses py-2 (was py-3) so the inner
+              // content area is ~32px tall instead of ~24px, giving
+              // the waveform bars room to read at their proper height.
               <div
                 className={cn(
-                  'w-full px-4 py-3 industrial-inset border-2 flex items-center gap-3',
+                  'w-full px-4 py-2 industrial-inset border-2 flex items-stretch gap-3',
                   'border-neon-pink/50 shadow-[0_0_12px_rgba(255,42,109,0.15)]',
                 )}
                 style={{ minHeight: '48px', maxHeight: '150px' }}
               >
                 <div
                   className={cn(
-                    'font-sans text-sm italic whitespace-nowrap overflow-hidden text-ellipsis flex-shrink min-w-0',
+                    'self-center font-sans text-sm italic whitespace-nowrap overflow-hidden text-ellipsis flex-shrink min-w-0',
                     inputValue.trim()
                       ? 'text-foreground'
                       : 'text-muted-foreground/40',
@@ -1113,8 +1116,15 @@ export function ChatPanel({
                 >
                   {inputValue.trim() || 'Listening...'}
                 </div>
+                {/* Waveform: flex-1 grabs all space remaining after
+                    the transcript text. justify-evenly spreads the 24
+                    bars across that full width with equal gaps on
+                    both sides, instead of bunching on one edge. h-full
+                    lets each bar use the full 32px of vertical room
+                    so the wave reads at the proper height even with
+                    no transcript yet. */}
                 <div
-                  className="flex-1 min-w-0 h-6 flex items-center justify-end gap-[2px] overflow-hidden"
+                  className="flex-1 min-w-0 h-full flex items-center justify-evenly overflow-hidden"
                   aria-hidden
                 >
                   {voiceWaveHeights.map((h, i) => (

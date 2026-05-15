@@ -79,7 +79,7 @@ export function SystemStatusBar() {
   }, [])
 
   return (
-    <div className="h-9 w-full bg-gradient-to-b from-[#08080c] to-[#040406] flex items-center justify-between px-4 font-mono text-[10px] tracking-wider relative industrial-panel">
+    <div className="h-9 w-full bg-gradient-to-b from-[#0a0a0e] to-[#040406] flex items-center justify-between px-4 font-mono text-[10px] tracking-wider relative industrial-panel">
       {/* Top edge highlight */}
       <div className="absolute top-0 left-0 right-0 h-[1px] bg-gradient-to-r from-transparent via-neon-cyan/30 to-transparent" />
 
