@@ -15,7 +15,7 @@ import sqlite3
 import tempfile
 import urllib.request
 import datetime
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import defaultdict
 
 from anthropic import APIStatusError
@@ -94,6 +94,8 @@ from app.db.memory_manager import (
     record_rubric_rejection,
     check_operational_duplicate,
     set_pending_reflection,
+    get_meta_value,
+    set_meta_value,
     medbay_add_protocol,
     medbay_update_protocol_dose,
     medbay_stop_protocol,
@@ -1951,41 +1953,103 @@ async def run_proactive_flag_surfacing():
         await asyncio.sleep(86400)  # 24 hours
 
 
+_CONSOLIDATION_INTERVAL = timedelta(days=7)
+# Re-evaluate at least this often so a restart picks the schedule back
+# up promptly and we never sleep through the due time by more than an
+# hour. Capped poll, not a full-interval sleep — that's what keeps the
+# cadence drift-free across long uptimes and frequent restarts alike.
+_CONSOLIDATION_CHECK_INTERVAL = 3600  # 1 hour
+
+
 async def run_scheduled_consolidation():
     """
-    Scheduled background task. Fires once on startup after a 90-second
-    delay, then repeats every 72 hours. Calls consolidate_all_layers()
-    with trigger="scheduled". Writes a one-line summary to the notifications
-    table if any merges occurred.
+    Schedule-based consolidation. Runs at most once per 7 days, gated
+    on the durable `last_consolidation` timestamp in the meta table —
+    NOT on a fixed sleep loop. This makes the cadence correct
+    regardless of server lifetime:
+
+      * Frequent restarts: each boot waits 90s then checks the stored
+        timestamp; it won't run again until a full 7 days have passed
+        since the last recorded run, so restarts can't over-trigger.
+      * Long uptime: the poll wakes at least hourly and the next run
+        is gated on the stored timestamp (absolute), so timing never
+        drifts the way an accumulating `sleep(interval)` loop does.
+
+    Startup staggers 90s vs. the flag-surfacing task (60s). Each wake:
+    if >= 7 days since the last run (or never run), consolidate and
+    stamp the timestamp; otherwise sleep until it's due, capped at the
+    1h poll interval so a restart can re-evaluate.
     """
     await asyncio.sleep(90)  # stagger startup relative to flag surfacing (60s)
     while True:
+        sleep_for = _CONSOLIDATION_CHECK_INTERVAL
         try:
-            totals = await consolidate_all_layers(
-                channel_name=None, trigger="scheduled"
+            loop = asyncio.get_running_loop()
+            last_raw = await loop.run_in_executor(
+                None, get_meta_value, "last_consolidation"
             )
-            if totals and totals.get("merged", 0) > 0:
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-                skipped_str = (
-                    f", {totals['skipped']} cluster(s) skipped"
-                    if totals.get("skipped") else ""
+            now = datetime.now()
+            last_dt = None
+            if last_raw:
+                try:
+                    last_dt = datetime.fromisoformat(last_raw)
+                except ValueError:
+                    # Corrupt/legacy value — treat as "never run" so we
+                    # consolidate once and rewrite a clean timestamp.
+                    last_dt = None
+
+            due = (
+                last_dt is None
+                or (now - last_dt) >= _CONSOLIDATION_INTERVAL
+            )
+
+            if due:
+                totals = await consolidate_all_layers(
+                    channel_name=None, trigger="scheduled"
                 )
-                content = (
-                    f"🧠 Scheduled consolidation [{timestamp}] — "
-                    f"{totals['merged']} memories merged, "
-                    f"{totals['archived']} archived"
-                    + skipped_str
+                # Stamp after a completed run regardless of merge count
+                # so a no-op run still resets the 7-day clock (prevents
+                # retrying every hour). A crashed run hits `except`
+                # below and does NOT stamp, so it retries next poll.
+                await loop.run_in_executor(
+                    None,
+                    set_meta_value,
+                    "last_consolidation",
+                    datetime.now().isoformat(),
                 )
-                conn = sqlite3.connect(DB_PATH)
-                conn.execute(
-                    "INSERT INTO notifications (type, content, read) VALUES (?, ?, 0)",
-                    ("consolidation_summary", content)
+                if totals and totals.get("merged", 0) > 0:
+                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+                    skipped_str = (
+                        f", {totals['skipped']} cluster(s) skipped"
+                        if totals.get("skipped") else ""
+                    )
+                    content = (
+                        f"🧠 Scheduled consolidation [{timestamp}] — "
+                        f"{totals['merged']} memories merged, "
+                        f"{totals['archived']} archived"
+                        + skipped_str
+                    )
+                    conn = sqlite3.connect(DB_PATH)
+                    conn.execute(
+                        "INSERT INTO notifications (type, content, read) VALUES (?, ?, 0)",
+                        ("consolidation_summary", content)
+                    )
+                    conn.commit()
+                    conn.close()
+            else:
+                # Not yet due — sleep until the 7-day mark, but never
+                # longer than the poll interval so a restart in the
+                # meantime re-reads the (possibly updated) timestamp.
+                remaining = (
+                    last_dt + _CONSOLIDATION_INTERVAL - now
+                ).total_seconds()
+                sleep_for = max(
+                    60, min(_CONSOLIDATION_CHECK_INTERVAL, remaining)
                 )
-                conn.commit()
-                conn.close()
         except Exception as e:
             logger.error(f"[ScheduledConsolidation] Error: {e}")
-        await asyncio.sleep(72 * 3600)  # 72 hours
+            sleep_for = _CONSOLIDATION_CHECK_INTERVAL
+        await asyncio.sleep(sleep_for)
 
 
 async def run_goal_modification(

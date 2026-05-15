@@ -1005,6 +1005,33 @@ def get_pending_reflection():
     return result and result[0] == "true"
 
 
+def get_meta_value(key: str, default: str | None = None) -> str | None:
+    """Generic read from the meta key/value table. Returns `default`
+    when the key is absent. Used for durable scheduler state such as
+    `last_consolidation` so cadence survives restarts."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = ?", (key,)
+        ).fetchone()
+    finally:
+        conn.close()
+    return row[0] if row else default
+
+
+def set_meta_value(key: str, value: str) -> None:
+    """Generic upsert into the meta key/value table."""
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+            (key, value),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 # ============================================================
 # SAVE FUNCTIONS
 # ============================================================
