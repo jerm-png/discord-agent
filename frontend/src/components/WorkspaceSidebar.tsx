@@ -7,6 +7,7 @@ import {
   MessageSquare,
   Power,
   Terminal,
+  Brain,
 } from 'lucide-react'
 import { logout } from '../api/client'
 import { useAuthStore } from '../store/authStore'
@@ -41,12 +42,18 @@ interface WorkspaceSidebarProps {
   workspaces: Workspace[]
   activeWorkspace: string
   onWorkspaceChange: (slug: string) => void
+  // Optional toggle for the Memory Browser overlay. When omitted (e.g.
+  // for non-admin users) the button is hidden.
+  onOpenMemoryBrowser?: () => void
+  memoryBrowserActive?: boolean
 }
 
 export function WorkspaceSidebar({
   workspaces,
   activeWorkspace,
   onWorkspaceChange,
+  onOpenMemoryBrowser,
+  memoryBrowserActive,
 }: WorkspaceSidebarProps) {
   const clearUser = useAuthStore((s) => s.clearUser)
 
@@ -164,6 +171,25 @@ export function WorkspaceSidebar({
             <span className="font-mono text-[9px] text-neon-cyan/70">{`{SYS_OK}`}</span>
           </div>
         </div>
+
+        {onOpenMemoryBrowser && (
+          <button
+            onClick={onOpenMemoryBrowser}
+            title={memoryBrowserActive ? 'Close Memory Browser' : 'Open Memory Browser'}
+            className={cn(
+              'w-full flex items-center justify-center gap-2 py-2',
+              'industrial-raised border transition-all cursor-pointer',
+              memoryBrowserActive
+                ? 'border-neon-cyan/70 text-neon-cyan glow-cyan'
+                : 'border-neon-cyan/30 text-neon-cyan/70 hover:text-neon-cyan hover:border-neon-cyan/60 hover:glow-cyan',
+            )}
+          >
+            <Brain className="w-3.5 h-3.5" />
+            <span className="font-mono text-[10px] uppercase tracking-wider font-bold">
+              Memory
+            </span>
+          </button>
+        )}
 
         <button
           onClick={handleLogout}

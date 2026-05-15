@@ -6,6 +6,7 @@ import { ChatPanel } from '../components/ChatPanel'
 import { RosterPage } from '../components/RosterPage'
 import { EntityHeader } from '../components/EntityHeader'
 import { MedBayPage, type MedbaySection } from './MedBayPage'
+import { MemoryBrowser } from '../components/MemoryBrowser'
 import { useWebSocket } from '../hooks/useWebSocket'
 import type { WSMessage } from '../hooks/useWebSocket'
 import { useDriftStore } from '../store/driftStore'
@@ -38,6 +39,9 @@ export function DashboardPage() {
 
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [threadsLoading, setThreadsLoading] = useState(false)
+  // Memory Browser overlay — admin-only, toggled from the sidebar.
+  // Hides the chat/thread area entirely while open.
+  const [showMemoryBrowser, setShowMemoryBrowser] = useState(false)
   // medbay_update WS frames bump these counters per section; MedBayPage
   // watches the matching counter in a useEffect and refetches.
   const [medbayTokens, setMedbayTokens] = useState<
@@ -200,6 +204,10 @@ export function DashboardPage() {
             workspaces={workspaces}
             activeWorkspace={activeWorkspace}
             onWorkspaceChange={handleWorkspaceChange}
+            onOpenMemoryBrowser={
+              isParker ? undefined : () => setShowMemoryBrowser((v) => !v)
+            }
+            memoryBrowserActive={showMemoryBrowser}
           />
         )}
         <ThreadList
@@ -211,7 +219,9 @@ export function DashboardPage() {
           workspaceLabel={activeWorkspaceLabel}
           isLoading={threadsLoading}
         />
-        {activeWorkspace === 'health' ? (
+        {showMemoryBrowser ? (
+          <MemoryBrowser onClose={() => setShowMemoryBrowser(false)} />
+        ) : activeWorkspace === 'health' ? (
           <MedBayPage
             hasActiveThread={!!activeThread}
             messages={messages}

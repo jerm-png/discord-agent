@@ -243,6 +243,18 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
+    # Pin support for strategic + analytical (operational already has it).
+    # The Memory Browser surfaces a Pin toggle on every row regardless of
+    # layer, so all three tables need the column.
+    for _pin_table in ("strategic_memory", "analytical_memory"):
+        try:
+            c.execute(
+                f"ALTER TABLE {_pin_table} ADD COLUMN "
+                f"pinned INTEGER NOT NULL DEFAULT 0"
+            )
+        except sqlite3.OperationalError:
+            pass
+
     c.execute("""
         CREATE TABLE IF NOT EXISTS health_panels (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3297,6 +3309,157 @@ def medbay_log_change(
     finally:
         conn.close()
     return new_id
+
+
+# ============================================================
+# MEMORY BROWSER HELPERS
+# ============================================================
+#
+# These helpers back /api/v1/memories. They unify the three layer
+# tables (which have different column names — content/pattern,
+# last_confirmed/last_updated/last_observed) into a single shape the
+# frontend can render uniformly, and add a row-level `stale` flag
+# computed against each row's flag_after_days deadline.
+
+# Per-layer column mapping. (content_col, timestamp_col, table)
+_LAYER_SCHEMA = {
+    "strategic": ("content", "last_confirmed", "strategic_memory"),
+    "operational": ("content", "last_updated", "operational_memory"),
+    "analytical": ("pattern", "last_observed", "analytical_memory"),
+}
+
+
+def _is_stale(timestamp_iso: str | None, flag_after_days: int | None) -> bool:
+    """Server-side staleness check. Mirrors check_stale_memories logic
+    but on a single row so the browser endpoint can flag rows inline."""
+    if not timestamp_iso or not flag_after_days:
+        # Null timestamp = never confirmed → treat as stale so the row
+        # surfaces in the Stale filter and gets reviewed.
+        return True if not timestamp_iso else False
+    try:
+        ts = datetime.fromisoformat(timestamp_iso)
+    except (ValueError, TypeError):
+        return False
+    return (datetime.now() - ts).days > flag_after_days
+
+
+def list_active_memories(
+    layer: str | None = None,
+    search: str | None = None,
+    status_filter: str | None = None,
+) -> list:
+    """
+    Returns active memories across all three layers in a uniform shape.
+
+    layer: "strategic" | "operational" | "analytical" — None for all.
+    search: case-insensitive LIKE on the layer's content column.
+    status_filter: "stale" | "pinned" — applied AFTER fetch (stale is
+        a computed flag, not a column).
+
+    Each entry: {id, layer, content, confidence, created_at,
+    last_confirmed, flag_after_days, pinned, project_tag, channel_name,
+    status, stale}.
+    """
+    if layer is not None and layer not in _LAYER_SCHEMA:
+        return []
+
+    layers_to_scan = [layer] if layer else list(_LAYER_SCHEMA.keys())
+    search_pat = f"%{search}%" if search else None
+
+    out = []
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        for lyr in layers_to_scan:
+            content_col, ts_col, table = _LAYER_SCHEMA[lyr]
+            # `created` is named identically across all three tables.
+            base = (
+                f"SELECT id, {content_col}, confidence, created, "
+                f"{ts_col}, flag_after_days, "
+                f"COALESCE(pinned, 0), project_tag, channel_name, status "
+                f"FROM {table} WHERE status = 'active'"
+            )
+            params: list = []
+            if search_pat:
+                base += f" AND {content_col} LIKE ?"
+                params.append(search_pat)
+            try:
+                rows = conn.execute(base, params).fetchall()
+            except sqlite3.OperationalError as e:
+                # Older DBs may be missing project_tag / pinned despite
+                # the init_db migrations — skip the layer rather than
+                # crash the whole list.
+                print(f"[memory browser] skipping {lyr}: {e}")
+                continue
+            for r in rows:
+                (mem_id, content, conf, created, ts, flag_days,
+                 pinned, project_tag, channel_name, status) = r
+                entry = {
+                    "id": mem_id,
+                    "layer": lyr,
+                    "content": content or "",
+                    "confidence": float(conf) if conf is not None else None,
+                    "created_at": created,
+                    "last_confirmed": ts,
+                    "flag_after_days": flag_days,
+                    "pinned": bool(pinned),
+                    "project_tag": project_tag,
+                    "channel_name": channel_name,
+                    "status": status,
+                    "stale": _is_stale(ts, flag_days),
+                }
+                out.append(entry)
+    finally:
+        conn.close()
+
+    if status_filter == "stale":
+        out = [m for m in out if m["stale"]]
+    elif status_filter == "pinned":
+        out = [m for m in out if m["pinned"]]
+
+    # Sort: pinned first, then stale, then newest created.
+    def _sort_key(m: dict) -> tuple:
+        return (
+            0 if m["pinned"] else 1,
+            0 if m["stale"] else 1,
+            -(datetime.fromisoformat(m["created_at"]).timestamp())
+            if m["created_at"]
+            else 0,
+        )
+
+    try:
+        out.sort(key=_sort_key)
+    except Exception:
+        # Bad timestamp shouldn't break the response.
+        pass
+    return out
+
+
+def toggle_memory_pin(layer: str, memory_id: int) -> dict | None:
+    """
+    Flips the pinned bit on a single memory row. Returns
+    {"id": …, "layer": …, "pinned": bool} after the flip, or None when
+    no row matched.
+    """
+    if layer not in _LAYER_SCHEMA:
+        return None
+    _, _, table = _LAYER_SCHEMA[layer]
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        row = conn.execute(
+            f"SELECT COALESCE(pinned, 0) FROM {table} WHERE id = ?",
+            (memory_id,),
+        ).fetchone()
+        if not row:
+            return None
+        new_val = 0 if int(row[0]) else 1
+        conn.execute(
+            f"UPDATE {table} SET pinned = ? WHERE id = ?",
+            (new_val, memory_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"id": memory_id, "layer": layer, "pinned": bool(new_val)}
 
 
 # INITIALISE ON IMPORT

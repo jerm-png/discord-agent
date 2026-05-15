@@ -5,6 +5,7 @@ from app.api.v1.endpoints import (
     entities,
     flags,
     medbay,
+    memories,
     status,
     threads,
     upload,
@@ -56,4 +57,9 @@ router.include_router(
     upload.router,
     prefix="/upload",
     tags=["upload"],
+)
+router.include_router(
+    memories.router,
+    prefix="/memories",
+    tags=["memories"],
 )

@@ -455,3 +455,67 @@ export async function uploadFile(file: File): Promise<UploadedFile> {
   }
   return res.json() as Promise<UploadedFile>
 }
+
+// ── Memory Browser ───────────────────────────────────────────
+export type MemoryLayer = 'strategic' | 'operational' | 'analytical'
+export type MemoryStatusFilter = 'stale' | 'pinned'
+
+export interface MemoryRow {
+  id: number
+  layer: MemoryLayer
+  content: string
+  confidence: number | null
+  created_at: string | null
+  last_confirmed: string | null
+  flag_after_days: number | null
+  pinned: boolean
+  project_tag: string | null
+  channel_name: string | null
+  status: string
+  stale: boolean
+}
+
+export async function getMemories(opts?: {
+  layer?: MemoryLayer
+  search?: string
+  status?: MemoryStatusFilter
+}): Promise<{ memories: MemoryRow[]; count: number }> {
+  const params = new URLSearchParams()
+  if (opts?.layer) params.set('layer', opts.layer)
+  if (opts?.search) params.set('search', opts.search)
+  if (opts?.status) params.set('status', opts.status)
+  const qs = params.toString() ? `?${params.toString()}` : ''
+  return request<{ memories: MemoryRow[]; count: number }>(
+    `/api/v1/memories${qs}`,
+  )
+}
+
+export async function confirmMemory(
+  layer: MemoryLayer,
+  id: number,
+): Promise<void> {
+  await request<{ status: string }>(
+    `/api/v1/memories/${layer}/${id}/confirm`,
+    { method: 'POST' },
+  )
+}
+
+export async function togglePinMemory(
+  layer: MemoryLayer,
+  id: number,
+): Promise<{ pinned: boolean }> {
+  return request<{ pinned: boolean }>(
+    `/api/v1/memories/${layer}/${id}/pin`,
+    { method: 'POST' },
+  )
+}
+
+export async function archiveMemoryRow(
+  layer: MemoryLayer,
+  id: number,
+): Promise<void> {
+  await request<{ status: string }>(
+    `/api/v1/memories/${layer}/${id}`,
+    { method: 'DELETE' },
+  )
+}
