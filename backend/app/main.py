@@ -22,6 +22,11 @@ logger = logging.getLogger(__name__)
 
 LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY")
 LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY")
+# NOTE: the env var is LANGFUSE_HOST, not LANGFUSE_BASE_URL. Some
+# .env files carry a legacy `LANGFUSE_BASE_URL=` line — that key is
+# IGNORED here and the default below is used instead. To point at a
+# self-hosted / non-US Langfuse, set LANGFUSE_HOST (the v2 SDK's
+# constructor arg is `host=`, wired in the lifespan handler below).
 LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", "https://us.cloud.langfuse.com")
 
 
