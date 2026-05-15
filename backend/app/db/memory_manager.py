@@ -275,6 +275,11 @@ def init_db():
     # 'health'. Application code always passes "health" explicitly, but
     # the schema default is the defense-in-depth net so a future write
     # path that forgets the param still lands inside the right boundary.
+    #
+    # Each table block is ordered: CREATE TABLE (with workspace) →
+    # ALTER TABLE ADD COLUMN workspace (idempotent migration for any
+    # pre-workspace DB) → CREATE INDEX (including the workspace one,
+    # which would otherwise fail on a stale DB before the migration ran).
     c.execute("""
         CREATE TABLE IF NOT EXISTS health_active_protocol (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -290,6 +295,13 @@ def init_db():
             status TEXT NOT NULL DEFAULT 'active'
         )
     """)
+    try:
+        c.execute(
+            "ALTER TABLE health_active_protocol ADD COLUMN "
+            "workspace TEXT NOT NULL DEFAULT 'health'"
+        )
+    except sqlite3.OperationalError:
+        pass
     c.execute("""
         CREATE INDEX IF NOT EXISTS idx_hap_user_status
         ON health_active_protocol(user_id, status)
@@ -314,6 +326,13 @@ def init_db():
             created_at TEXT NOT NULL
         )
     """)
+    try:
+        c.execute(
+            "ALTER TABLE health_lab_results ADD COLUMN "
+            "workspace TEXT NOT NULL DEFAULT 'health'"
+        )
+    except sqlite3.OperationalError:
+        pass
     c.execute("""
         CREATE INDEX IF NOT EXISTS idx_hlr_user_marker_date
         ON health_lab_results(user_id, marker_name, test_date)
@@ -336,6 +355,13 @@ def init_db():
             created_at TEXT NOT NULL
         )
     """)
+    try:
+        c.execute(
+            "ALTER TABLE health_followups ADD COLUMN "
+            "workspace TEXT NOT NULL DEFAULT 'health'"
+        )
+    except sqlite3.OperationalError:
+        pass
     c.execute("""
         CREATE INDEX IF NOT EXISTS idx_hfu_user_completed
         ON health_followups(user_id, completed)
@@ -358,6 +384,13 @@ def init_db():
             created_at TEXT NOT NULL
         )
     """)
+    try:
+        c.execute(
+            "ALTER TABLE health_changes_log ADD COLUMN "
+            "workspace TEXT NOT NULL DEFAULT 'health'"
+        )
+    except sqlite3.OperationalError:
+        pass
     c.execute("""
         CREATE INDEX IF NOT EXISTS idx_hcl_user_created
         ON health_changes_log(user_id, created_at)
@@ -366,24 +399,6 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_hcl_workspace_user
         ON health_changes_log(workspace, user_id)
     """)
-
-    # Idempotent migrations for any DB created before the workspace
-    # column was added. Existing rows backfill to 'health' via the
-    # column DEFAULT. The duplicate-column OperationalError on
-    # subsequent boots is expected and swallowed.
-    for _table in (
-        "health_active_protocol",
-        "health_lab_results",
-        "health_followups",
-        "health_changes_log",
-    ):
-        try:
-            c.execute(
-                f"ALTER TABLE {_table} ADD COLUMN "
-                f"workspace TEXT NOT NULL DEFAULT 'health'"
-            )
-        except sqlite3.OperationalError:
-            pass
 
     c.execute("""
         CREATE VIRTUAL TABLE IF NOT EXISTS conversation_log USING fts5(
