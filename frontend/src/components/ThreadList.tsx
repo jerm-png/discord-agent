@@ -136,13 +136,13 @@ export function ThreadList({
                   'w-full text-left px-3 py-3 transition-all duration-200 relative border-l-[3px] cursor-pointer',
                   'group',
                   isActive
-                    ? 'industrial-raised border-l-neon-cyan bg-neon-cyan/5'
+                    ? 'industrial-raised border-l-neon-pink bg-neon-pink/5'
                     : 'border-transparent hover:industrial-raised',
                 )}
               >
-                {/* Active glow stripe */}
+                {/* Active glow */}
                 {isActive && (
-                  <div className="absolute left-0 top-2 bottom-2 w-[3px] bg-neon-cyan glow-cyan" />
+                  <div className="absolute left-0 top-2 bottom-2 w-[3px] bg-neon-pink glow-pink" />
                 )}
 
                 {/* Delete button — visible on hover */}
@@ -172,7 +172,7 @@ export function ThreadList({
                     className={cn(
                       'font-mono text-[10px] shrink-0 tabular-nums px-1.5 py-0.5',
                       isActive
-                        ? 'text-neon-cyan bg-neon-cyan/10 border border-neon-cyan/30'
+                        ? 'text-neon-pink bg-neon-pink/10 border border-neon-pink/30'
                         : 'text-muted-foreground/60',
                     )}
                   >

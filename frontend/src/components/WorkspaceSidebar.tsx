@@ -15,16 +15,33 @@ import { useAuthStore } from '../store/authStore'
 import type { Workspace } from '../api/client'
 import type { ReactNode } from 'react'
 
-// Icon per workspace slug. Active/inactive coloring is uniform cyan
-// across all workspaces — the per-workspace accent system was removed.
-const SLUG_ICON: Record<string, ReactNode> = {
-  'chief-of-staff': <Briefcase className="w-4 h-4" />,
-  admin: <Sparkles className="w-4 h-4" />,
-  institute: <FolderKanban className="w-4 h-4" />,
-  health: <Heart className="w-4 h-4" />,
-  engineering: <Code2 className="w-4 h-4" />,
-  parker: <Terminal className="w-4 h-4" />,
-  general: <MessageSquare className="w-4 h-4" />,
+interface WorkspaceConfig {
+  icon: ReactNode
+  color: string
+}
+
+// Original pre-accent design: a fixed per-slug icon + color pairing.
+// This is NOT the dynamic workspace-accent system that was added and
+// removed — it's a small static lookup with hand-picked colors.
+const SLUG_CONFIG: Record<string, WorkspaceConfig> = {
+  'chief-of-staff': { icon: <Briefcase className="w-4 h-4" />, color: 'cyan' },
+  admin: { icon: <Sparkles className="w-4 h-4" />, color: 'cyan' },
+  institute: { icon: <FolderKanban className="w-4 h-4" />, color: 'pink' },
+  health: { icon: <Heart className="w-4 h-4" />, color: 'green' },
+  engineering: { icon: <Code2 className="w-4 h-4" />, color: 'yellow' },
+  parker: { icon: <Terminal className="w-4 h-4" />, color: 'orange' },
+  general: { icon: <MessageSquare className="w-4 h-4" />, color: 'orange' },
+}
+
+const colorClasses: Record<
+  string,
+  { icon: string; border: string; glow: string; bg: string }
+> = {
+  cyan: { icon: 'text-neon-cyan', border: 'bg-neon-cyan', glow: 'glow-cyan', bg: 'bg-neon-cyan/10' },
+  pink: { icon: 'text-neon-pink', border: 'bg-neon-pink', glow: 'glow-pink', bg: 'bg-neon-pink/10' },
+  green: { icon: 'text-neon-green', border: 'bg-neon-green', glow: 'glow-green', bg: 'bg-neon-green/10' },
+  yellow: { icon: 'text-neon-yellow', border: 'bg-neon-yellow', glow: 'glow-yellow', bg: 'bg-neon-yellow/10' },
+  orange: { icon: 'text-neon-orange', border: 'bg-neon-orange', glow: 'glow-pink', bg: 'bg-neon-orange/10' },
 }
 
 interface WorkspaceSidebarProps {
@@ -93,12 +110,13 @@ export function WorkspaceSidebar({
           </p>
         </div>
         {workspaces.map((workspace) => {
-          const icon = SLUG_ICON[workspace.slug] ?? (
-            <Terminal className="w-4 h-4" />
-          )
+          const cfg = SLUG_CONFIG[workspace.slug] ?? {
+            icon: <Terminal className="w-4 h-4" />,
+            color: 'cyan',
+          }
+          const colors = colorClasses[cfg.color]
           const isActive = activeWorkspace === workspace.slug
-          // Single cyan accent for the active row. Inactive rows stay
-          // muted; no per-workspace tinting anywhere on the row.
+
           return (
             <button
               key={workspace.slug}
@@ -107,13 +125,19 @@ export function WorkspaceSidebar({
                 'w-full flex items-center gap-3 px-3 py-3 text-sm transition-all duration-200',
                 'group relative border-l-[3px] border-transparent',
                 isActive
-                  ? 'text-foreground industrial-raised bg-neon-cyan/10'
-                  : 'text-muted-foreground hover:industrial-raised hover:text-foreground',
+                  ? `text-foreground industrial-raised ${colors.bg}`
+                  : 'text-muted-foreground hover:industrial-raised hover:text-foreground'
               )}
             >
-              {/* Active indicator — glowing left border stripe */}
+              {/* Active indicator - thick glowing left border */}
               {isActive && (
-                <div className="absolute left-0 top-1 bottom-1 w-[3px] bg-neon-cyan glow-cyan" />
+                <div
+                  className={cn(
+                    'absolute left-0 top-1 bottom-1 w-[3px]',
+                    colors.border,
+                    colors.glow
+                  )}
+                />
               )}
 
               {/* Icon container */}
@@ -121,24 +145,19 @@ export function WorkspaceSidebar({
                 className={cn(
                   'p-1.5 border transition-all',
                   isActive
-                    ? 'border-neon-cyan industrial-inset text-neon-cyan'
-                    : 'border-muted-foreground/20 group-hover:border-neon-cyan/30',
+                    ? `border-current industrial-inset ${colors.icon}`
+                    : 'border-muted-foreground/20 group-hover:border-neon-cyan/30'
                 )}
               >
-                {icon}
+                {cfg.icon}
               </div>
 
-              <span
-                className={cn(
-                  'font-sans font-medium',
-                  isActive && 'text-neon-cyan',
-                )}
-              >
+              <span className={cn('font-sans font-medium', isActive && colors.icon)}>
                 {workspace.label}
               </span>
 
               {isActive && (
-                <span className="ml-auto w-2 h-2 bg-neon-cyan pulse-dot" />
+                <span className={cn('ml-auto w-2 h-2', colors.border, 'pulse-dot')} />
               )}
             </button>
           )
