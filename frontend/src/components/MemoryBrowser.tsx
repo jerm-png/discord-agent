@@ -116,7 +116,7 @@ function MemoryCard({
   return (
     <div
       className={cn(
-        'industrial-raised border-l-2 bg-[#0a0a0e] p-3 transition-colors',
+        'industrial-raised border-l-2 bg-[#0d1117] p-3 transition-colors',
         borderClass,
       )}
     >
@@ -175,7 +175,7 @@ function MemoryCard({
       </button>
 
       {expanded && (
-        <div className="mt-3 pt-3 border-t border-[#12121a] space-y-2">
+        <div className="mt-3 pt-3 border-t border-[#1a2332] space-y-2">
           <div className="grid grid-cols-2 gap-3 text-[10px] font-mono uppercase tracking-wider">
             <div>
               <span className="text-muted-foreground/50">Created</span>
@@ -377,7 +377,7 @@ export function MemoryBrowser({ onClose }: MemoryBrowserProps) {
   }
 
   return (
-    <div className="flex-1 h-full flex flex-col bg-gradient-to-b from-[#0a0a0e] to-[#040406] relative scanlines">
+    <div className="flex-1 h-full flex flex-col bg-gradient-to-b from-[#0d1117] to-[#080c12] relative scanlines">
       {/* Header */}
       <div className="px-4 py-3 border-b border-neon-cyan/20 industrial-panel flex items-center gap-3">
         <Brain className="w-5 h-5 text-neon-cyan glow-cyan" />
@@ -400,7 +400,7 @@ export function MemoryBrowser({ onClose }: MemoryBrowserProps) {
       </div>
 
       {/* Filter bar */}
-      <div className="px-4 py-3 border-b border-[#12121a] flex flex-wrap items-center gap-2">
+      <div className="px-4 py-3 border-b border-[#1a2332] flex flex-wrap items-center gap-2">
         <div className="relative flex-1 min-w-[200px]">
           <Search className="w-3.5 h-3.5 text-muted-foreground/60 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
           <input

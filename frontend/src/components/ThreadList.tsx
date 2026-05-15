@@ -223,7 +223,7 @@ export function ThreadList({
   return (
     <aside
       className={cn(
-        'h-full bg-gradient-to-b from-[#0a0a0e] to-[#040406] flex flex-col relative scanlines industrial-panel transition-all duration-300 overflow-hidden',
+        'h-full bg-gradient-to-b from-[#0d1117] to-[#080c12] flex flex-col relative scanlines industrial-panel transition-all duration-300 overflow-hidden',
         collapsed ? 'w-[48px]' : 'w-[280px]'
       )}
     >

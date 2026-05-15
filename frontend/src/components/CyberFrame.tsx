@@ -166,7 +166,7 @@ export function CyberFrame({
 
       {/* Content container with clipped corners */}
       <div
-        className="relative bg-gradient-to-b from-[#12121a] to-[#0a0a0e] m-[2px]"
+        className="relative bg-gradient-to-b from-[#1a2332] to-[#0d1117] m-[2px]"
         style={{
           clipPath: `polygon(
             0 ${cornerSize}px,

@@ -62,7 +62,7 @@ export function WorkspaceSidebar({
   }
 
   return (
-    <aside className="w-[220px] h-full bg-gradient-to-b from-[#0a0a0e] to-[#040406] flex flex-col relative scanlines industrial-panel">
+    <aside className="w-[220px] h-full bg-gradient-to-b from-[#0d1117] to-[#080c12] flex flex-col relative scanlines industrial-panel">
       {/* Right edge thick divider */}
       <div className="absolute top-0 bottom-0 right-0 industrial-divider-v" />
 
@@ -172,7 +172,7 @@ export function WorkspaceSidebar({
       </nav>
 
       {/* Footer - recessed status + logout */}
-      <div className="p-4 relative industrial-inset border-t-2 border-[#12121a] space-y-3">
+      <div className="p-4 relative industrial-inset border-t-2 border-[#1a2332] space-y-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 bg-neon-green pulse-dot-green" />

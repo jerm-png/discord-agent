@@ -79,7 +79,7 @@ export function SystemStatusBar() {
   }, [])
 
   return (
-    <div className="h-9 w-full bg-gradient-to-b from-[#0a0a0e] to-[#040406] flex items-center justify-between px-4 font-mono text-[10px] tracking-wider relative industrial-panel">
+    <div className="h-9 w-full bg-gradient-to-b from-[#0d1117] to-[#080c12] flex items-center justify-between px-4 font-mono text-[10px] tracking-wider relative industrial-panel">
       {/* Top edge highlight */}
       <div className="absolute top-0 left-0 right-0 h-[1px] bg-gradient-to-r from-transparent via-neon-cyan/30 to-transparent" />
 
@@ -116,7 +116,7 @@ export function SystemStatusBar() {
           >
             {memoryUsage.toFixed(1)}%
           </span>
-          <div className="w-20 h-3 bg-[#040406] border-2 border-[#12121a] overflow-hidden relative shadow-inner">
+          <div className="w-20 h-3 bg-[#080c12] border-2 border-[#1a2332] overflow-hidden relative shadow-inner">
             <div
               className={`h-full transition-all duration-500 ${
                 memoryUsage > 85

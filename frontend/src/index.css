@@ -4,40 +4,40 @@
 
 :root {
   /* Cyberpunk Neon Theme — three-tier darker palette
-     base bg (deepest) → #040406
-     surface / card    → #0a0a0e
-     border / divider  → #12121a
+     base bg (deepest) → #080c12
+     surface / card    → #0d1117
+     border / divider  → #1a2332
      Inline hex literals throughout the components were collapsed to
      match these three tokens; the old palette had ~6 dark variants
      (#050508, #06060a, #08080d, #0a0a10, #0d0d14, etc.) which are
      now uniformly mapped into the three values above. */
-  --background: #040406;
+  --background: #080c12;
   --foreground: #f0f0f5;
-  --card: #0a0a0e;
+  --card: #0d1117;
   --card-foreground: #f0f0f5;
-  --popover: #0a0a0e;
+  --popover: #0d1117;
   --popover-foreground: #f0f0f5;
   --primary: #00f0ff;
-  --primary-foreground: #040406;
-  --secondary: #12121a;
+  --primary-foreground: #080c12;
+  --secondary: #1a2332;
   --secondary-foreground: #f0f0f5;
-  --muted: #12121a;
+  --muted: #1a2332;
   --muted-foreground: #9090a8;
   --accent: #ff2a6d;
-  --accent-foreground: #040406;
+  --accent-foreground: #080c12;
   --destructive: #ff0040;
   --destructive-foreground: #f0f0f5;
   --border: #00f0ff;
-  --input: #12121a;
+  --input: #1a2332;
   --ring: #00f0ff;
   --warning: #fcee0a;
-  --warning-foreground: #040406;
+  --warning-foreground: #080c12;
   --radius: 0rem;
-  --sidebar: #040406;
+  --sidebar: #080c12;
   --sidebar-foreground: #f0f0f5;
   --sidebar-primary: #00f0ff;
-  --sidebar-primary-foreground: #040406;
-  --sidebar-accent: #12121a;
+  --sidebar-primary-foreground: #080c12;
+  --sidebar-accent: #1a2332;
   --sidebar-accent-foreground: #f0f0f5;
   --sidebar-border: #00f0ff;
   --sidebar-ring: #00f0ff;
@@ -112,12 +112,12 @@
     box-sizing: border-box;
   }
   /* Explicit html + body background. The Tailwind `bg-background`
-     class below resolves to var(--background) (#040406) — but we set
+     class below resolves to var(--background) (#080c12) — but we set
      the literal value here too so anything that escapes the React
      tree (modals, portals, scroll overhang) lands on the canonical
      base color and not a Tailwind/browser default. */
   html, body {
-    background-color: #040406;
+    background-color: #080c12;
   }
   body {
     @apply bg-background text-foreground;
@@ -391,7 +391,7 @@
 
 /* ── Scrollbar ────────────────────────────────────────── */
 ::-webkit-scrollbar{width:4px;height:4px}
-::-webkit-scrollbar-track{background:#040406}
+::-webkit-scrollbar-track{background:#080c12}
 ::-webkit-scrollbar-thumb{
   background:linear-gradient(180deg,#00f0ff44,#ff2a6d44);
   border-radius:0;

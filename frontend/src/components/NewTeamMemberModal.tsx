@@ -159,7 +159,7 @@ export function NewTeamMemberModal({
                 onChange={(e) =>
                   setRelationship(e.target.value as EntityRelationshipType)
                 }
-                className="w-full px-3 py-2 industrial-inset border-2 border-neon-cyan/30 font-sans text-sm bg-[#0a0a0e] text-foreground focus:outline-none focus:border-neon-pink/50"
+                className="w-full px-3 py-2 industrial-inset border-2 border-neon-cyan/30 font-sans text-sm bg-[#0d1117] text-foreground focus:outline-none focus:border-neon-pink/50"
               >
                 {RELATIONSHIP_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>

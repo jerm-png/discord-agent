@@ -621,7 +621,7 @@ export function ChatPanel({
 
   return (
     <div
-      className="flex-1 h-full flex flex-col bg-gradient-to-b from-[#0a0a0e] to-[#040406] relative scanlines"
+      className="flex-1 h-full flex flex-col bg-gradient-to-b from-[#0d1117] to-[#080c12] relative scanlines"
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
@@ -630,7 +630,7 @@ export function ChatPanel({
       {dragActive && (
         <div className="absolute inset-0 z-[200] pointer-events-none flex items-center justify-center">
           <div className="absolute inset-3 border-2 border-dashed border-neon-cyan/70 bg-neon-cyan/[0.06] animate-pulse" />
-          <div className="relative industrial-raised border border-neon-cyan/60 bg-[#0a0a0e]/90 px-5 py-3 flex items-center gap-3 glow-cyan">
+          <div className="relative industrial-raised border border-neon-cyan/60 bg-[#0d1117]/90 px-5 py-3 flex items-center gap-3 glow-cyan">
             <Upload className="w-5 h-5 text-neon-cyan glow-cyan-text" />
             <span className="font-mono text-xs uppercase tracking-widest text-neon-cyan glow-cyan-text font-bold">
               Drop to attach
@@ -640,7 +640,7 @@ export function ChatPanel({
       )}
       {isThinking && (
         <div className="absolute top-0 left-0 right-0 z-50">
-          <div className="h-8 w-full bg-gradient-to-b from-[#0a0a0e] to-[#040406] relative overflow-hidden flex items-center justify-center gap-[2px] px-6 border-b-2 border-[#12121a]">
+          <div className="h-8 w-full bg-gradient-to-b from-[#0d1117] to-[#080c12] relative overflow-hidden flex items-center justify-center gap-[2px] px-6 border-b-2 border-[#1a2332]">
             <div className="absolute left-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
               <div className="w-1 h-4 bg-neon-yellow/60" />
               <div className="w-1 h-6 bg-neon-yellow/80" />
@@ -664,8 +664,8 @@ export function ChatPanel({
             </div>
           </div>
 
-          <div className="bg-gradient-to-b from-[#040406] to-[#040406] overflow-hidden industrial-panel">
-            <div className="flex items-center justify-between px-4 py-2.5 border-b-2 border-[#12121a]">
+          <div className="bg-gradient-to-b from-[#080c12] to-[#080c12] overflow-hidden industrial-panel">
+            <div className="flex items-center justify-between px-4 py-2.5 border-b-2 border-[#1a2332]">
               <div className="flex items-center gap-3 px-3 py-1.5 industrial-inset border border-neon-pink/20">
                 <div className="relative">
                   <div className="w-2.5 h-2.5 bg-neon-pink pulse-dot-pink" />
@@ -688,7 +688,7 @@ export function ChatPanel({
                           : node % 3 === 1
                             ? 'bg-neon-pink border-neon-pink glow-pink'
                             : 'bg-neon-green border-neon-green glow-green'
-                        : 'bg-[#0a0a0e] border-[#12121a]'
+                        : 'bg-[#0d1117] border-[#1a2332]'
                     )}
                   />
                 ))}
@@ -698,7 +698,7 @@ export function ChatPanel({
             </div>
 
             <div className="flex items-stretch">
-              <div className="flex-1 px-4 py-2 border-r-2 border-[#12121a] industrial-inset">
+              <div className="flex-1 px-4 py-2 border-r-2 border-[#1a2332] industrial-inset">
                 <div className="flex items-center gap-2 mb-1">
                   <Database className="w-3 h-3 text-neon-green" />
                   <span className="font-mono text-[8px] text-neon-green/70 uppercase tracking-wider font-bold">
@@ -713,7 +713,7 @@ export function ChatPanel({
               </div>
 
               <div className="grid grid-cols-3 gap-0 text-center">
-                <div className="px-4 py-2 border-r-2 border-[#12121a] industrial-raised">
+                <div className="px-4 py-2 border-r-2 border-[#1a2332] industrial-raised">
                   <div className="flex items-center justify-center gap-1 mb-1">
                     <Cpu className="w-3 h-3 text-neon-cyan" />
                     <span className="font-mono text-[8px] text-muted-foreground uppercase font-bold">
@@ -724,7 +724,7 @@ export function ChatPanel({
                     {cycles}
                   </span>
                 </div>
-                <div className="px-4 py-2 border-r-2 border-[#12121a] industrial-raised">
+                <div className="px-4 py-2 border-r-2 border-[#1a2332] industrial-raised">
                   <div className="flex items-center justify-center gap-1 mb-1">
                     <Shield className="w-3 h-3 text-neon-pink" />
                     <span className="font-mono text-[8px] text-muted-foreground uppercase font-bold">
@@ -936,7 +936,7 @@ export function ChatPanel({
                   key={a.localId}
                   className={cn(
                     'relative group flex items-center gap-2 pr-7',
-                    'industrial-inset border bg-[#0a0a0e]',
+                    'industrial-inset border bg-[#0d1117]',
                     a.status === 'error'
                       ? 'border-neon-pink/60'
                       : cardBorder,
@@ -1096,19 +1096,30 @@ export function ChatPanel({
               // interim transcript grows it naturally pushes the
               // waveform's flex region narrower until the text fills
               // the bar and the waveform compresses to a sliver.
-              // Recording wrapper uses py-2 (was py-3) so the inner
-              // content area is ~32px tall instead of ~24px, giving
-              // the waveform bars room to read at their proper height.
               <div
                 className={cn(
-                  'w-full px-4 py-2 industrial-inset border-2 flex items-stretch gap-3',
+                  'w-full px-4 py-2 industrial-inset border-2 flex items-center gap-3',
                   'border-neon-pink/50 shadow-[0_0_12px_rgba(255,42,109,0.15)]',
                 )}
                 style={{ minHeight: '48px', maxHeight: '150px' }}
               >
+                {(() => {
+                  // Diagnostic log requested when the waveform appeared
+                  // blank — confirms the recording branch is hit and
+                  // that the bar array is populated. Safe to remove
+                  // once the visual is verified.
+                  // eslint-disable-next-line no-console
+                  console.log(
+                    '[voice waveform] isRecording=true, bars=',
+                    voiceWaveHeights.length,
+                    'sample heights=',
+                    voiceWaveHeights.slice(0, 3),
+                  )
+                  return null
+                })()}
                 <div
                   className={cn(
-                    'self-center font-sans text-sm italic whitespace-nowrap overflow-hidden text-ellipsis flex-shrink min-w-0',
+                    'font-sans text-sm italic whitespace-nowrap overflow-hidden text-ellipsis flex-shrink min-w-0',
                     inputValue.trim()
                       ? 'text-foreground'
                       : 'text-muted-foreground/40',
@@ -1116,15 +1127,17 @@ export function ChatPanel({
                 >
                   {inputValue.trim() || 'Listening...'}
                 </div>
-                {/* Waveform: flex-1 grabs all space remaining after
-                    the transcript text. justify-evenly spreads the 24
-                    bars across that full width with equal gaps on
-                    both sides, instead of bunching on one edge. h-full
-                    lets each bar use the full 32px of vertical room
-                    so the wave reads at the proper height even with
-                    no transcript yet. */}
+                {/* Waveform container: flex-1 takes all remaining
+                    horizontal space after the transcript text;
+                    justify-evenly distributes the 24 bars across the
+                    full width with equal spacing on both sides.
+                    Height is a definite pixel value (h-8 = 32px) so
+                    the bars below can resolve their percentage-
+                    looking heights — earlier I used h-full here,
+                    which chained an indeterminate % through the
+                    wrapper and collapsed every bar to 0px. */}
                 <div
-                  className="flex-1 min-w-0 h-full flex items-center justify-evenly overflow-hidden"
+                  className="flex-1 min-w-0 h-8 flex items-center justify-evenly overflow-hidden"
                   aria-hidden
                 >
                   {voiceWaveHeights.map((h, i) => (
@@ -1132,7 +1145,10 @@ export function ChatPanel({
                       key={i}
                       className="w-[3px] rounded-sm flex-shrink-0 transition-all duration-100"
                       style={{
-                        height: `${Math.max(0.12, h) * 100}%`,
+                        // Pixel-based so the bars don't depend on a
+                        // definite parent height percolating down.
+                        // Range: 4–32px (Math.max guards the floor).
+                        height: `${Math.max(0.12, h) * 32}px`,
                         background: '#ff3366',
                         // Slight per-bar opacity variation so the wave
                         // reads as organic instead of a uniform block.

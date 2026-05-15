@@ -64,7 +64,7 @@ export function CommandBar({
   }
 
   return (
-    <div className="h-[30px] flex items-center gap-1 px-2 bg-[#040406] border-t border-b border-[#12121a] relative">
+    <div className="h-[30px] flex items-center gap-1 px-2 bg-[#080c12] border-t border-b border-[#1a2332] relative">
       {/* Subtle scan line accent matching chat area aesthetic */}
       <div className="absolute left-0 right-0 top-0 h-[1px] bg-gradient-to-r from-transparent via-neon-cyan/15 to-transparent pointer-events-none" />
 
