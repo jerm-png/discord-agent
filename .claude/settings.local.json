@@ -35,7 +35,8 @@
       "Bash(python3 -c ' *)",
       "Bash(git -C \"/c/Users/Jerm/.claude\" status)",
       "Bash(git push *)",
-      "mcp__cocoindex-code__search"
+      "mcp__cocoindex-code__search",
+      "Bash(python -m py_compile backend/app/main.py)"
     ],
     "additionalDirectories": [
       "C:\\Users\\Jerm\\.claude\\agents"

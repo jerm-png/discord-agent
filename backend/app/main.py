@@ -33,21 +33,26 @@ LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", "https://us.cloud.langfuse.com")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ── Startup ───────────────────────────────────────────────
+    print("[LIFESPAN] Starting up")
     state.BOT_START_TIME = datetime.now(timezone.utc)
 
     # Langfuse observability
     try:
         if LANGFUSE_SECRET_KEY and LANGFUSE_PUBLIC_KEY:
+            print("[Langfuse] Keys found, initializing...")
             from langfuse import Langfuse
             state._langfuse = Langfuse(
                 secret_key=LANGFUSE_SECRET_KEY,
                 public_key=LANGFUSE_PUBLIC_KEY,
                 host=LANGFUSE_HOST,
             )
+            print("[Langfuse] Observability active")
             logger.info("Langfuse observability active")
         else:
+            print("[Langfuse] No keys found")
             logger.info("Langfuse: no keys found — tracing disabled")
     except Exception as e:
+        print(f"[Langfuse] Init failed: {e}")
         logger.warning(f"Langfuse init failed — tracing disabled: {e}")
 
     # Database tables
