@@ -19,6 +19,12 @@ from app.db.memory_manager import (
 
 router = APIRouter()
 
+# This module IS the health workspace's data plane — every row written
+# or read through here lives under workspace="health". The constant is
+# referenced explicitly on every helper call so the gate is visible at
+# the read/write site, not just inherited from the default.
+WORKSPACE = "health"
+
 
 # ── Request bodies ────────────────────────────────────────────
 class ProtocolCreate(BaseModel):
@@ -60,8 +66,16 @@ async def list_protocol(
 ):
     """Active (and optionally stopped) protocol items for the admin user."""
     if include_stopped:
-        return {"protocol": medbay_list_protocol(user["user_id"], status=None)}
-    return {"protocol": medbay_list_protocol(user["user_id"], status="active")}
+        return {
+            "protocol": medbay_list_protocol(
+                user["user_id"], status=None, workspace=WORKSPACE,
+            )
+        }
+    return {
+        "protocol": medbay_list_protocol(
+            user["user_id"], status="active", workspace=WORKSPACE,
+        )
+    }
 
 
 @router.post("/protocol")
@@ -76,6 +90,7 @@ async def create_protocol(
         frequency=body.frequency,
         reason=body.reason,
         target_marker=body.target_marker,
+        workspace=WORKSPACE,
     )
     return {"id": new_id}
 
@@ -86,14 +101,20 @@ async def list_labs(
     marker: str | None = Query(None),
     user: CurrentUser = Depends(require_admin),
 ):
-    return {"labs": medbay_list_labs(user["user_id"], marker=marker)}
+    return {
+        "labs": medbay_list_labs(
+            user["user_id"], marker=marker, workspace=WORKSPACE,
+        )
+    }
 
 
 @router.get("/labs/latest")
 async def list_latest_labs(
     user: CurrentUser = Depends(require_admin),
 ):
-    return {"labs": medbay_latest_labs(user["user_id"])}
+    return {
+        "labs": medbay_latest_labs(user["user_id"], workspace=WORKSPACE),
+    }
 
 
 @router.post("/labs")
@@ -109,6 +130,7 @@ async def create_lab(
         reference_low=body.reference_low,
         reference_high=body.reference_high,
         test_date=body.test_date,
+        workspace=WORKSPACE,
     )
     return {"id": new_id}
 
@@ -121,7 +143,9 @@ async def list_followups(
 ):
     return {
         "followups": medbay_list_followups(
-            user["user_id"], include_completed=include_completed
+            user["user_id"],
+            include_completed=include_completed,
+            workspace=WORKSPACE,
         )
     }
 
@@ -136,6 +160,7 @@ async def create_followup(
         description=body.description,
         reason=body.reason,
         suggested_date=body.suggested_date,
+        workspace=WORKSPACE,
     )
     return {"id": new_id}
 
@@ -145,7 +170,9 @@ async def complete_followup(
     followup_id: int,
     user: CurrentUser = Depends(require_admin),
 ):
-    ok = medbay_complete_followup(user["user_id"], followup_id)
+    ok = medbay_complete_followup(
+        user["user_id"], followup_id, workspace=WORKSPACE,
+    )
     if not ok:
         raise HTTPException(
             status_code=404,
@@ -160,7 +187,11 @@ async def list_changes(
     limit: int = Query(100, ge=1, le=500),
     user: CurrentUser = Depends(require_admin),
 ):
-    return {"changes": medbay_list_changes(user["user_id"], limit=limit)}
+    return {
+        "changes": medbay_list_changes(
+            user["user_id"], limit=limit, workspace=WORKSPACE,
+        )
+    }
 
 
 @router.post("/changes")
@@ -175,5 +206,6 @@ async def create_change(
         old_value=body.old_value,
         new_value=body.new_value,
         reason=body.reason,
+        workspace=WORKSPACE,
     )
     return {"id": new_id}

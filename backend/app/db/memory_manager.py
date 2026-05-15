@@ -271,10 +271,15 @@ def init_db():
     """)
 
     # ── Med-Bay dashboard tables ─────────────────────────────────
+    # All four tables carry a `workspace` column with a hard DEFAULT of
+    # 'health'. Application code always passes "health" explicitly, but
+    # the schema default is the defense-in-depth net so a future write
+    # path that forgets the param still lands inside the right boundary.
     c.execute("""
         CREATE TABLE IF NOT EXISTS health_active_protocol (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id TEXT NOT NULL,
+            workspace TEXT NOT NULL DEFAULT 'health',
             supplement_name TEXT NOT NULL,
             dose TEXT,
             frequency TEXT,
@@ -289,11 +294,16 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_hap_user_status
         ON health_active_protocol(user_id, status)
     """)
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_hap_workspace_user
+        ON health_active_protocol(workspace, user_id)
+    """)
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS health_lab_results (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id TEXT NOT NULL,
+            workspace TEXT NOT NULL DEFAULT 'health',
             marker_name TEXT NOT NULL,
             value REAL NOT NULL,
             unit TEXT,
@@ -308,11 +318,16 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_hlr_user_marker_date
         ON health_lab_results(user_id, marker_name, test_date)
     """)
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_hlr_workspace_user
+        ON health_lab_results(workspace, user_id)
+    """)
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS health_followups (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id TEXT NOT NULL,
+            workspace TEXT NOT NULL DEFAULT 'health',
             description TEXT NOT NULL,
             reason TEXT,
             suggested_date TEXT,
@@ -325,11 +340,16 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_hfu_user_completed
         ON health_followups(user_id, completed)
     """)
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_hfu_workspace_user
+        ON health_followups(workspace, user_id)
+    """)
 
     c.execute("""
         CREATE TABLE IF NOT EXISTS health_changes_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id TEXT NOT NULL,
+            workspace TEXT NOT NULL DEFAULT 'health',
             change_type TEXT NOT NULL,
             item_name TEXT NOT NULL,
             old_value TEXT,
@@ -342,6 +362,28 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_hcl_user_created
         ON health_changes_log(user_id, created_at)
     """)
+    c.execute("""
+        CREATE INDEX IF NOT EXISTS idx_hcl_workspace_user
+        ON health_changes_log(workspace, user_id)
+    """)
+
+    # Idempotent migrations for any DB created before the workspace
+    # column was added. Existing rows backfill to 'health' via the
+    # column DEFAULT. The duplicate-column OperationalError on
+    # subsequent boots is expected and swallowed.
+    for _table in (
+        "health_active_protocol",
+        "health_lab_results",
+        "health_followups",
+        "health_changes_log",
+    ):
+        try:
+            c.execute(
+                f"ALTER TABLE {_table} ADD COLUMN "
+                f"workspace TEXT NOT NULL DEFAULT 'health'"
+            )
+        except sqlite3.OperationalError:
+            pass
 
     c.execute("""
         CREATE VIRTUAL TABLE IF NOT EXISTS conversation_log USING fts5(
@@ -2850,7 +2892,15 @@ def _now_iso() -> str:
 
 
 # ── health_active_protocol ────────────────────────────────────
-def medbay_list_protocol(user_id: str, status: str | None = "active") -> list:
+# All Med-Bay helpers gate every read and write on `workspace`. The
+# default is "health" because that's the only workspace currently
+# wired to use them, but callers are encouraged to pass it explicitly
+# so a future caller from a different surface can't accidentally
+# inherit the default.
+def medbay_list_protocol(
+    user_id: str, status: str | None = "active",
+    workspace: str = "health",
+) -> list:
     """List protocol items for a user. status=None returns all rows."""
     conn = sqlite3.connect(DB_PATH)
     try:
@@ -2858,17 +2908,19 @@ def medbay_list_protocol(user_id: str, status: str | None = "active") -> list:
             rows = conn.execute(
                 "SELECT id, user_id, supplement_name, dose, frequency, "
                 "reason, target_marker, started_at, stopped_at, status "
-                "FROM health_active_protocol WHERE user_id = ? "
+                "FROM health_active_protocol "
+                "WHERE user_id = ? AND workspace = ? "
                 "ORDER BY status = 'active' DESC, started_at DESC",
-                (user_id,),
+                (user_id, workspace),
             ).fetchall()
         else:
             rows = conn.execute(
                 "SELECT id, user_id, supplement_name, dose, frequency, "
                 "reason, target_marker, started_at, stopped_at, status "
-                "FROM health_active_protocol WHERE user_id = ? AND status = ? "
+                "FROM health_active_protocol "
+                "WHERE user_id = ? AND workspace = ? AND status = ? "
                 "ORDER BY started_at DESC",
-                (user_id, status),
+                (user_id, workspace, status),
             ).fetchall()
     finally:
         conn.close()
@@ -2887,6 +2939,7 @@ def medbay_add_protocol(
     user_id: str, supplement_name: str, dose: str | None = None,
     frequency: str | None = None, reason: str | None = None,
     target_marker: str | None = None,
+    workspace: str = "health",
 ) -> int:
     """Add a new active protocol item and log it in the changes log."""
     now = _now_iso()
@@ -2894,18 +2947,19 @@ def medbay_add_protocol(
     try:
         cur = conn.execute(
             "INSERT INTO health_active_protocol "
-            "(user_id, supplement_name, dose, frequency, reason, "
-            "target_marker, started_at, stopped_at, status) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'active')",
-            (user_id, supplement_name, dose, frequency,
+            "(user_id, workspace, supplement_name, dose, frequency, "
+            "reason, target_marker, started_at, stopped_at, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'active')",
+            (user_id, workspace, supplement_name, dose, frequency,
              reason, target_marker, now),
         )
         new_id = cur.lastrowid
         conn.execute(
             "INSERT INTO health_changes_log "
-            "(user_id, change_type, item_name, old_value, new_value, "
-            "reason, created_at) VALUES (?, 'added', ?, NULL, ?, ?, ?)",
-            (user_id, supplement_name,
+            "(user_id, workspace, change_type, item_name, old_value, "
+            "new_value, reason, created_at) "
+            "VALUES (?, ?, 'added', ?, NULL, ?, ?, ?)",
+            (user_id, workspace, supplement_name,
              f"{dose or ''} {frequency or ''}".strip(),
              reason, now),
         )
@@ -2918,6 +2972,7 @@ def medbay_add_protocol(
 def medbay_update_protocol_dose(
     user_id: str, protocol_id: int, new_dose: str,
     reason: str | None = None,
+    workspace: str = "health",
 ) -> bool:
     """Change the dose on an active protocol item; log the change."""
     now = _now_iso()
@@ -2925,22 +2980,23 @@ def medbay_update_protocol_dose(
     try:
         row = conn.execute(
             "SELECT supplement_name, dose FROM health_active_protocol "
-            "WHERE id = ? AND user_id = ?",
-            (protocol_id, user_id),
+            "WHERE id = ? AND user_id = ? AND workspace = ?",
+            (protocol_id, user_id, workspace),
         ).fetchone()
         if not row:
             return False
         name, old_dose = row
         conn.execute(
-            "UPDATE health_active_protocol SET dose = ? WHERE id = ?",
-            (new_dose, protocol_id),
+            "UPDATE health_active_protocol SET dose = ? "
+            "WHERE id = ? AND workspace = ?",
+            (new_dose, protocol_id, workspace),
         )
         conn.execute(
             "INSERT INTO health_changes_log "
-            "(user_id, change_type, item_name, old_value, new_value, "
-            "reason, created_at) "
-            "VALUES (?, 'dose_change', ?, ?, ?, ?, ?)",
-            (user_id, name, old_dose, new_dose, reason, now),
+            "(user_id, workspace, change_type, item_name, old_value, "
+            "new_value, reason, created_at) "
+            "VALUES (?, ?, 'dose_change', ?, ?, ?, ?, ?)",
+            (user_id, workspace, name, old_dose, new_dose, reason, now),
         )
         conn.commit()
     finally:
@@ -2950,6 +3006,7 @@ def medbay_update_protocol_dose(
 
 def medbay_stop_protocol(
     user_id: str, protocol_id: int, reason: str | None = None,
+    workspace: str = "health",
 ) -> bool:
     """Mark a protocol item stopped and log it."""
     now = _now_iso()
@@ -2957,23 +3014,25 @@ def medbay_stop_protocol(
     try:
         row = conn.execute(
             "SELECT supplement_name FROM health_active_protocol "
-            "WHERE id = ? AND user_id = ? AND status = 'active'",
-            (protocol_id, user_id),
+            "WHERE id = ? AND user_id = ? AND workspace = ? "
+            "AND status = 'active'",
+            (protocol_id, user_id, workspace),
         ).fetchone()
         if not row:
             return False
         name = row[0]
         conn.execute(
             "UPDATE health_active_protocol "
-            "SET status = 'stopped', stopped_at = ? WHERE id = ?",
-            (now, protocol_id),
+            "SET status = 'stopped', stopped_at = ? "
+            "WHERE id = ? AND workspace = ?",
+            (now, protocol_id, workspace),
         )
         conn.execute(
             "INSERT INTO health_changes_log "
-            "(user_id, change_type, item_name, old_value, new_value, "
-            "reason, created_at) "
-            "VALUES (?, 'stopped', ?, NULL, NULL, ?, ?)",
-            (user_id, name, reason, now),
+            "(user_id, workspace, change_type, item_name, old_value, "
+            "new_value, reason, created_at) "
+            "VALUES (?, ?, 'stopped', ?, NULL, NULL, ?, ?)",
+            (user_id, workspace, name, reason, now),
         )
         conn.commit()
     finally:
@@ -2996,6 +3055,7 @@ def medbay_add_lab_result(
     user_id: str, marker_name: str, value: float,
     unit: str | None = None, reference_low: float | None = None,
     reference_high: float | None = None, test_date: str | None = None,
+    workspace: str = "health",
 ) -> int:
     """Insert a lab result. Status is auto-classified if not provided."""
     now = _now_iso()
@@ -3004,10 +3064,10 @@ def medbay_add_lab_result(
     try:
         cur = conn.execute(
             "INSERT INTO health_lab_results "
-            "(user_id, marker_name, value, unit, reference_low, "
+            "(user_id, workspace, marker_name, value, unit, reference_low, "
             "reference_high, status, test_date, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (user_id, marker_name, value, unit, reference_low,
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, workspace, marker_name, value, unit, reference_low,
              reference_high, status, test_date or now, now),
         )
         new_id = cur.lastrowid
@@ -3019,6 +3079,7 @@ def medbay_add_lab_result(
 
 def medbay_list_labs(
     user_id: str, marker: str | None = None, limit: int = 200,
+    workspace: str = "health",
 ) -> list:
     conn = sqlite3.connect(DB_PATH)
     try:
@@ -3027,17 +3088,18 @@ def medbay_list_labs(
                 "SELECT id, user_id, marker_name, value, unit, "
                 "reference_low, reference_high, status, test_date, created_at "
                 "FROM health_lab_results "
-                "WHERE user_id = ? AND marker_name = ? "
+                "WHERE user_id = ? AND workspace = ? AND marker_name = ? "
                 "ORDER BY test_date DESC LIMIT ?",
-                (user_id, marker, limit),
+                (user_id, workspace, marker, limit),
             ).fetchall()
         else:
             rows = conn.execute(
                 "SELECT id, user_id, marker_name, value, unit, "
                 "reference_low, reference_high, status, test_date, created_at "
-                "FROM health_lab_results WHERE user_id = ? "
+                "FROM health_lab_results "
+                "WHERE user_id = ? AND workspace = ? "
                 "ORDER BY test_date DESC LIMIT ?",
-                (user_id, limit),
+                (user_id, workspace, limit),
             ).fetchall()
     finally:
         conn.close()
@@ -3052,7 +3114,7 @@ def medbay_list_labs(
     ]
 
 
-def medbay_latest_labs(user_id: str) -> list:
+def medbay_latest_labs(user_id: str, workspace: str = "health") -> list:
     """
     Most recent value for each tracked marker, plus the previous value
     (if any) so the UI can show a trend arrow.
@@ -3064,9 +3126,10 @@ def medbay_latest_labs(user_id: str) -> list:
         rows = conn.execute(
             "SELECT id, marker_name, value, unit, reference_low, "
             "reference_high, status, test_date "
-            "FROM health_lab_results WHERE user_id = ? "
+            "FROM health_lab_results "
+            "WHERE user_id = ? AND workspace = ? "
             "ORDER BY marker_name, test_date DESC",
-            (user_id,),
+            (user_id, workspace),
         ).fetchall()
     finally:
         conn.close()
@@ -3095,6 +3158,7 @@ def medbay_latest_labs(user_id: str) -> list:
 # ── health_followups ──────────────────────────────────────────
 def medbay_list_followups(
     user_id: str, include_completed: bool = False,
+    workspace: str = "health",
 ) -> list:
     conn = sqlite3.connect(DB_PATH)
     try:
@@ -3102,18 +3166,19 @@ def medbay_list_followups(
             rows = conn.execute(
                 "SELECT id, user_id, description, reason, suggested_date, "
                 "completed, completed_at, created_at "
-                "FROM health_followups WHERE user_id = ? "
+                "FROM health_followups "
+                "WHERE user_id = ? AND workspace = ? "
                 "ORDER BY completed ASC, suggested_date ASC, created_at DESC",
-                (user_id,),
+                (user_id, workspace),
             ).fetchall()
         else:
             rows = conn.execute(
                 "SELECT id, user_id, description, reason, suggested_date, "
                 "completed, completed_at, created_at "
                 "FROM health_followups "
-                "WHERE user_id = ? AND completed = 0 "
+                "WHERE user_id = ? AND workspace = ? AND completed = 0 "
                 "ORDER BY suggested_date ASC, created_at DESC",
-                (user_id,),
+                (user_id, workspace),
             ).fetchall()
     finally:
         conn.close()
@@ -3131,16 +3196,17 @@ def medbay_list_followups(
 def medbay_add_followup(
     user_id: str, description: str, reason: str | None = None,
     suggested_date: str | None = None,
+    workspace: str = "health",
 ) -> int:
     now = _now_iso()
     conn = sqlite3.connect(DB_PATH)
     try:
         cur = conn.execute(
             "INSERT INTO health_followups "
-            "(user_id, description, reason, suggested_date, "
+            "(user_id, workspace, description, reason, suggested_date, "
             "completed, completed_at, created_at) "
-            "VALUES (?, ?, ?, ?, 0, NULL, ?)",
-            (user_id, description, reason, suggested_date, now),
+            "VALUES (?, ?, ?, ?, ?, 0, NULL, ?)",
+            (user_id, workspace, description, reason, suggested_date, now),
         )
         new_id = cur.lastrowid
         conn.commit()
@@ -3149,15 +3215,18 @@ def medbay_add_followup(
     return new_id
 
 
-def medbay_complete_followup(user_id: str, followup_id: int) -> bool:
+def medbay_complete_followup(
+    user_id: str, followup_id: int, workspace: str = "health",
+) -> bool:
     now = _now_iso()
     conn = sqlite3.connect(DB_PATH)
     try:
         cur = conn.execute(
             "UPDATE health_followups "
             "SET completed = 1, completed_at = ? "
-            "WHERE id = ? AND user_id = ? AND completed = 0",
-            (now, followup_id, user_id),
+            "WHERE id = ? AND user_id = ? AND workspace = ? "
+            "AND completed = 0",
+            (now, followup_id, user_id, workspace),
         )
         conn.commit()
         return cur.rowcount > 0
@@ -3166,15 +3235,18 @@ def medbay_complete_followup(user_id: str, followup_id: int) -> bool:
 
 
 # ── health_changes_log ────────────────────────────────────────
-def medbay_list_changes(user_id: str, limit: int = 100) -> list:
+def medbay_list_changes(
+    user_id: str, limit: int = 100, workspace: str = "health",
+) -> list:
     conn = sqlite3.connect(DB_PATH)
     try:
         rows = conn.execute(
             "SELECT id, user_id, change_type, item_name, old_value, "
             "new_value, reason, created_at "
-            "FROM health_changes_log WHERE user_id = ? "
+            "FROM health_changes_log "
+            "WHERE user_id = ? AND workspace = ? "
             "ORDER BY created_at DESC LIMIT ?",
-            (user_id, limit),
+            (user_id, workspace, limit),
         ).fetchall()
     finally:
         conn.close()
@@ -3192,16 +3264,18 @@ def medbay_log_change(
     user_id: str, change_type: str, item_name: str,
     old_value: str | None = None, new_value: str | None = None,
     reason: str | None = None,
+    workspace: str = "health",
 ) -> int:
     now = _now_iso()
     conn = sqlite3.connect(DB_PATH)
     try:
         cur = conn.execute(
             "INSERT INTO health_changes_log "
-            "(user_id, change_type, item_name, old_value, new_value, "
-            "reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (user_id, change_type, item_name, old_value, new_value,
-             reason, now),
+            "(user_id, workspace, change_type, item_name, old_value, "
+            "new_value, reason, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, workspace, change_type, item_name, old_value,
+             new_value, reason, now),
         )
         new_id = cur.lastrowid
         conn.commit()

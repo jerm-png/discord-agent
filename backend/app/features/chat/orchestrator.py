@@ -706,6 +706,7 @@ async def _run_medbay_extraction(
                             frequency=details.get("frequency"),
                             reason=details.get("reason"),
                             target_marker=details.get("target_marker"),
+                            workspace="health",
                         ),
                     )
                     affected_sections |= _MEDBAY_SECTION_BY_TYPE[itype]
@@ -717,7 +718,9 @@ async def _run_medbay_extraction(
                     # Match the most recent active row for this supplement.
                     current = await loop.run_in_executor(
                         None,
-                        lambda: medbay_list_protocol(user_id, status="active"),
+                        lambda: medbay_list_protocol(
+                            user_id, status="active", workspace="health",
+                        ),
                     )
                     target = next(
                         (
@@ -737,6 +740,7 @@ async def _run_medbay_extraction(
                                 supplement_name=name,
                                 dose=new_dose,
                                 reason=details.get("reason"),
+                                workspace="health",
                             ),
                         )
                     else:
@@ -748,6 +752,7 @@ async def _run_medbay_extraction(
                                     protocol_id=tid,
                                     new_dose=new_dose,
                                     reason=details.get("reason"),
+                                    workspace="health",
                                 )
                             ),
                         )
@@ -758,7 +763,9 @@ async def _run_medbay_extraction(
                         continue
                     current = await loop.run_in_executor(
                         None,
-                        lambda: medbay_list_protocol(user_id, status="active"),
+                        lambda: medbay_list_protocol(
+                            user_id, status="active", workspace="health",
+                        ),
                     )
                     target = next(
                         (
@@ -776,6 +783,7 @@ async def _run_medbay_extraction(
                             user_id=user_id,
                             protocol_id=tid,
                             reason=details.get("reason"),
+                            workspace="health",
                         ),
                     )
                     affected_sections |= _MEDBAY_SECTION_BY_TYPE[itype]
@@ -790,6 +798,7 @@ async def _run_medbay_extraction(
                             description=desc,
                             reason=details.get("reason"),
                             suggested_date=details.get("suggested_date"),
+                            workspace="health",
                         ),
                     )
                     affected_sections |= _MEDBAY_SECTION_BY_TYPE[itype]
@@ -812,6 +821,7 @@ async def _run_medbay_extraction(
                             reference_low=details.get("reference_low"),
                             reference_high=details.get("reference_high"),
                             test_date=details.get("test_date"),
+                            workspace="health",
                         ),
                     )
                     affected_sections |= _MEDBAY_SECTION_BY_TYPE[itype]
