@@ -524,7 +524,7 @@ export function RosterPage({
             </p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
             {active.map((e) => (
               <EntityCard
                 key={e.id}
@@ -563,7 +563,7 @@ export function RosterPage({
               </span>
             </button>
             {archivedExpanded && (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
                 {archived.map((e) => (
                   <EntityCard
                     key={e.id}
