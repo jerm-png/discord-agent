@@ -403,6 +403,205 @@ _ADMIN_TEAM_QUERY_PHRASES = (
 )
 
 
+# ── Drop-and-File mode (Institute Prime, entity-linked threads) ──
+# A "transcript dump" is detected by length, an attached document, or
+# dialogue-style formatting. When detected, the orchestrator routes
+# the message to Haiku for structured extraction instead of the normal
+# conversation loop, then parks the items in state.pending_filings
+# awaiting user confirmation.
+
+_TRANSCRIPT_MIN_CHARS = 500
+
+# A line like "Jerm: ...", "Alex Smith: ...", or "Q: ..." counts as a
+# dialogue marker. Two or more such lines tip the message into
+# transcript mode. The name pattern caps at three capitalised tokens
+# so a random capitalised sentence doesn't false-positive.
+_DIALOGUE_LINE_RE = re.compile(
+    r"^\s*(?:[QA]|[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}):\s+\S",
+    re.MULTILINE,
+)
+
+# Confirmation/abandon intent regexes for the pending-filing reply.
+# Anything else is interpreted as an edit instruction — i.e. the user
+# rephrasing or adjusting, which triggers a re-extraction.
+_FILING_CONFIRM_RE = re.compile(
+    r"\b("
+    r"save|file|ship|confirm|"
+    r"looks?\s+good|good\s+to\s+go|go\s+ahead|do\s+it|"
+    r"yes\s+please|yes\s+save|file\s+it|save\s+it|"
+    r"file\s+this|save\s+this|file\s+them"
+    r")\b",
+    re.IGNORECASE,
+)
+_FILING_ABANDON_RE = re.compile(
+    r"\b("
+    r"cancel|never\s*mind|abort|drop\s+it|forget\s+it|"
+    r"scrap\s+it|don'?t\s+save|no\s+save"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Extracted item type → entity_facts.category. Categories are kept
+# specific so the roster timeline can render them distinctly rather
+# than collapsing everything to "note".
+_FILING_TYPE_TO_CATEGORY = {
+    "DECISION": "decision",
+    "ACTION": "action",
+    "FEEDBACK_GIVEN": "feedback_given",
+    "FEEDBACK_RECEIVED": "feedback_received",
+    "CONCERN": "concern",
+    "COMMITMENT": "commitment",
+    "NEXT_STEP": "next_step",
+}
+
+
+def _is_transcript_dump(message: str, has_text_attachment: bool) -> bool:
+    if has_text_attachment:
+        return True
+    if len(message or "") > _TRANSCRIPT_MIN_CHARS:
+        return True
+    matches = _DIALOGUE_LINE_RE.findall(message or "")
+    return len(matches) >= 2
+
+
+def _classify_filing_intent(message: str) -> str:
+    """Returns one of 'confirm' | 'abandon' | 'edit'. An empty reply
+    or anything that doesn't match a save/cancel keyword is treated
+    as an edit instruction so the user can iterate naturally."""
+    text = (message or "").strip()
+    if not text:
+        return "edit"
+    if _FILING_ABANDON_RE.search(text):
+        return "abandon"
+    if _FILING_CONFIRM_RE.search(text):
+        return "confirm"
+    return "edit"
+
+
+def _format_filing_summary(
+    date_str: str, entity_name: str, items: list,
+) -> str:
+    """Renders a human-readable preview of extracted items so the user
+    can eyeball them before confirming. Closes with the prompt that
+    invites a save or an edit instruction."""
+    header_date = date_str or datetime.utcnow().strftime("%Y-%m-%d")
+    lines = [
+        f"📋 **Filing draft for {entity_name}** — {header_date}",
+        "",
+    ]
+    if not items:
+        lines.append("_No items were extracted._")
+        lines.append("")
+    else:
+        for i, it in enumerate(items, start=1):
+            if not isinstance(it, dict):
+                continue
+            itype = str(it.get("type") or "ITEM").upper().replace("_", " ")
+            owner = str(it.get("owner") or "").strip()
+            detail = str(it.get("detail") or "").strip()
+            quote = str(it.get("quote") or "").strip()
+            head = f"**{i}. {itype}**"
+            if owner:
+                head += f" · {owner}"
+            lines.append(head)
+            if detail:
+                lines.append(detail)
+            if quote:
+                lines.append(f"> {quote}")
+            lines.append("")
+    lines.append("Save this? Or add/edit anything before I file it?")
+    return "\n".join(lines)
+
+
+async def _run_haiku_filing_extraction(
+    transcript: str, edit_note: str = "",
+) -> dict | None:
+    """Calls Haiku with the structured extraction prompt. Returns the
+    parsed JSON dict or None on parse failure."""
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    base_prompt = (
+        "You are extracting structured coaching records from a "
+        "transcript or notes. Extract every significant item with "
+        "maximum specificity. For each item include:\n"
+        f"- The exact date of the conversation if mentioned, "
+        f"otherwise use today's date ({today})\n"
+        "- Who said or committed to what — attribute statements to "
+        "specific people by name\n"
+        "- Specific names, numbers, timeframes, deliverables "
+        "mentioned\n"
+        "- Direct quotes when they capture important commitments, "
+        "feedback, or concerning statements\n"
+        "- What prompted the decision or action\n\n"
+        "Categorize each item as one of: DECISION, ACTION (with who "
+        "owns it), FEEDBACK_GIVEN, FEEDBACK_RECEIVED, CONCERN, "
+        "COMMITMENT, NEXT_STEP\n\n"
+        "Respond with ONLY a JSON object in this exact shape:\n"
+        '{"date": "conversation date", "items": [{"type": '
+        '"DECISION|ACTION|FEEDBACK_GIVEN|FEEDBACK_RECEIVED|CONCERN|'
+        'COMMITMENT|NEXT_STEP", "owner": "who this applies to", '
+        '"detail": "specific detailed description with names, dates, '
+        'numbers, quotes", "quote": "exact quote if relevant, null '
+        'otherwise"}]}\n\n'
+    )
+    if edit_note:
+        prompt = (
+            base_prompt
+            + "The user reviewed a previous extraction and asked for "
+            "changes. Apply the changes below and re-extract the "
+            "items from the transcript.\n\n"
+            f"USER EDIT REQUEST:\n{edit_note}\n\n"
+            f"TRANSCRIPT:\n{transcript[:8000]}"
+        )
+    else:
+        prompt = base_prompt + f"TRANSCRIPT:\n{transcript[:8000]}"
+    parsed = await call_background_model_json(prompt)
+    if not isinstance(parsed, dict):
+        return None
+    return parsed
+
+
+def _save_filing_items(
+    entity_id: int, items: list, source_channel: str = "institute",
+) -> int:
+    """Persists each item as an entity_fact. Owner / quote get folded
+    into the fact text so the timeline view shows the attribution and
+    direct quote alongside the detail. Returns count successfully
+    saved."""
+    count = 0
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        itype = str(it.get("type") or "").strip().upper()
+        category = _FILING_TYPE_TO_CATEGORY.get(itype, "note")
+        detail = str(it.get("detail") or "").strip()
+        if not detail:
+            continue
+        owner = str(it.get("owner") or "").strip()
+        quote = str(it.get("quote") or "").strip()
+        parts = []
+        if owner:
+            parts.append(f"[{owner}]")
+        parts.append(detail)
+        if quote:
+            parts.append(f'"{quote}"')
+        fact = " ".join(parts)[:1000]
+        try:
+            add_entity_fact(
+                entity_id=entity_id,
+                category=category,
+                fact=fact,
+                source_channel=source_channel,
+                confidence=0.85,
+            )
+            count += 1
+        except Exception as e:
+            logger.warning(
+                f"[filing save] entity={entity_id} item failed: {e}"
+            )
+            continue
+    return count
+
+
 async def _run_entity_coaching_logger(
     entity_id: int,
     entity_name: str,
@@ -2990,6 +3189,223 @@ async def process_user_message(
         response delivery via ws_manager.
     """
     effective_channel_name = channel_name or "general"
+
+    # ── Drop-and-File mode (Institute Prime, entity-linked threads) ──
+    # Two intercept paths fire before the normal pipeline:
+    #   (a) An open pending filing for (user, thread) means the user's
+    #       reply is a confirm / abandon / edit decision, not a fresh
+    #       chat message.
+    #   (b) On an entity-linked Institute Prime thread, a transcript-
+    #       shaped inbound message routes to Haiku extraction instead
+    #       of the agentic loop.
+    # Both paths persist the exchange to conversation_history so the
+    # chat UI renders the back-and-forth, then return early.
+    _filing_state_key = (str(user_id), str(context_id))
+    _pending_filing = state.pending_filings.get(_filing_state_key)
+    _filing_thread_row = None
+    _filing_entity_id: int | None = None
+    _filing_entity_name = ""
+    try:
+        from app.db.threads import get_thread as _filing_get_thread
+        _filing_thread_row = (
+            _filing_get_thread(str(context_id)) if context_id else None
+        )
+        _ent_raw = (
+            _filing_thread_row.get("entity_id")
+            if _filing_thread_row else None
+        )
+        if _ent_raw:
+            _ent_obj = get_entity_by_id(int(_ent_raw))
+            if _ent_obj:
+                _filing_entity_id = int(_ent_raw)
+                _filing_entity_name = str(_ent_obj.get("name") or "")
+    except Exception as _f_err:
+        logger.warning(f"[filing] thread lookup failed: {_f_err}")
+
+    _is_institute_entity_thread = (
+        effective_channel_name == "institute"
+        and _filing_entity_id is not None
+    )
+
+    if _pending_filing and _is_institute_entity_thread:
+        intent = _classify_filing_intent(user_message)
+        # Persist the user reply regardless of intent.
+        log_conversation_turn(
+            str(user_id), context_id, effective_channel_name,
+            "user", user_message, project_tag=project_tag,
+        )
+        append_history_turn(
+            user_id, context_id, "user", user_message,
+        )
+
+        if intent == "abandon":
+            state.pending_filings.pop(_filing_state_key, None)
+            _abandon_msg = (
+                "Got it — nothing filed. The draft is discarded."
+            )
+            await ws_manager.send(session_id, {
+                "type": "response", "text": _abandon_msg,
+            })
+            append_history_turn(
+                user_id, context_id, "assistant", _abandon_msg,
+            )
+            await persist_history(user_id, context_id)
+            return
+
+        if intent == "confirm":
+            _loop = asyncio.get_running_loop()
+            saved = await _loop.run_in_executor(
+                None,
+                _save_filing_items,
+                _pending_filing["entity_id"],
+                _pending_filing.get("items") or [],
+            )
+            state.pending_filings.pop(_filing_state_key, None)
+            _ok_msg = (
+                f"✅ Filed {saved} item"
+                f"{'' if saved == 1 else 's'} to "
+                f"{_pending_filing['entity_name']}'s timeline."
+            )
+            await ws_manager.send(session_id, {
+                "type": "response", "text": _ok_msg,
+            })
+            append_history_turn(
+                user_id, context_id, "assistant", _ok_msg,
+            )
+            await persist_history(user_id, context_id)
+            return
+
+        # intent == "edit" — re-extract with the user's note.
+        await ws_manager.send(session_id, {
+            "type": "status",
+            "text": "📝 Updating the draft...",
+        })
+        _reparsed = await _run_haiku_filing_extraction(
+            _pending_filing.get("transcript") or "",
+            edit_note=user_message,
+        )
+        if _reparsed is None:
+            _fail_msg = (
+                "I couldn't apply that edit cleanly — the draft "
+                "is unchanged. Try rephrasing, or say 'save' to "
+                "file the current draft."
+            )
+            await ws_manager.send(session_id, {
+                "type": "response", "text": _fail_msg,
+            })
+            append_history_turn(
+                user_id, context_id, "assistant", _fail_msg,
+            )
+            await persist_history(user_id, context_id)
+            return
+
+        _new_items = (
+            _reparsed.get("items")
+            if isinstance(_reparsed.get("items"), list) else []
+        )
+        _new_date = str(
+            _reparsed.get("date")
+            or _pending_filing.get("date") or ""
+        )
+        _new_summary = _format_filing_summary(
+            _new_date, _filing_entity_name, _new_items,
+        )
+        state.pending_filings[_filing_state_key] = {
+            "entity_id": _filing_entity_id,
+            "entity_name": _filing_entity_name,
+            "items": _new_items,
+            "date": _new_date,
+            "transcript": _pending_filing.get("transcript") or "",
+            "summary": _new_summary,
+        }
+        await ws_manager.send(session_id, {
+            "type": "response", "text": _new_summary,
+        })
+        append_history_turn(
+            user_id, context_id, "assistant", _new_summary,
+        )
+        await persist_history(user_id, context_id)
+        return
+
+    # Fresh transcript dump? Check before any other processing so
+    # the heavy memory + entity-injection setup doesn't run for what
+    # turns out to be a filing.
+    if _is_institute_entity_thread:
+        _early_files = list(
+            attached_files.get((user_id, context_id), [])
+        )
+        _doc_files = [
+            f for f in _early_files
+            if f.get("content_type") == "document"
+            and f.get("text_content")
+        ]
+        _has_doc_attachment = bool(_doc_files)
+        if _is_transcript_dump(user_message, _has_doc_attachment):
+            log_conversation_turn(
+                str(user_id), context_id, effective_channel_name,
+                "user", user_message, project_tag=project_tag,
+            )
+            append_history_turn(
+                user_id, context_id, "user", user_message,
+            )
+            await ws_manager.send(session_id, {
+                "type": "status",
+                "text": "📋 Extracting structured items from the transcript...",
+            })
+            _transcript_parts = []
+            if user_message and user_message.strip():
+                _transcript_parts.append(user_message.strip())
+            for _df in _doc_files:
+                _label = _df.get("filename") or "attached file"
+                _content = (_df.get("text_content") or "")[:8000]
+                _transcript_parts.append(
+                    f"--- {_label} ---\n{_content}"
+                )
+            _transcript = "\n\n".join(_transcript_parts)
+
+            _parsed = await _run_haiku_filing_extraction(_transcript)
+            if _parsed is None:
+                _parse_fail = (
+                    "I couldn't parse that as a clean transcript — "
+                    "treating it as a normal message. Paste a more "
+                    "structured version or attach a file."
+                )
+                await ws_manager.send(session_id, {
+                    "type": "response", "text": _parse_fail,
+                })
+                append_history_turn(
+                    user_id, context_id, "assistant", _parse_fail,
+                )
+                await persist_history(user_id, context_id)
+                return
+
+            _items = (
+                _parsed.get("items")
+                if isinstance(_parsed.get("items"), list) else []
+            )
+            _date_str = str(
+                _parsed.get("date")
+                or datetime.utcnow().strftime("%Y-%m-%d")
+            )
+            _summary = _format_filing_summary(
+                _date_str, _filing_entity_name, _items,
+            )
+            state.pending_filings[_filing_state_key] = {
+                "entity_id": _filing_entity_id,
+                "entity_name": _filing_entity_name,
+                "items": _items,
+                "date": _date_str,
+                "transcript": _transcript,
+                "summary": _summary,
+            }
+            await ws_manager.send(session_id, {
+                "type": "response", "text": _summary,
+            })
+            append_history_turn(
+                user_id, context_id, "assistant", _summary,
+            )
+            await persist_history(user_id, context_id)
+            return
 
     # ── Langfuse trace ───────────────────────────────────
     _lf_trace = None

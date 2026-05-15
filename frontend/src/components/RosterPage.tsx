@@ -31,6 +31,10 @@ import { NewTeamMemberModal } from './NewTeamMemberModal'
 interface RosterPageProps {
   onOpenThread: (thread: Thread) => void
   onCreateEntityThread: (entity: Entity) => void
+  // Fires whenever the user expands a card (entityId) or collapses
+  // the currently expanded one (null). DashboardPage uses this to
+  // filter the sidebar thread list to the focused entity.
+  onEntityFocused?: (entityId: number | null) => void
 }
 
 const ACCENT: Record<
@@ -103,18 +107,21 @@ function initials(name: string): string {
 
 function EntityCard({
   entity,
+  expanded,
+  onToggleExpanded,
   onLocalUpdate,
   onOpenThread,
   onCreateEntityThread,
   onArchiveToggle,
 }: {
   entity: Entity
+  expanded: boolean
+  onToggleExpanded: () => void
   onLocalUpdate: (next: Entity) => void
   onOpenThread: (thread: Thread) => void
   onCreateEntityThread: (entity: Entity) => void
   onArchiveToggle: () => void
 }) {
-  const [expanded, setExpanded] = useState(false)
   const [timeline, setTimeline] = useState<EntityTimelineEntry[]>([])
   const [linkedThreads, setLinkedThreads] = useState<Thread[]>([])
   const [loadingExpand, setLoadingExpand] = useState(false)
@@ -246,7 +253,7 @@ function EntityCard({
             )}
           </button>
           <button
-            onClick={() => setExpanded((v) => !v)}
+            onClick={onToggleExpanded}
             title={expanded ? 'Collapse' : 'Expand'}
             className={cn(
               'p-1.5 industrial-inset border transition-all cursor-pointer',
@@ -421,11 +428,24 @@ function EntityCard({
 export function RosterPage({
   onOpenThread,
   onCreateEntityThread,
+  onEntityFocused,
 }: RosterPageProps) {
   const [entities, setEntities] = useState<Entity[]>([])
   const [loading, setLoading] = useState(true)
   const [modalOpen, setModalOpen] = useState(false)
   const [archivedExpanded, setArchivedExpanded] = useState(false)
+  // Exclusive expansion: clicking one card collapses any other. This
+  // keeps the sidebar entity-filter unambiguous — there's always a
+  // single focused entity, never a list to pick from.
+  const [expandedId, setExpandedId] = useState<number | null>(null)
+
+  const handleToggleExpanded = (entityId: number) => {
+    setExpandedId((prev) => {
+      const next = prev === entityId ? null : entityId
+      onEntityFocused?.(next)
+      return next
+    })
+  }
 
   const load = () => {
     setLoading(true)
@@ -509,6 +529,8 @@ export function RosterPage({
               <EntityCard
                 key={e.id}
                 entity={e}
+                expanded={expandedId === e.id}
+                onToggleExpanded={() => handleToggleExpanded(e.id)}
                 onLocalUpdate={handleEntityUpdated}
                 onOpenThread={onOpenThread}
                 onCreateEntityThread={onCreateEntityThread}
@@ -546,6 +568,8 @@ export function RosterPage({
                   <EntityCard
                     key={e.id}
                     entity={e}
+                    expanded={expandedId === e.id}
+                    onToggleExpanded={() => handleToggleExpanded(e.id)}
                     onLocalUpdate={handleEntityUpdated}
                     onOpenThread={onOpenThread}
                     onCreateEntityThread={onCreateEntityThread}

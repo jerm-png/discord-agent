@@ -20,6 +20,26 @@ attached_files: defaultdict = defaultdict(list)
 # rehydrate this map at startup.
 uploaded_files: dict = {}
 
+# ── Pending entity-fact filings ──────────────────────────────
+# Drop-and-File mode (Institute Prime, entity-linked threads):
+# when the orchestrator detects a transcript dump it extracts
+# structured items via Haiku and parks them here, keyed by
+# (str(user_id), str(thread_id)). The user's next message is
+# routed through the confirm/edit flow before anything hits
+# entity_facts. Cleared when the user confirms, abandons, or
+# switches threads/workspaces (cleanup is opportunistic — stale
+# entries are just dead state, not a correctness risk).
+#
+# Entry shape: {
+#   "entity_id": int,
+#   "entity_name": str,
+#   "items": [ {type, owner, detail, quote}, ... ],
+#   "date": str,        # ISO date from the extraction
+#   "transcript": str,  # original transcript text (for edit re-runs)
+#   "summary": str,     # last rendered summary text
+# }
+pending_filings: dict = {}
+
 # ── Goal execution state ─────────────────────────────────────
 pending_goals: dict = {}
 execution_context: dict = {}

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useMemo, useState, useCallback } from 'react'
 import { SystemStatusBar } from '../components/SystemStatusBar'
 import { WorkspaceSidebar } from '../components/WorkspaceSidebar'
 import { ThreadList } from '../components/ThreadList'
@@ -42,6 +42,13 @@ export function DashboardPage() {
   // Memory Browser overlay — admin-only, toggled from the sidebar.
   // Hides the chat/thread area entirely while open.
   const [showMemoryBrowser, setShowMemoryBrowser] = useState(false)
+  // Institute Prime: when a roster card is expanded the sidebar
+  // thread list filters down to that entity's threads. Cleared when
+  // the user returns to the roster (handleRosterClick) or switches
+  // workspace.
+  const [selectedEntityId, setSelectedEntityId] = useState<number | null>(
+    null,
+  )
   // medbay_update WS frames bump these counters per section; MedBayPage
   // watches the matching counter in a useEffect and refetches.
   const [medbayTokens, setMedbayTokens] = useState<
@@ -104,7 +111,17 @@ export function DashboardPage() {
       .then((ts) => setThreads(ts))
       .catch(console.error)
       .finally(() => setThreadsLoading(false))
+    // Drop any roster-driven entity filter — it only makes sense
+    // inside Institute Prime, and the user just switched contexts.
+    setSelectedEntityId(null)
   }, [activeWorkspace, setThreads])
+
+  // Sidebar thread list: when an Institute Prime roster card is
+  // expanded, narrow to that entity's threads. Otherwise pass through.
+  const visibleThreads = useMemo(() => {
+    if (selectedEntityId == null) return threads
+    return threads.filter((t) => t.entity_id === selectedEntityId)
+  }, [threads, selectedEntityId])
 
   // Connect WebSocket and load history when active thread changes
   useEffect(() => {
@@ -151,9 +168,11 @@ export function DashboardPage() {
   }
 
   // Roster: deselect any active thread so the empty-state branch renders
-  // RosterPage. Only meaningful in the institute workspace.
+  // RosterPage. Only meaningful in the institute workspace. Also drops
+  // the entity filter so the sidebar shows the full thread list again.
   function handleRosterClick() {
     setActiveThread(null)
+    setSelectedEntityId(null)
   }
 
   // Create a new thread pre-linked to an entity, then open it. Used by
@@ -211,7 +230,7 @@ export function DashboardPage() {
           />
         )}
         <ThreadList
-          threads={threads}
+          threads={visibleThreads}
           activeThread={activeThread}
           onThreadChange={handleThreadChange}
           onCreateThread={handleCreateThread}
@@ -266,6 +285,7 @@ export function DashboardPage() {
           <RosterPage
             onOpenThread={(t) => setActiveThread(t)}
             onCreateEntityThread={handleCreateEntityThread}
+            onEntityFocused={setSelectedEntityId}
           />
         ) : (
           <div className="flex-1 flex items-center justify-center bg-[#0a0a0f] scanlines">
