@@ -3,33 +3,40 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  /* Cyberpunk Neon Theme */
-  --background: #0a0a0f;
+  /* Cyberpunk Neon Theme — three-tier darker palette
+     base bg (deepest) → #040406
+     surface / card    → #0a0a0e
+     border / divider  → #12121a
+     Inline hex literals throughout the components were collapsed to
+     match these three tokens; the old palette had ~6 dark variants
+     (#050508, #06060a, #08080d, #0a0a10, #0d0d14, etc.) which are
+     now uniformly mapped into the three values above. */
+  --background: #040406;
   --foreground: #f0f0f5;
-  --card: #0d0d14;
+  --card: #0a0a0e;
   --card-foreground: #f0f0f5;
-  --popover: #0d0d14;
+  --popover: #0a0a0e;
   --popover-foreground: #f0f0f5;
   --primary: #00f0ff;
-  --primary-foreground: #0a0a0f;
+  --primary-foreground: #040406;
   --secondary: #12121a;
   --secondary-foreground: #f0f0f5;
-  --muted: #18182a;
+  --muted: #12121a;
   --muted-foreground: #9090a8;
   --accent: #ff2a6d;
-  --accent-foreground: #0a0a0f;
+  --accent-foreground: #040406;
   --destructive: #ff0040;
   --destructive-foreground: #f0f0f5;
   --border: #00f0ff;
   --input: #12121a;
   --ring: #00f0ff;
   --warning: #fcee0a;
-  --warning-foreground: #0a0a0f;
+  --warning-foreground: #040406;
   --radius: 0rem;
-  --sidebar: #08080d;
+  --sidebar: #040406;
   --sidebar-foreground: #f0f0f5;
   --sidebar-primary: #00f0ff;
-  --sidebar-primary-foreground: #0a0a0f;
+  --sidebar-primary-foreground: #040406;
   --sidebar-accent: #12121a;
   --sidebar-accent-foreground: #f0f0f5;
   --sidebar-border: #00f0ff;
@@ -41,6 +48,17 @@
   --neon-yellow: #fcee0a;
   --neon-orange: #ff6b35;
   --neon-purple: #d100d1;
+
+  /* Workspace accent colors — keyed by workspace slug. Consumed via
+     getWorkspaceAccent() in src/lib/workspace-theme.ts and also as
+     bare CSS vars when inline styles are convenient. */
+  --ws-chief-of-staff: #00f0ff; /* Architect — cyan */
+  --ws-admin: #8b5cf6;          /* Admin Prime — violet */
+  --ws-institute: #ff3366;      /* Institute Prime — hot pink */
+  --ws-health: #22c55e;         /* Med-Bay — green */
+  --ws-engineering: #eab308;    /* The Rig — neon yellow */
+  --ws-parker: #f97316;         /* Parker.exe — orange */
+  --ws-general: #94a3b8;        /* Terminal — slate */
 }
 
 @theme inline {
@@ -365,7 +383,7 @@
 
 /* ── Scrollbar ────────────────────────────────────────── */
 ::-webkit-scrollbar{width:4px;height:4px}
-::-webkit-scrollbar-track{background:#0a0a0f}
+::-webkit-scrollbar-track{background:#040406}
 ::-webkit-scrollbar-thumb{
   background:linear-gradient(180deg,#00f0ff44,#ff2a6d44);
   border-radius:0;

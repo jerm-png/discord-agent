@@ -486,7 +486,7 @@ export function RosterPage({
   }, [entities])
 
   return (
-    <div className="flex-1 h-full overflow-y-auto bg-gradient-to-b from-[#0a0a10] to-[#08080d] scanlines">
+    <div className="flex-1 h-full overflow-y-auto bg-gradient-to-b from-[#0a0a0e] to-[#040406] scanlines">
       <div className="max-w-[1200px] mx-auto p-6 space-y-6">
         {/* Header */}
         <div className="flex items-start justify-between gap-4 flex-wrap">

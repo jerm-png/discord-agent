@@ -213,7 +213,7 @@ export function DashboardPage() {
     activeWorkspace
 
   return (
-    <div className="h-screen w-screen overflow-hidden flex flex-col bg-[#0a0a0f]">
+    <div className="h-screen w-screen overflow-hidden flex flex-col bg-[#040406]">
       <SystemStatusBar />
       <div className="flex-1 flex overflow-hidden">
         {/* Parker has only one workspace so the sidebar is suppressed —
@@ -236,6 +236,7 @@ export function DashboardPage() {
           onCreateThread={handleCreateThread}
           onDeleteThread={handleDeleteThread}
           workspaceLabel={activeWorkspaceLabel}
+          workspaceSlug={activeWorkspace}
           isLoading={threadsLoading}
         />
         {showMemoryBrowser ? (
@@ -288,7 +289,7 @@ export function DashboardPage() {
             onEntityFocused={setSelectedEntityId}
           />
         ) : (
-          <div className="flex-1 flex items-center justify-center bg-[#0a0a0f] scanlines">
+          <div className="flex-1 flex items-center justify-center bg-[#040406] scanlines">
             <div className="text-center space-y-3">
               <div className="font-mono text-[10px] text-[#9090a8]/40 uppercase tracking-widest">
                 [ SELECT OR CREATE A THREAD ]

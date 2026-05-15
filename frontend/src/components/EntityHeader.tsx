@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { ChevronDown, ChevronRight, Tag } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { getEntities, getEntityTimeline } from '../api/client'
+import { getWorkspaceAccentAlpha } from '../lib/workspace-theme'
 import type {
   Entity,
   EntityAccentColor,
@@ -24,13 +25,6 @@ const ACCENT_BORDER: Record<EntityAccentColor, string> = {
   pink: 'border-neon-pink/50',
   green: 'border-neon-green/50',
   yellow: 'border-neon-yellow/50',
-}
-
-const ACCENT_BG: Record<EntityAccentColor, string> = {
-  cyan: 'bg-neon-cyan/5',
-  pink: 'bg-neon-pink/5',
-  green: 'bg-neon-green/5',
-  yellow: 'bg-neon-yellow/5',
 }
 
 function initials(name: string): string {
@@ -81,15 +75,19 @@ export function EntityHeader({ entityId }: EntityHeaderProps) {
 
   const textColor = ACCENT_TEXT[entity.accent_color] ?? ACCENT_TEXT.cyan
   const borderColor = ACCENT_BORDER[entity.accent_color] ?? ACCENT_BORDER.cyan
-  const bgColor = ACCENT_BG[entity.accent_color] ?? ACCENT_BG.cyan
+  // The entity header lives exclusively in Institute Prime, so the
+  // workspace accent tint is institute's hot pink. Per-entity
+  // accent_color still drives the avatar border + name + tag colors;
+  // the workspace tint just wraps the whole bar as a unifying wash.
+  const workspaceTint = getWorkspaceAccentAlpha('institute', 0.06)
 
   return (
     <div
       className={cn(
         'industrial-inset border-b-2 transition-all',
         borderColor,
-        bgColor,
       )}
+      style={{ backgroundColor: workspaceTint }}
     >
       {/* Collapsed bar */}
       <button

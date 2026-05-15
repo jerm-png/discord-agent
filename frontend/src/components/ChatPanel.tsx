@@ -25,6 +25,10 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { uploadFile } from '../api/client'
 import type { ChatMessage as ApiChatMessage } from '../api/client'
+import {
+  getWorkspaceAccent,
+  getWorkspaceAccentAlpha,
+} from '../lib/workspace-theme'
 
 export type ChatMessage = ApiChatMessage
 
@@ -112,6 +116,12 @@ export function ChatPanel({
   onRosterClick,
 }: ChatPanelProps) {
   const [inputValue, setInputValue] = useState('')
+  // Active workspace accent — applied to thread title, message
+  // badges, chat input border, and send button. Falls back to slate
+  // for unknown slugs via the workspace-theme helper.
+  const accent = getWorkspaceAccent(workspaceSlug)
+  const accentTint = getWorkspaceAccentAlpha(workspaceSlug, 0.1)
+  const accentBorderTint = getWorkspaceAccentAlpha(workspaceSlug, 0.3)
   // ── Attachments ──────────────────────────────────────────────────
   // Per-message file queue. Files start as "uploading", flip to "ready"
   // when the server returns a file_id, and stay until either the user
@@ -141,6 +151,12 @@ export function ChatPanel({
   const [dataPackets, setDataPackets] = useState(0)
   const [hackPhase, setHackPhase] = useState('')
   const [waveHeights, setWaveHeights] = useState<number[]>(Array(50).fill(0.3))
+  // Separate waveform state for the inline voice-recording visualizer.
+  // 24 bars × ~100ms tick gives a calmer rhythm than the hacking-panel
+  // wave (50 × 80ms) which would feel busy at small widths.
+  const [voiceWaveHeights, setVoiceWaveHeights] = useState<number[]>(
+    Array(24).fill(0.3),
+  )
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   // ── Voice-to-text (Web Speech API) ────────────────────────────────
@@ -414,6 +430,23 @@ export function ChatPanel({
     }
   }, [isThinking])
 
+  // Voice-record waveform animation. Matches the hacking-panel pattern
+  // but keyed on isRecording so the input-bar visualizer only ticks
+  // while the mic is hot. Resets to a flat baseline when recording
+  // ends so the bars don't freeze mid-roll if the user toggles fast.
+  useEffect(() => {
+    if (isRecording) {
+      const interval = setInterval(() => {
+        setVoiceWaveHeights((prev) =>
+          prev.map(() => 0.15 + Math.random() * 0.85),
+        )
+      }, 100)
+      return () => clearInterval(interval)
+    } else {
+      setVoiceWaveHeights(Array(24).fill(0.3))
+    }
+  }, [isRecording])
+
   // ── File upload helpers ─────────────────────────────────────────
   const startUpload = useCallback((attachment: Attachment) => {
     uploadFile(attachment.file)
@@ -588,7 +621,7 @@ export function ChatPanel({
 
   return (
     <div
-      className="flex-1 h-full flex flex-col bg-gradient-to-b from-[#0a0a10] to-[#08080d] relative scanlines"
+      className="flex-1 h-full flex flex-col bg-gradient-to-b from-[#0a0a0e] to-[#040406] relative scanlines"
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
@@ -597,7 +630,7 @@ export function ChatPanel({
       {dragActive && (
         <div className="absolute inset-0 z-[200] pointer-events-none flex items-center justify-center">
           <div className="absolute inset-3 border-2 border-dashed border-neon-cyan/70 bg-neon-cyan/[0.06] animate-pulse" />
-          <div className="relative industrial-raised border border-neon-cyan/60 bg-[#0a0a10]/90 px-5 py-3 flex items-center gap-3 glow-cyan">
+          <div className="relative industrial-raised border border-neon-cyan/60 bg-[#0a0a0e]/90 px-5 py-3 flex items-center gap-3 glow-cyan">
             <Upload className="w-5 h-5 text-neon-cyan glow-cyan-text" />
             <span className="font-mono text-xs uppercase tracking-widest text-neon-cyan glow-cyan-text font-bold">
               Drop to attach
@@ -607,7 +640,7 @@ export function ChatPanel({
       )}
       {isThinking && (
         <div className="absolute top-0 left-0 right-0 z-50">
-          <div className="h-8 w-full bg-gradient-to-b from-[#0c0c14] to-[#06060a] relative overflow-hidden flex items-center justify-center gap-[2px] px-6 border-b-2 border-[#1a1a22]">
+          <div className="h-8 w-full bg-gradient-to-b from-[#0a0a0e] to-[#040406] relative overflow-hidden flex items-center justify-center gap-[2px] px-6 border-b-2 border-[#12121a]">
             <div className="absolute left-2 top-1/2 -translate-y-1/2 flex items-center gap-1">
               <div className="w-1 h-4 bg-neon-yellow/60" />
               <div className="w-1 h-6 bg-neon-yellow/80" />
@@ -631,8 +664,8 @@ export function ChatPanel({
             </div>
           </div>
 
-          <div className="bg-gradient-to-b from-[#08080d] to-[#050508] overflow-hidden industrial-panel">
-            <div className="flex items-center justify-between px-4 py-2.5 border-b-2 border-[#1a1a22]">
+          <div className="bg-gradient-to-b from-[#040406] to-[#040406] overflow-hidden industrial-panel">
+            <div className="flex items-center justify-between px-4 py-2.5 border-b-2 border-[#12121a]">
               <div className="flex items-center gap-3 px-3 py-1.5 industrial-inset border border-neon-pink/20">
                 <div className="relative">
                   <div className="w-2.5 h-2.5 bg-neon-pink pulse-dot-pink" />
@@ -655,7 +688,7 @@ export function ChatPanel({
                           : node % 3 === 1
                             ? 'bg-neon-pink border-neon-pink glow-pink'
                             : 'bg-neon-green border-neon-green glow-green'
-                        : 'bg-[#0a0a10] border-[#2a2a35]'
+                        : 'bg-[#0a0a0e] border-[#2a2a35]'
                     )}
                   />
                 ))}
@@ -665,7 +698,7 @@ export function ChatPanel({
             </div>
 
             <div className="flex items-stretch">
-              <div className="flex-1 px-4 py-2 border-r-2 border-[#1a1a22] industrial-inset">
+              <div className="flex-1 px-4 py-2 border-r-2 border-[#12121a] industrial-inset">
                 <div className="flex items-center gap-2 mb-1">
                   <Database className="w-3 h-3 text-neon-green" />
                   <span className="font-mono text-[8px] text-neon-green/70 uppercase tracking-wider font-bold">
@@ -680,7 +713,7 @@ export function ChatPanel({
               </div>
 
               <div className="grid grid-cols-3 gap-0 text-center">
-                <div className="px-4 py-2 border-r-2 border-[#1a1a22] industrial-raised">
+                <div className="px-4 py-2 border-r-2 border-[#12121a] industrial-raised">
                   <div className="flex items-center justify-center gap-1 mb-1">
                     <Cpu className="w-3 h-3 text-neon-cyan" />
                     <span className="font-mono text-[8px] text-muted-foreground uppercase font-bold">
@@ -691,7 +724,7 @@ export function ChatPanel({
                     {cycles}
                   </span>
                 </div>
-                <div className="px-4 py-2 border-r-2 border-[#1a1a22] industrial-raised">
+                <div className="px-4 py-2 border-r-2 border-[#12121a] industrial-raised">
                   <div className="flex items-center justify-center gap-1 mb-1">
                     <Shield className="w-3 h-3 text-neon-pink" />
                     <span className="font-mono text-[8px] text-muted-foreground uppercase font-bold">
@@ -732,7 +765,10 @@ export function ChatPanel({
         <div className="absolute bottom-2 right-2 w-4 h-4 border-r-2 border-b-2 border-neon-pink/40" />
 
         <div>
-          <h2 className="font-mono text-sm text-neon-cyan glow-cyan-text uppercase tracking-wider font-bold">
+          <h2
+            className="font-mono text-sm uppercase tracking-wider font-bold"
+            style={{ color: accent }}
+          >
             {threadTitle}
           </h2>
           <p className="font-mono text-[10px] text-muted-foreground mt-0.5">
@@ -799,12 +835,12 @@ export function ChatPanel({
                   <div className="px-5 py-4">
                     <div className="flex items-center gap-2 mb-3">
                       <span
-                        className={cn(
-                          'font-mono text-[10px] uppercase tracking-wider font-bold px-2 py-0.5',
-                          message.role === 'assistant'
-                            ? 'text-neon-cyan glow-cyan-text bg-neon-cyan/10 border border-neon-cyan/30'
-                            : 'text-neon-pink glow-pink-text bg-neon-pink/10 border border-neon-pink/30'
-                        )}
+                        className="font-mono text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 border"
+                        style={{
+                          color: accent,
+                          backgroundColor: accentTint,
+                          borderColor: accentBorderTint,
+                        }}
                       >
                         {message.role === 'assistant' ? 'Drift' : 'You'}
                       </span>
@@ -843,14 +879,30 @@ export function ChatPanel({
                 </div>
                 <div className="cyber-frame cyber-frame-cyan px-5 py-4">
                   <div className="flex items-center gap-2 mb-1">
-                    <span className="font-mono text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 text-[#00f0ff] glow-cyan-text bg-[#00f0ff]/10 border border-[#00f0ff]/30">
+                    <span
+                      className="font-mono text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 border"
+                      style={{
+                        color: accent,
+                        backgroundColor: accentTint,
+                        borderColor: accentBorderTint,
+                      }}
+                    >
                       DRIFT
                     </span>
                   </div>
                   <div className="flex items-center gap-1.5 py-2">
-                    <span className="w-2 h-2 bg-[#00f0ff] rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                    <span className="w-2 h-2 bg-[#00f0ff] rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                    <span className="w-2 h-2 bg-[#00f0ff] rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                    <span
+                      className="w-2 h-2 rounded-full animate-bounce"
+                      style={{ backgroundColor: accent, animationDelay: '0ms' }}
+                    />
+                    <span
+                      className="w-2 h-2 rounded-full animate-bounce"
+                      style={{ backgroundColor: accent, animationDelay: '150ms' }}
+                    />
+                    <span
+                      className="w-2 h-2 rounded-full animate-bounce"
+                      style={{ backgroundColor: accent, animationDelay: '300ms' }}
+                    />
                   </div>
                 </div>
               </div>
@@ -884,7 +936,7 @@ export function ChatPanel({
                   key={a.localId}
                   className={cn(
                     'relative group flex items-center gap-2 pr-7',
-                    'industrial-inset border bg-[#0a0a10]',
+                    'industrial-inset border bg-[#0a0a0e]',
                     a.status === 'error'
                       ? 'border-neon-pink/60'
                       : cardBorder,
@@ -1037,35 +1089,82 @@ export function ChatPanel({
           </div>
 
           <div className="flex-1 relative">
-            <textarea
-              value={inputValue}
-              onChange={(e) => {
-                // Any typed change during the countdown means the user is
-                // editing — cancel the auto-send so it can never fire on
-                // text they meant to revise.
-                if (autoSendIn !== null) cancelAutoSend()
-                setInputValue(e.target.value)
-              }}
-              onFocus={() => {
-                // Focusing the input is also an explicit signal that the
-                // user wants to take over and edit before sending.
-                if (autoSendIn !== null) cancelAutoSend()
-              }}
-              onKeyDown={handleKeyDown}
-              placeholder={isRecording ? 'Listening...' : 'Enter command...'}
-              rows={1}
-              readOnly={isRecording}
-              className={cn(
-                'w-full px-4 py-3 industrial-inset border-2',
-                'placeholder:text-muted-foreground/40',
-                'font-sans text-sm resize-none',
-                'focus:outline-none transition-all duration-200',
-                isRecording
-                  ? 'border-neon-pink/50 italic text-muted-foreground/70 shadow-[0_0_12px_rgba(255,42,109,0.15)]'
-                  : 'border-neon-cyan/30 text-foreground focus:border-neon-pink/50 focus:shadow-[0_0_12px_rgba(255,42,109,0.2)]',
-              )}
-              style={{ minHeight: '48px', maxHeight: '150px' }}
-            />
+            {isRecording ? (
+              // While the mic is hot the textarea is read-only anyway,
+              // so we swap it out for a flex row: live transcript on
+              // the left, animated waveform on the right. As the
+              // interim transcript grows it naturally pushes the
+              // waveform's flex region narrower until the text fills
+              // the bar and the waveform compresses to a sliver.
+              <div
+                className={cn(
+                  'w-full px-4 py-3 industrial-inset border-2 flex items-center gap-3',
+                  'border-neon-pink/50 shadow-[0_0_12px_rgba(255,42,109,0.15)]',
+                )}
+                style={{ minHeight: '48px', maxHeight: '150px' }}
+              >
+                <div
+                  className={cn(
+                    'font-sans text-sm italic whitespace-nowrap overflow-hidden text-ellipsis flex-shrink min-w-0',
+                    inputValue.trim()
+                      ? 'text-foreground'
+                      : 'text-muted-foreground/40',
+                  )}
+                >
+                  {inputValue.trim() || 'Listening...'}
+                </div>
+                <div
+                  className="flex-1 min-w-0 h-6 flex items-center justify-end gap-[2px] overflow-hidden"
+                  aria-hidden
+                >
+                  {voiceWaveHeights.map((h, i) => (
+                    <div
+                      key={i}
+                      className="w-[3px] rounded-sm flex-shrink-0 transition-all duration-100"
+                      style={{
+                        height: `${Math.max(0.12, h) * 100}%`,
+                        background: '#ff3366',
+                        // Slight per-bar opacity variation so the wave
+                        // reads as organic instead of a uniform block.
+                        opacity:
+                          0.45 + h * 0.4 + ((i % 5) * 0.04),
+                      }}
+                    />
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <textarea
+                value={inputValue}
+                onChange={(e) => {
+                  // Any typed change during the countdown means the user is
+                  // editing — cancel the auto-send so it can never fire on
+                  // text they meant to revise.
+                  if (autoSendIn !== null) cancelAutoSend()
+                  setInputValue(e.target.value)
+                }}
+                onFocus={() => {
+                  // Focusing the input is also an explicit signal that the
+                  // user wants to take over and edit before sending.
+                  if (autoSendIn !== null) cancelAutoSend()
+                }}
+                onKeyDown={handleKeyDown}
+                placeholder="Enter command..."
+                rows={1}
+                className={cn(
+                  'w-full px-4 py-3 industrial-inset border-2',
+                  'placeholder:text-muted-foreground/40',
+                  'font-sans text-sm resize-none',
+                  'focus:outline-none transition-all duration-200',
+                  'text-foreground',
+                )}
+                style={{
+                  minHeight: '48px',
+                  maxHeight: '150px',
+                  borderColor: accentBorderTint,
+                }}
+              />
+            )}
             <div className={cn(
               'absolute bottom-0 left-2 right-2 h-[2px]',
               inputValue.trim()
@@ -1083,10 +1182,14 @@ export function ChatPanel({
                 : 'Send'
             }
             className={cn(
-              'p-3.5 industrial-raised border-2 border-neon-cyan/50 text-neon-cyan cyber-button font-bold',
-              'hover:border-neon-pink/50 hover:text-neon-pink hover:glow-pink transition-all duration-200',
-              'disabled:opacity-30 disabled:cursor-not-allowed disabled:border-muted-foreground/20 disabled:hover:shadow-none'
+              'p-3.5 industrial-raised border-2 cyber-button font-bold transition-all duration-200',
+              'disabled:opacity-30 disabled:cursor-not-allowed disabled:border-muted-foreground/20 disabled:hover:shadow-none',
             )}
+            style={
+              canSend
+                ? { borderColor: accent, color: accent }
+                : undefined
+            }
           >
             {uploadingCount > 0 ? (
               <Loader2 className="w-5 h-5 animate-spin" />

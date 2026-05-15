@@ -198,7 +198,7 @@ function ProtocolSection({ refetchToken }: { refetchToken: number }) {
       )}
 
       {stopped.length > 0 && (
-        <div className="mt-3 pt-2 border-t border-[#1a1a22]">
+        <div className="mt-3 pt-2 border-t border-[#12121a]">
           <button
             type="button"
             onClick={() => setShowStopped((v) => !v)}
@@ -627,7 +627,7 @@ function LandingPage({
   }, [tokens.changes])
 
   return (
-    <div className="flex-1 overflow-y-auto bg-[#0a0a0f] scanlines">
+    <div className="flex-1 overflow-y-auto bg-[#040406] scanlines">
       <div className="max-w-5xl mx-auto p-6 space-y-6">
         <div className="flex items-center justify-between">
           <div>

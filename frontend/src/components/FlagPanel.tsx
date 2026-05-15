@@ -113,7 +113,7 @@ function FlagCard({
         </p>
       </div>
 
-      <div className="pt-2 border-t border-[#1a1a22] flex justify-end">
+      <div className="pt-2 border-t border-[#12121a] flex justify-end">
         <button
           onClick={onReview}
           disabled={pending}
@@ -185,7 +185,7 @@ export function FlagPanel({ flags, onClose, onReviewed }: FlagPanelProps) {
       <aside
         className={cn(
           'fixed top-0 right-0 bottom-0 w-[420px] z-50 flex flex-col',
-          'bg-gradient-to-b from-[#0c0c12] to-[#08080d] industrial-panel',
+          'bg-gradient-to-b from-[#0a0a0e] to-[#040406] industrial-panel',
           'border-l-2 border-neon-pink/40 transition-transform duration-300',
           animateIn ? 'translate-x-0' : 'translate-x-full',
         )}
