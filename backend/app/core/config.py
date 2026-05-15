@@ -77,6 +77,8 @@ DRIFT_PASSWORD = os.getenv("DRIFT_PASSWORD", "")
 PARKER_PASSWORD = os.getenv("PARKER_PASSWORD", "")
 
 # ── Workspaces ────────────────────────────────────────────────
+# Workspace order in this dict is the surface order on the sidebar:
+# chief-of-staff → admin → institute → health → engineering → general.
 WORKSPACES = {
     "chief-of-staff": {
         "label": "Architect",
@@ -97,8 +99,30 @@ WORKSPACES = {
         ),
         "language": "clean",
     },
-    "director": {
+    "admin": {
         "label": "Admin Prime",
+        "memory_mode": "isolated",
+        "tool_mode": "full",
+        "project_tag": "admin-prime",
+        "agent_hints": ["personal-productivity", "director-advisor"],
+        "threaded": True,
+        "isolated": True,
+        "entity_memory": False,
+        "personality": (
+            "You are operating in Admin Prime — Jerm's personal "
+            "leadership development workspace. This is where he "
+            "works on his own career strategy, brainstorms ideas, "
+            "researches management frameworks, preps for difficult "
+            "conversations, and develops himself as a leader. "
+            "Be a sharp sounding board. Challenge assumptions. "
+            "Push back on shallow thinking. Help him see angles "
+            "he's missing. When he's building something — a plan, "
+            "a framework, a strategy — help him make it bulletproof."
+        ),
+        "language": "light",
+    },
+    "institute": {
+        "label": "Institute Prime",
         "memory_mode": "global",
         "tool_mode": "full",
         "project_tag": None,
@@ -107,13 +131,15 @@ WORKSPACES = {
         "isolated": False,
         "entity_memory": True,
         "personality": (
-            "You are operating in Admin Prime — the workspace "
-            "for Jerm's team, people, coaching, and management "
-            "work. Be sharp and structured when the work is "
-            "serious. Be warm and human when the conversation "
-            "is human. Crack jokes when they fit — especially "
-            "when Jerm is venting. Humor comes from the actual "
-            "context, not generically. Read the room."
+            "You are operating in Institute Prime — the workspace "
+            "for Jerm's team coaching, people development, and "
+            "management work. This is where he tracks his direct "
+            "reports, develops them, runs 1:1 prep, and works "
+            "through coaching moments. Be sharp and structured "
+            "when the work is serious. Be warm and human when the "
+            "conversation is human. Crack jokes when they fit — "
+            "especially when Jerm is venting. Humor comes from the "
+            "actual context, not generically. Read the room."
         ),
         "language": "light",
     },
@@ -220,11 +246,15 @@ WORKSPACES = {
             "catch-all workspace. Adapt to the conversation. "
             "Default to the Architect register for reflective "
             "work, shift toward The Rig register for technical "
-            "work, shift toward Admin Prime warmth for people "
-            "work. Read what the conversation needs."
+            "work, shift toward Institute Prime warmth for "
+            "people work. Read what the conversation needs."
         ),
         "language": "adaptive",
     },
 }
 
-ISOLATED_WORKSPACES = {"health", "parker"}
+# Admin Prime joins health + parker as a hard-isolated workspace.
+# Per the spec it carries its own project_tag ("admin-prime") and
+# the memory pipeline gates on either the workspace slug or the
+# project_tag (legacy rows tagged "health-tracking", etc.).
+ISOLATED_WORKSPACES = {"health", "parker", "admin", "admin-prime"}

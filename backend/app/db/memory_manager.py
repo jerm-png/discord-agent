@@ -528,6 +528,46 @@ def init_db():
         )
     """)
 
+    # ── Director → Institute rename migration ─────────────────────
+    # The "director" workspace was renamed to "institute" (see
+    # config.py). Existing rows on disk still carry the old slug in
+    # threads.workspace and the various channel_name / source_channel /
+    # project_tag columns — rewrite them here so the runtime queries
+    # gated on the new slug actually find the historical data.
+    #
+    # Idempotent: re-running on already-migrated rows updates zero rows.
+    # Each statement is independently try-wrapped so a missing column
+    # on a stale schema (e.g. an old DB without project_tag yet) only
+    # skips that one statement instead of aborting the whole migration.
+    _rename_pairs = [
+        ("threads", "workspace", "director", "institute"),
+        ("strategic_memory", "channel_name", "director", "institute"),
+        ("operational_memory", "channel_name", "director", "institute"),
+        ("analytical_memory", "channel_name", "director", "institute"),
+        ("strategic_memory", "project_tag", "director", "institute"),
+        ("operational_memory", "project_tag", "director", "institute"),
+        ("analytical_memory", "project_tag", "director", "institute"),
+        ("experiences", "channel_name", "director", "institute"),
+        ("experiences", "project_tag", "director", "institute"),
+        ("conversation_log", "channel_name", "director", "institute"),
+        ("conversation_log", "project_tag", "director", "institute"),
+        ("entity_facts", "source_channel", "director", "institute"),
+        # The older entity_facts default was "director-workspace" —
+        # collapse it into the new flat "institute" tag so the source
+        # values are consistent across the table.
+        ("entity_facts", "source_channel", "director-workspace", "institute"),
+        ("reasoning_trace", "channel_name", "director", "institute"),
+    ]
+    for table, col, old, new in _rename_pairs:
+        try:
+            c.execute(
+                f"UPDATE {table} SET {col} = ? WHERE {col} = ?",
+                (new, old),
+            )
+        except sqlite3.OperationalError:
+            # Missing table or column — fine, nothing to migrate.
+            pass
+
     conn.commit()
     conn.close()
     print("Database initialised.")
@@ -2486,7 +2526,7 @@ def add_entity_fact(
     entity_id: int,
     category: str,
     fact: str,
-    source_channel: str = "director-workspace",
+    source_channel: str = "institute",
     confidence: float = 0.8,
     supersede_category: bool = False,
 ) -> int:
@@ -2627,7 +2667,7 @@ def create_entity(
                     entity_id, category, fact, status,
                     recorded_at, updated_at, source_channel, confidence
                 )
-                VALUES (?, 'note', ?, 'active', ?, ?, 'director', 0.9)
+                VALUES (?, 'note', ?, 'active', ?, ?, 'institute', 0.9)
                 """,
                 (entity_id, first_note, now, now),
             )
@@ -2821,7 +2861,7 @@ def save_entity_fact(
     entity_id: int,
     category: str,
     fact: str,
-    source_channel: str = "director",
+    source_channel: str = "institute",
     confidence: float = 0.8,
 ) -> int:
     """Insert a single entity_fact row + bump entities.updated_at so the

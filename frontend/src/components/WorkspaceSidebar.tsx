@@ -21,7 +21,8 @@ interface WorkspaceConfig {
 
 const SLUG_CONFIG: Record<string, WorkspaceConfig> = {
   'chief-of-staff': { icon: <Briefcase className="w-4 h-4" />, color: 'cyan' },
-  director: { icon: <FolderKanban className="w-4 h-4" />, color: 'pink' },
+  admin: { icon: <Brain className="w-4 h-4" />, color: 'cyan' },
+  institute: { icon: <FolderKanban className="w-4 h-4" />, color: 'pink' },
   health: { icon: <Heart className="w-4 h-4" />, color: 'green' },
   engineering: { icon: <Code2 className="w-4 h-4" />, color: 'yellow' },
   general: { icon: <MessageSquare className="w-4 h-4" />, color: 'orange' },

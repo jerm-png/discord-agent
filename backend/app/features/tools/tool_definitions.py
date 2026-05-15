@@ -332,7 +332,7 @@ TOOL_DEFINITIONS = [
         "name": "save_person_fact",
         "description": (
             "Save a fact about a specific person to their entity "
-            "profile in director-workspace. Use when the user shares "
+            "profile in Institute Prime. Use when the user shares "
             "new information about a direct report or colleague — "
             "performance updates, coaching outcomes, development "
             "goals, behavioral patterns, feedback given or received, "
@@ -821,7 +821,7 @@ def execute_tool(tool_name, tool_inputs, channel_name=None):
                     entity_id,
                     category,
                     fact,
-                    channel_name or "director-workspace",
+                    channel_name or "institute",
                     confidence,
                     supersede,
                 )

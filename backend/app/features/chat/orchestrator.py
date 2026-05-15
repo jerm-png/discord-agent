@@ -382,6 +382,26 @@ async def _run_entity_thread_rename(
 
 _COACHING_CATEGORIES = {"note", "decision", "goal", "milestone"}
 
+# Admin Prime → Institute Prime one-way bridge: when a message in the
+# admin workspace contains any of these phrases, we cross-pull entity
+# profiles from Institute Prime as ephemeral prompt context. Match is
+# substring on the lowercased message — kept narrow so casual mentions
+# of "team" in other contexts (e.g. "the Engineering team's bug") don't
+# trigger an unnecessary roster pull.
+_ADMIN_TEAM_QUERY_PHRASES = (
+    "my team",
+    "the team",
+    "pull up team",
+    "team patterns",
+    "team dynamic",
+    "what do you know about",
+    "tell me about ",
+    "remind me about ",
+    "my directs",
+    "my reports",
+    "direct reports",
+)
+
 
 async def _run_entity_coaching_logger(
     entity_id: int,
@@ -439,7 +459,7 @@ async def _run_entity_coaching_logger(
             entity_id,
             category,
             summary[:500],
-            "director",
+            "institute",
             0.85,
         )
         logger.info(
@@ -3012,9 +3032,27 @@ async def process_user_message(
     memory_context = format_memory_for_prompt(memories)
     memory_context_chars = len(memory_context) if memory_context else 0
 
-    # ── Entity profile injection (director-workspace only) ────
+    # ── Entity profile injection ──────────────────────────────
+    # Institute Prime is the canonical home for the roster — entity
+    # profiles are matched against the message by name and injected
+    # directly into the prompt as context.
+    #
+    # Admin Prime gets a *one-way bridge*: when the user explicitly
+    # asks about their team, we do a cross-workspace lookup into
+    # Institute Prime's entity data and inject it as ephemeral
+    # context for this turn only. The injected text never gets
+    # written back into Admin Prime's memory — the orchestrator's
+    # memory pipeline only persists the AI's response and the user's
+    # original message, not synthetic context blocks, so isolation
+    # holds without extra plumbing.
     _entity_context = ""
-    if effective_channel_name == "director-workspace":
+    _do_entity_lookup = effective_channel_name == "institute"
+    if effective_channel_name == "admin":
+        _msg_lower_check = user_message.lower()
+        if any(p in _msg_lower_check for p in _ADMIN_TEAM_QUERY_PHRASES):
+            _do_entity_lookup = True
+
+    if _do_entity_lookup:
         _known = list_entities(entity_type="person")
         _known_names = [e["name"].lower() for e in _known]
         _msg_lower = user_message.lower()
@@ -3022,6 +3060,13 @@ async def process_user_message(
             e["name"] for e in _known
             if e["name"].lower() in _msg_lower
         ]
+        # In Admin Prime, the team-query phrases ("my team", "what do
+        # you know about", …) imply the user wants a roster view even
+        # if no specific name was mentioned. Fall back to the top few
+        # entities so the cross-workspace bridge isn't useless on a
+        # bare "pull up team patterns".
+        if not _matched and effective_channel_name == "admin":
+            _matched = [e["name"] for e in _known[:3]]
         if _matched:
             _profile_blocks = []
             for _person_name in _matched[:3]:  # cap at 3 per message
@@ -3029,8 +3074,14 @@ async def process_user_message(
                 if _block:
                     _profile_blocks.append(_block)
             if _profile_blocks:
+                _header = (
+                    "[PEOPLE CONTEXT — cross-pulled from Institute "
+                    "Prime, ephemeral, do not store]\n"
+                    if effective_channel_name == "admin"
+                    else "[PEOPLE CONTEXT — retrieved from entity memory]\n"
+                )
                 _entity_context = (
-                    "[PEOPLE CONTEXT — retrieved from entity memory]\n"
+                    _header
                     + "\n\n".join(_profile_blocks)
                     + "\n"
                 )

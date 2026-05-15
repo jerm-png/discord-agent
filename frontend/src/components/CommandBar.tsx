@@ -23,7 +23,7 @@ export function CommandBar({
   const [active, setActive] = useState<ActiveCmd>(null)
   const [value, setValue] = useState('')
 
-  const showRoster = workspaceSlug === 'director'
+  const showRoster = workspaceSlug === 'institute'
 
   const cancel = () => {
     setActive(null)

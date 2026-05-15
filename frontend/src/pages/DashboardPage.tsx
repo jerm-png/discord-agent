@@ -151,7 +151,7 @@ export function DashboardPage() {
   }
 
   // Roster: deselect any active thread so the empty-state branch renders
-  // RosterPage. Only meaningful in the director workspace.
+  // RosterPage. Only meaningful in the institute workspace.
   function handleRosterClick() {
     setActiveThread(null)
   }
@@ -255,14 +255,14 @@ export function DashboardPage() {
                 threadTitle={activeThread.title}
                 onSendMessage={handleSendMessage}
                 onRosterClick={
-                  activeWorkspace === 'director'
+                  activeWorkspace === 'institute'
                     ? handleRosterClick
                     : undefined
                 }
               />
             </div>
           </div>
-        ) : activeWorkspace === 'director' ? (
+        ) : activeWorkspace === 'institute' ? (
           <RosterPage
             onOpenThread={(t) => setActiveThread(t)}
             onCreateEntityThread={handleCreateEntityThread}
