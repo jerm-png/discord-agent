@@ -1,10 +1,6 @@
 import { useState } from 'react'
 import { Brain, Search, Users, X } from 'lucide-react'
 import { cn } from '../lib/utils'
-import {
-  getWorkspaceAccent,
-  getWorkspaceAccentAlpha,
-} from '../lib/workspace-theme'
 
 interface CommandBarProps {
   onSendMessage: (content: string) => void
@@ -28,18 +24,6 @@ export function CommandBar({
   const [value, setValue] = useState('')
 
   const showRoster = workspaceSlug === 'institute'
-  // Workspace accent tints the command-bar button borders so the
-  // command rail visually belongs to the active workspace. We use
-  // inline style for the variable border-color (and the same hue at
-  // multiple alpha levels) rather than try to express the workspace
-  // accent through Tailwind's neon-* classes, which are fixed.
-  const accent = getWorkspaceAccent(workspaceSlug)
-  const accentBorder = getWorkspaceAccentAlpha(workspaceSlug, 0.3)
-  const accentBg = getWorkspaceAccentAlpha(workspaceSlug, 0.05)
-  const buttonStyle = {
-    color: accent,
-    borderColor: accentBorder,
-  } as const
 
   const cancel = () => {
     setActive(null)
@@ -70,14 +54,7 @@ export function CommandBar({
 
       {active ? (
         <>
-          <span
-            className="font-mono text-[10px] uppercase tracking-wider font-bold px-1.5 py-0.5 border"
-            style={{
-              color: accent,
-              borderColor: accentBorder,
-              backgroundColor: accentBg,
-            }}
-          >
+          <span className="font-mono text-[10px] uppercase tracking-wider text-neon-cyan glow-cyan-text font-bold px-1.5 py-0.5 border border-neon-cyan/40 bg-neon-cyan/5">
             ! {active}
           </span>
           <input
@@ -103,22 +80,22 @@ export function CommandBar({
             onClick={() => setActive('remember')}
             title="Remember (!remember)"
             className={cn(
-              'relative p-1 industrial-inset border transition-all group',
+              'relative p-1 industrial-inset border border-neon-cyan/20 text-neon-cyan/70',
+              'hover:text-neon-cyan hover:border-neon-cyan/60 hover:glow-cyan transition-all',
+              'group',
             )}
-            style={buttonStyle}
           >
             <Brain className="w-3.5 h-3.5" />
-            <span
-              className="absolute -top-0.5 -right-0.5 w-1 h-1 rounded-full opacity-0 group-hover:opacity-100 group-hover:pulse-dot transition-opacity"
-              style={{ backgroundColor: accent }}
-            />
+            <span className="absolute -top-0.5 -right-0.5 w-1 h-1 bg-neon-cyan rounded-full opacity-0 group-hover:opacity-100 group-hover:pulse-dot transition-opacity" />
           </button>
 
           <button
             onClick={() => setActive('search')}
             title="Search (!search)"
-            className="p-1 industrial-inset border transition-all"
-            style={buttonStyle}
+            className={cn(
+              'p-1 industrial-inset border border-neon-cyan/20 text-neon-cyan/70',
+              'hover:text-neon-cyan hover:border-neon-cyan/60 hover:glow-cyan transition-all',
+            )}
           >
             <Search className="w-3.5 h-3.5" />
           </button>
@@ -127,8 +104,10 @@ export function CommandBar({
             <button
               onClick={onRosterClick}
               title="Roster"
-              className="p-1 industrial-inset border transition-all"
-              style={buttonStyle}
+              className={cn(
+                'p-1 industrial-inset border border-neon-cyan/20 text-neon-cyan/70',
+                'hover:text-neon-cyan hover:border-neon-cyan/60 hover:glow-cyan transition-all',
+              )}
             >
               <Users className="w-3.5 h-3.5" />
             </button>

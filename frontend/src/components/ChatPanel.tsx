@@ -25,10 +25,6 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { uploadFile } from '../api/client'
 import type { ChatMessage as ApiChatMessage } from '../api/client'
-import {
-  getWorkspaceAccent,
-  getWorkspaceAccentAlpha,
-} from '../lib/workspace-theme'
 
 export type ChatMessage = ApiChatMessage
 
@@ -116,12 +112,6 @@ export function ChatPanel({
   onRosterClick,
 }: ChatPanelProps) {
   const [inputValue, setInputValue] = useState('')
-  // Active workspace accent — applied to thread title, message
-  // badges, chat input border, and send button. Falls back to slate
-  // for unknown slugs via the workspace-theme helper.
-  const accent = getWorkspaceAccent(workspaceSlug)
-  const accentTint = getWorkspaceAccentAlpha(workspaceSlug, 0.1)
-  const accentBorderTint = getWorkspaceAccentAlpha(workspaceSlug, 0.3)
   // ── Attachments ──────────────────────────────────────────────────
   // Per-message file queue. Files start as "uploading", flip to "ready"
   // when the server returns a file_id, and stay until either the user
@@ -765,10 +755,7 @@ export function ChatPanel({
         <div className="absolute bottom-2 right-2 w-4 h-4 border-r-2 border-b-2 border-neon-pink/40" />
 
         <div>
-          <h2
-            className="font-mono text-sm uppercase tracking-wider font-bold"
-            style={{ color: accent }}
-          >
+          <h2 className="font-mono text-sm text-neon-cyan glow-cyan-text uppercase tracking-wider font-bold">
             {threadTitle}
           </h2>
           <p className="font-mono text-[10px] text-muted-foreground mt-0.5">
@@ -834,14 +821,7 @@ export function ChatPanel({
                 >
                   <div className="px-5 py-4">
                     <div className="flex items-center gap-2 mb-3">
-                      <span
-                        className="font-mono text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 border"
-                        style={{
-                          color: accent,
-                          backgroundColor: accentTint,
-                          borderColor: accentBorderTint,
-                        }}
-                      >
+                      <span className="font-mono text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 text-neon-cyan glow-cyan-text bg-neon-cyan/10 border border-neon-cyan/30">
                         {message.role === 'assistant' ? 'Drift' : 'You'}
                       </span>
                       {message.timestamp && (
@@ -879,30 +859,14 @@ export function ChatPanel({
                 </div>
                 <div className="cyber-frame cyber-frame-cyan px-5 py-4">
                   <div className="flex items-center gap-2 mb-1">
-                    <span
-                      className="font-mono text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 border"
-                      style={{
-                        color: accent,
-                        backgroundColor: accentTint,
-                        borderColor: accentBorderTint,
-                      }}
-                    >
+                    <span className="font-mono text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 text-neon-cyan glow-cyan-text bg-neon-cyan/10 border border-neon-cyan/30">
                       DRIFT
                     </span>
                   </div>
                   <div className="flex items-center gap-1.5 py-2">
-                    <span
-                      className="w-2 h-2 rounded-full animate-bounce"
-                      style={{ backgroundColor: accent, animationDelay: '0ms' }}
-                    />
-                    <span
-                      className="w-2 h-2 rounded-full animate-bounce"
-                      style={{ backgroundColor: accent, animationDelay: '150ms' }}
-                    />
-                    <span
-                      className="w-2 h-2 rounded-full animate-bounce"
-                      style={{ backgroundColor: accent, animationDelay: '300ms' }}
-                    />
+                    <span className="w-2 h-2 bg-neon-cyan rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                    <span className="w-2 h-2 bg-neon-cyan rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                    <span className="w-2 h-2 bg-neon-cyan rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
                   </div>
                 </div>
               </div>
@@ -1182,13 +1146,9 @@ export function ChatPanel({
                   'placeholder:text-muted-foreground/40',
                   'font-sans text-sm resize-none',
                   'focus:outline-none transition-all duration-200',
-                  'text-foreground',
+                  'border-neon-cyan/30 text-foreground focus:border-neon-pink/50 focus:shadow-[0_0_12px_rgba(255,42,109,0.2)]',
                 )}
-                style={{
-                  minHeight: '48px',
-                  maxHeight: '150px',
-                  borderColor: accentBorderTint,
-                }}
+                style={{ minHeight: '48px', maxHeight: '150px' }}
               />
             )}
             <div className={cn(
@@ -1208,14 +1168,10 @@ export function ChatPanel({
                 : 'Send'
             }
             className={cn(
-              'p-3.5 industrial-raised border-2 cyber-button font-bold transition-all duration-200',
+              'p-3.5 industrial-raised border-2 border-neon-cyan/50 text-neon-cyan cyber-button font-bold',
+              'hover:border-neon-pink/50 hover:text-neon-pink hover:glow-pink transition-all duration-200',
               'disabled:opacity-30 disabled:cursor-not-allowed disabled:border-muted-foreground/20 disabled:hover:shadow-none',
             )}
-            style={
-              canSend
-                ? { borderColor: accent, color: accent }
-                : undefined
-            }
           >
             {uploadingCount > 0 ? (
               <Loader2 className="w-5 h-5 animate-spin" />

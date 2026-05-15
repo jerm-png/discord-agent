@@ -48,17 +48,6 @@
   --neon-yellow: #fcee0a;
   --neon-orange: #ff6b35;
   --neon-purple: #d100d1;
-
-  /* Workspace accent colors — keyed by workspace slug. Consumed via
-     getWorkspaceAccent() in src/lib/workspace-theme.ts and also as
-     bare CSS vars when inline styles are convenient. */
-  --ws-chief-of-staff: #00f0ff; /* Architect — cyan */
-  --ws-admin: #8b5cf6;          /* Admin Prime — violet */
-  --ws-institute: #ff3366;      /* Institute Prime — hot pink */
-  --ws-health: #22c55e;         /* Med-Bay — green */
-  --ws-engineering: #eab308;    /* The Rig — neon yellow */
-  --ws-parker: #f97316;         /* Parker.exe — orange */
-  --ws-general: #94a3b8;        /* Terminal — slate */
 }
 
 @theme inline {

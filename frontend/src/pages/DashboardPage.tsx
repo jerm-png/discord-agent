@@ -236,7 +236,6 @@ export function DashboardPage() {
           onCreateThread={handleCreateThread}
           onDeleteThread={handleDeleteThread}
           workspaceLabel={activeWorkspaceLabel}
-          workspaceSlug={activeWorkspace}
           isLoading={threadsLoading}
         />
         {showMemoryBrowser ? (

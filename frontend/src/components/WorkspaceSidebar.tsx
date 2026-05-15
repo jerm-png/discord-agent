@@ -7,20 +7,16 @@ import {
   MessageSquare,
   Power,
   Terminal,
-  Brain,
   Sparkles,
+  Brain,
 } from 'lucide-react'
 import { logout } from '../api/client'
 import { useAuthStore } from '../store/authStore'
 import type { Workspace } from '../api/client'
 import type { ReactNode } from 'react'
-import {
-  getWorkspaceAccent,
-  getWorkspaceAccentAlpha,
-} from '../lib/workspace-theme'
 
-// Icon per workspace slug. Accent color lives in workspace-theme.ts
-// and is applied via inline style so the palette is centralised.
+// Icon per workspace slug. Active/inactive coloring is uniform cyan
+// across all workspaces — the per-workspace accent system was removed.
 const SLUG_ICON: Record<string, ReactNode> = {
   'chief-of-staff': <Briefcase className="w-4 h-4" />,
   admin: <Sparkles className="w-4 h-4" />,
@@ -100,71 +96,49 @@ export function WorkspaceSidebar({
           const icon = SLUG_ICON[workspace.slug] ?? (
             <Terminal className="w-4 h-4" />
           )
-          const accent = getWorkspaceAccent(workspace.slug)
           const isActive = activeWorkspace === workspace.slug
-          // Active row: full-strength accent bar + tinted bg + 2px
-          // left border in accent. Inactive: same 3px bar at low
-          // opacity so the row still reads as "owned" by its
-          // workspace color, but doesn't compete with the active row.
+          // Single cyan accent for the active row. Inactive rows stay
+          // muted; no per-workspace tinting anywhere on the row.
           return (
             <button
               key={workspace.slug}
               onClick={() => onWorkspaceChange(workspace.slug)}
               className={cn(
-                'w-full flex items-center gap-3 pl-4 pr-3 py-3 text-sm transition-all duration-200',
-                'group relative',
+                'w-full flex items-center gap-3 px-3 py-3 text-sm transition-all duration-200',
+                'group relative border-l-[3px] border-transparent',
                 isActive
-                  ? 'text-foreground industrial-raised'
+                  ? 'text-foreground industrial-raised bg-neon-cyan/10'
                   : 'text-muted-foreground hover:industrial-raised hover:text-foreground',
               )}
-              style={
-                isActive
-                  ? {
-                      backgroundColor: getWorkspaceAccentAlpha(
-                        workspace.slug,
-                        0.12,
-                      ),
-                      borderLeft: `2px solid ${accent}`,
-                    }
-                  : { borderLeft: '2px solid transparent' }
-              }
             >
-              {/* 3px accent bar — always visible, dimmed for inactive
-                  rows so the row still reads as workspace-coloured
-                  without screaming. */}
-              <span
-                className="absolute left-0 top-1 bottom-1 w-[3px] pointer-events-none transition-opacity"
-                style={{
-                  backgroundColor: accent,
-                  opacity: isActive ? 1 : 0.45,
-                }}
-              />
+              {/* Active indicator — glowing left border stripe */}
+              {isActive && (
+                <div className="absolute left-0 top-1 bottom-1 w-[3px] bg-neon-cyan glow-cyan" />
+              )}
 
               {/* Icon container */}
               <div
-                className="p-1.5 border transition-all"
-                style={{
-                  borderColor: isActive
-                    ? accent
-                    : 'rgba(144, 144, 168, 0.2)',
-                  color: isActive ? accent : undefined,
-                }}
+                className={cn(
+                  'p-1.5 border transition-all',
+                  isActive
+                    ? 'border-neon-cyan industrial-inset text-neon-cyan'
+                    : 'border-muted-foreground/20 group-hover:border-neon-cyan/30',
+                )}
               >
                 {icon}
               </div>
 
               <span
-                className="font-sans font-medium"
-                style={{ color: isActive ? accent : undefined }}
+                className={cn(
+                  'font-sans font-medium',
+                  isActive && 'text-neon-cyan',
+                )}
               >
                 {workspace.label}
               </span>
 
               {isActive && (
-                <span
-                  className="ml-auto w-2 h-2 pulse-dot"
-                  style={{ backgroundColor: accent }}
-                />
+                <span className="ml-auto w-2 h-2 bg-neon-cyan pulse-dot" />
               )}
             </button>
           )

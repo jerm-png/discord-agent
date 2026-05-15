@@ -2,10 +2,6 @@ import { useState } from 'react'
 import { cn } from '../lib/utils'
 import { Plus, MessageSquare, ChevronLeft, ChevronRight, X } from 'lucide-react'
 import type { Thread } from '../api/client'
-import {
-  getWorkspaceAccent,
-  getWorkspaceAccentAlpha,
-} from '../lib/workspace-theme'
 
 interface ThreadListProps {
   threads: Thread[]
@@ -14,7 +10,6 @@ interface ThreadListProps {
   onCreateThread: (title: string) => void
   onDeleteThread: (threadId: string) => void
   workspaceLabel: string
-  workspaceSlug: string
   isLoading: boolean
 }
 
@@ -67,19 +62,11 @@ export function ThreadList({
   onCreateThread,
   onDeleteThread,
   workspaceLabel,
-  workspaceSlug,
   isLoading,
 }: ThreadListProps) {
   const [creating, setCreating] = useState(false)
   const [newTitle, setNewTitle] = useState('')
   const [collapsed, setCollapsed] = useState(false)
-  // Workspace accent — tints the active thread row's left border,
-  // glow stripe, title text, and date pill so the highlight matches
-  // the rest of the workspace's chrome.
-  const accent = getWorkspaceAccent(workspaceSlug)
-  const accentTintBg = getWorkspaceAccentAlpha(workspaceSlug, 0.06)
-  const accentBorderTint = getWorkspaceAccentAlpha(workspaceSlug, 0.3)
-  const accentPillBg = getWorkspaceAccentAlpha(workspaceSlug, 0.12)
 
   const grouped: Record<DateGroup, Thread[]> = {
     today: [],
@@ -149,24 +136,13 @@ export function ThreadList({
                   'w-full text-left px-3 py-3 transition-all duration-200 relative border-l-[3px] cursor-pointer',
                   'group',
                   isActive
-                    ? 'industrial-raised'
+                    ? 'industrial-raised border-l-neon-cyan bg-neon-cyan/5'
                     : 'border-transparent hover:industrial-raised',
                 )}
-                style={
-                  isActive
-                    ? {
-                        borderLeftColor: accent,
-                        backgroundColor: accentTintBg,
-                      }
-                    : undefined
-                }
               >
                 {/* Active glow stripe */}
                 {isActive && (
-                  <div
-                    className="absolute left-0 top-2 bottom-2 w-[3px]"
-                    style={{ backgroundColor: accent }}
-                  />
+                  <div className="absolute left-0 top-2 bottom-2 w-[3px] bg-neon-cyan glow-cyan" />
                 )}
 
                 {/* Delete button — visible on hover */}
@@ -185,26 +161,20 @@ export function ThreadList({
                   <h3
                     className={cn(
                       'font-sans text-sm truncate font-medium',
-                      !isActive && 'text-muted-foreground group-hover:text-foreground',
+                      isActive
+                        ? 'text-neon-cyan glow-cyan-text'
+                        : 'text-muted-foreground group-hover:text-foreground',
                     )}
-                    style={isActive ? { color: accent } : undefined}
                   >
                     {thread.title}
                   </h3>
                   <span
                     className={cn(
                       'font-mono text-[10px] shrink-0 tabular-nums px-1.5 py-0.5',
-                      !isActive && 'text-muted-foreground/60',
-                    )}
-                    style={
                       isActive
-                        ? {
-                            color: accent,
-                            backgroundColor: accentPillBg,
-                            border: `1px solid ${accentBorderTint}`,
-                          }
-                        : undefined
-                    }
+                        ? 'text-neon-cyan bg-neon-cyan/10 border border-neon-cyan/30'
+                        : 'text-muted-foreground/60',
+                    )}
                   >
                     {relativeTime(thread.last_message_at || thread.created_at)}
                   </span>
