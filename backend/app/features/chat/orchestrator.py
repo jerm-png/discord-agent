@@ -636,13 +636,34 @@ _LAB_RANGE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Nutrigenomic / genetic panels carry numeric-looking content (genotype
+# tables, allele frequencies) that trips the value/range heuristics but
+# is NOT a clinical lab panel — it should flow through normal chat, not
+# the lab-extraction pipeline.
+_RSID_RE = re.compile(r"\brs\d+\b", re.IGNORECASE)
+_GENETIC_KEYWORD_RE = re.compile(
+    r"\b(?:nutrigenomics?|snp|polymorphisms?|"
+    r"heterozygous|homozygous)\b",
+    re.IGNORECASE,
+)
+
 
 def _looks_like_lab_text(text: str) -> bool:
     """True when the blob carries multiple lab-like readings. Requires
     at least two unit/flag value hits, or one value hit alongside a
     reference-range / H-L marker — enough signal to be a panel rather
-    than a passing mention."""
+    than a passing mention.
+
+    Genetic / nutrigenomic reports are explicitly excluded (3+ rsIDs,
+    or any SNP/polymorphism/zygosity/nutrigenomic vocabulary) so gene
+    panels don't get routed into lab extraction."""
     if not text:
+        return False
+    # Genetic-panel exclusion takes precedence over the value heuristics.
+    if (
+        len(_RSID_RE.findall(text)) >= 3
+        or _GENETIC_KEYWORD_RE.search(text)
+    ):
         return False
     unit_hits = len(_LAB_UNIT_RE.findall(text))
     flag_hits = len(_LAB_FLAG_RE.findall(text))
@@ -725,21 +746,14 @@ async def _run_haiku_lab_extraction(
     else:
         prompt = base_prompt + f"DOCUMENT:\n{lab_text[:10000]}"
 
-    # Diagnostic: surface the raw Haiku response + the input it saw so
-    # malformed-JSON cases are debuggable. Parsing is done inline here
-    # (mirroring call_background_model_json's fence-strip) rather than
-    # via the json helper so the raw text is visible pre-parse.
-    print(
-        f"[Lab extraction] Input text length: {len(lab_text)}, "
-        f"first 200 chars: {lab_text[:200]}"
-    )
+    # Parse inline (mirroring call_background_model_json's fence-strip)
+    # rather than via the json helper so a future caller can inspect
+    # the raw text if needed. Never raises — returns None on any
+    # failure so the caller falls back gracefully.
     try:
         raw_text = await call_background_model(prompt)
-    except Exception as e:
-        print(f"[Lab extraction] Haiku call failed: {e}")
+    except Exception:
         return None
-
-    print(f"[Lab extraction] Raw Haiku response: {raw_text[:500]}")
 
     try:
         cleaned = raw_text.strip()
@@ -749,11 +763,7 @@ async def _run_haiku_lab_extraction(
                 cleaned = cleaned[4:]
         cleaned = cleaned.strip()
         parsed = json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        print(f"[Lab extraction] JSON parse failed: {e}")
-        return None
-    except Exception as e:
-        print(f"[Lab extraction] Unexpected parse error: {e}")
+    except Exception:
         return None
 
     if not isinstance(parsed, dict):
@@ -3522,16 +3532,6 @@ async def process_user_message(
     _lab_pending = state.pending_filings.get(_lab_state_key)
     _is_health_workspace = effective_channel_name == "health"
 
-    print(
-        f"[Lab debug] _is_health_workspace={_is_health_workspace} "
-        f"(effective_channel_name={effective_channel_name!r}) | "
-        f"lab_state_key={_lab_state_key} | "
-        f"has_pending={_lab_pending is not None} | "
-        f"attached_files keys={list(attached_files.keys())} | "
-        f"this-thread entries="
-        f"{len(attached_files.get((user_id, context_id), []))}"
-    )
-
     if (
         _is_health_workspace
         and _lab_pending
@@ -3630,14 +3630,6 @@ async def process_user_message(
             if f.get("content_type") == "document"
             and f.get("text_content")
         ]
-        print(
-            f"[Lab debug] entering fresh-detect | "
-            f"raw attached entries="
-            f"{len(attached_files.get((user_id, context_id), []))} | "
-            f"content_types="
-            f"{[f.get('content_type') for f in attached_files.get((user_id, context_id), [])]} | "
-            f"qualifying _lab_files={len(_lab_files)}"
-        )
         _lab_parts = []
         if user_message and user_message.strip():
             _lab_parts.append(user_message.strip())
@@ -3647,19 +3639,10 @@ async def process_user_message(
             )
         _lab_text = "\n\n".join(_lab_parts)
 
-        print(
-            f"[Lab debug] _lab_parts count={len(_lab_parts)} | "
-            f"_lab_text length={len(_lab_text)}"
-        )
-
         # Trigger when the combined blob reads like a panel. An
         # attached document still has to look like labs — a random
         # PDF in Med-Bay shouldn't hijack the conversation.
         _looks_like_lab = bool(_lab_text) and _looks_like_lab_text(_lab_text)
-        print(
-            f"[Lab debug] _looks_like_lab_text result={_looks_like_lab} "
-            f"(_lab_text non-empty={bool(_lab_text)})"
-        )
         if _looks_like_lab:
             log_conversation_turn(
                 str(user_id), context_id, effective_channel_name,
