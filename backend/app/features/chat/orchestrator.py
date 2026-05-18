@@ -604,6 +604,178 @@ def _save_filing_items(
     return count
 
 
+# ── Med-Bay lab-result filing (health workspace) ─────────────────
+# Same drop-and-file pattern as Institute Prime's transcript filing,
+# but for lab panels: a PDF upload or pasted lab text in the health
+# workspace is parsed by Haiku, presented for confirmation, and on
+# "save" each result lands in health_lab_results via
+# medbay_add_lab_result. Pending state shares state.pending_filings
+# but carries kind="lab" so the confirm/abandon/edit dispatcher can
+# tell it apart from an Institute transcript draft.
+
+# A "lab-like value" is a number immediately followed by a recognised
+# clinical unit, or a number tagged with an H/L flag, or a
+# "Marker: 12.3" line. Two or more of these in one blob tips the
+# message into lab-extraction mode. Kept conservative so a casual
+# "my vitamin D is 30 ng/mL" single mention doesn't trigger filing.
+_LAB_UNIT_RE = re.compile(
+    r"\d[\d.,]*\s?"
+    r"(?:ng/mL|ng/dL|mg/dL|g/dL|µg/dL|ug/dL|pg/mL|pg/dL|"
+    r"mIU/L|µIU/mL|uIU/mL|IU/L|U/L|mU/L|"
+    r"mmol/L|nmol/L|pmol/L|µmol/L|umol/L|mEq/L|"
+    r"mg/L|ng/L|fL|pg|%)",
+    re.IGNORECASE,
+)
+_LAB_FLAG_RE = re.compile(
+    r"\b\d[\d.,]*\s*(?:\(?\s*[HL]\s*\)?|HIGH|LOW)\b"
+)
+_LAB_RANGE_RE = re.compile(
+    r"\b(?:ref(?:erence)?(?:\s*(?:range|interval))?|normal)\b"
+    r"|[<>]=?\s*\d|\d[\d.,]*\s*[-–]\s*\d[\d.,]*",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_lab_text(text: str) -> bool:
+    """True when the blob carries multiple lab-like readings. Requires
+    at least two unit/flag value hits, or one value hit alongside a
+    reference-range / H-L marker — enough signal to be a panel rather
+    than a passing mention."""
+    if not text:
+        return False
+    unit_hits = len(_LAB_UNIT_RE.findall(text))
+    flag_hits = len(_LAB_FLAG_RE.findall(text))
+    value_hits = unit_hits + flag_hits
+    if value_hits >= 2:
+        return True
+    if value_hits >= 1 and _LAB_RANGE_RE.search(text):
+        return True
+    return False
+
+
+async def _run_haiku_lab_extraction(
+    lab_text: str, edit_note: str = "",
+) -> dict | None:
+    """Calls Haiku to pull structured lab results out of a panel
+    document or pasted text. Returns the parsed JSON dict
+    ({"test_date": ..., "results": [...]}) or None on parse failure."""
+    base_prompt = (
+        "Extract every lab result from this document. For each "
+        "result, return: marker_name, value (numeric), unit, "
+        "reference_range_low (numeric or null), reference_range_high "
+        "(numeric or null), status (low/normal/high based on the "
+        "reference range), and test_date. Return as JSON: "
+        '{"test_date": "YYYY-MM-DD", "results": [{"marker_name": "", '
+        '"value": 0, "unit": "", "reference_low": null, '
+        '"reference_high": null, "status": ""}]}\n\n'
+    )
+    if edit_note:
+        prompt = (
+            base_prompt
+            + "The user reviewed a previous extraction and asked for "
+            "changes. Apply the changes below and re-extract the lab "
+            "results from the document.\n\n"
+            f"USER EDIT REQUEST:\n{edit_note}\n\n"
+            f"DOCUMENT:\n{lab_text[:10000]}"
+        )
+    else:
+        prompt = base_prompt + f"DOCUMENT:\n{lab_text[:10000]}"
+    parsed = await call_background_model_json(prompt)
+    if not isinstance(parsed, dict):
+        return None
+    return parsed
+
+
+def _format_lab_summary(date_str: str, results: list) -> str:
+    """Renders the extracted panel as a readable table-ish preview,
+    closing with the save prompt."""
+    header_date = date_str or "unknown date"
+    n = len([r for r in results if isinstance(r, dict)])
+    lines = [
+        f"🧪 **I found {n} lab result"
+        f"{'' if n == 1 else 's'} from {header_date}.** "
+        f"Here's what I extracted:",
+        "",
+    ]
+    if not results:
+        lines.append("_No lab results were extracted._")
+        lines.append("")
+    else:
+        for r in results:
+            if not isinstance(r, dict):
+                continue
+            marker = str(r.get("marker_name") or "?").strip()
+            value = r.get("value")
+            unit = str(r.get("unit") or "").strip()
+            lo = r.get("reference_low")
+            hi = r.get("reference_high")
+            status = str(r.get("status") or "").strip().lower()
+            ref = ""
+            if lo is not None or hi is not None:
+                ref = (
+                    f" (ref {lo if lo is not None else '–'}"
+                    f"–{hi if hi is not None else '–'})"
+                )
+            badge = {
+                "low": " ⬇ LOW",
+                "high": " ⬆ HIGH",
+                "normal": "",
+            }.get(status, f" {status.upper()}" if status else "")
+            lines.append(
+                f"• **{marker}**: {value}"
+                f"{(' ' + unit) if unit else ''}{ref}{badge}"
+            )
+        lines.append("")
+    lines.append("Save these to your lab timeline?")
+    return "\n".join(lines)
+
+
+def _save_lab_results(user_id, results: list) -> int:
+    """Persists each extracted result via medbay_add_lab_result.
+    Skips rows with no marker name or a non-numeric value. Returns
+    the count successfully saved."""
+    count = 0
+    for r in results:
+        if not isinstance(r, dict):
+            continue
+        marker = str(r.get("marker_name") or "").strip()
+        if not marker:
+            continue
+        raw_value = r.get("value")
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            continue
+
+        def _num(v):
+            if v is None:
+                return None
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+
+        try:
+            medbay_add_lab_result(
+                user_id=str(user_id),
+                marker_name=marker,
+                value=value,
+                unit=(str(r.get("unit")).strip()
+                      if r.get("unit") else None),
+                reference_low=_num(r.get("reference_low")),
+                reference_high=_num(r.get("reference_high")),
+                test_date=(str(r.get("test_date")).strip()
+                           if r.get("test_date") else None),
+            )
+            count += 1
+        except Exception as e:
+            logger.warning(
+                f"[lab filing] user={user_id} result failed: {e}"
+            )
+            continue
+    return count
+
+
 async def _run_entity_coaching_logger(
     entity_id: int,
     entity_name: str,
@@ -3263,6 +3435,186 @@ async def process_user_message(
         response delivery via ws_manager.
     """
     effective_channel_name = channel_name or "general"
+
+    # ── Drop-and-File mode (Med-Bay lab panels) ─────────────────────
+    # Mirrors Institute Prime's transcript filing but for lab results.
+    # In the health workspace, a PDF/text document attachment OR pasted
+    # text that reads like a lab panel is parsed by Haiku, previewed
+    # for confirmation, and on "save" each row is written to
+    # health_lab_results. Pending state shares state.pending_filings
+    # with kind="lab" so the confirm/abandon/edit handler can route it.
+    _lab_state_key = (str(user_id), str(context_id))
+    _lab_pending = state.pending_filings.get(_lab_state_key)
+    _is_health_workspace = effective_channel_name == "health"
+
+    if (
+        _is_health_workspace
+        and _lab_pending
+        and _lab_pending.get("kind") == "lab"
+    ):
+        intent = _classify_filing_intent(user_message)
+        log_conversation_turn(
+            str(user_id), context_id, effective_channel_name,
+            "user", user_message, project_tag=project_tag,
+        )
+        append_history_turn(user_id, context_id, "user", user_message)
+
+        if intent == "abandon":
+            state.pending_filings.pop(_lab_state_key, None)
+            _msg = "Got it — nothing saved. The lab draft is discarded."
+            await ws_manager.send(session_id, {
+                "type": "response", "text": _msg,
+            })
+            append_history_turn(user_id, context_id, "assistant", _msg)
+            await persist_history(user_id, context_id)
+            return
+
+        if intent == "confirm":
+            _loop = asyncio.get_running_loop()
+            _saved = await _loop.run_in_executor(
+                None,
+                _save_lab_results,
+                user_id,
+                _lab_pending.get("results") or [],
+            )
+            state.pending_filings.pop(_lab_state_key, None)
+            _ok = (
+                f"✅ Saved {_saved} lab result"
+                f"{'' if _saved == 1 else 's'} to your lab timeline."
+            )
+            await ws_manager.send(session_id, {
+                "type": "response", "text": _ok,
+            })
+            append_history_turn(user_id, context_id, "assistant", _ok)
+            await persist_history(user_id, context_id)
+            return
+
+        # intent == "edit" — re-extract with the user's note.
+        await ws_manager.send(session_id, {
+            "type": "status", "text": "🧪 Updating the lab draft...",
+        })
+        _re = await _run_haiku_lab_extraction(
+            _lab_pending.get("source_text") or "",
+            edit_note=user_message,
+        )
+        if _re is None:
+            _fail = (
+                "I couldn't apply that edit cleanly — the lab draft "
+                "is unchanged. Try rephrasing, or say 'save' to file "
+                "the current draft."
+            )
+            await ws_manager.send(session_id, {
+                "type": "response", "text": _fail,
+            })
+            append_history_turn(user_id, context_id, "assistant", _fail)
+            await persist_history(user_id, context_id)
+            return
+
+        _new_results = (
+            _re.get("results")
+            if isinstance(_re.get("results"), list) else []
+        )
+        _new_date = str(
+            _re.get("test_date")
+            or _lab_pending.get("date") or ""
+        )
+        for _r in _new_results:
+            if isinstance(_r, dict) and not _r.get("test_date"):
+                _r["test_date"] = _new_date
+        _new_summary = _format_lab_summary(_new_date, _new_results)
+        state.pending_filings[_lab_state_key] = {
+            "kind": "lab",
+            "results": _new_results,
+            "date": _new_date,
+            "source_text": _lab_pending.get("source_text") or "",
+            "summary": _new_summary,
+        }
+        await ws_manager.send(session_id, {
+            "type": "response", "text": _new_summary,
+        })
+        append_history_turn(
+            user_id, context_id, "assistant", _new_summary,
+        )
+        await persist_history(user_id, context_id)
+        return
+
+    # Fresh lab panel? Detect before the heavy pipeline runs.
+    if _is_health_workspace and not _lab_pending:
+        _lab_files = [
+            f for f in attached_files.get((user_id, context_id), [])
+            if f.get("content_type") == "document"
+            and f.get("text_content")
+        ]
+        _lab_parts = []
+        if user_message and user_message.strip():
+            _lab_parts.append(user_message.strip())
+        for _lf in _lab_files:
+            _lab_parts.append(
+                (_lf.get("text_content") or "")[:10000]
+            )
+        _lab_text = "\n\n".join(_lab_parts)
+
+        # Trigger when the combined blob reads like a panel. An
+        # attached document still has to look like labs — a random
+        # PDF in Med-Bay shouldn't hijack the conversation.
+        if _lab_text and _looks_like_lab_text(_lab_text):
+            log_conversation_turn(
+                str(user_id), context_id, effective_channel_name,
+                "user", user_message, project_tag=project_tag,
+            )
+            append_history_turn(
+                user_id, context_id, "user", user_message,
+            )
+            await ws_manager.send(session_id, {
+                "type": "status",
+                "text": "🧪 Parsing lab results...",
+            })
+            _parsed = await _run_haiku_lab_extraction(_lab_text)
+            _results = (
+                _parsed.get("results")
+                if isinstance(_parsed, dict)
+                and isinstance(_parsed.get("results"), list)
+                else []
+            )
+            if not _results:
+                _none_msg = (
+                    "I spotted lab-like values but couldn't parse "
+                    "them cleanly. Try pasting the values as plain "
+                    "text (one marker per line) and I'll take "
+                    "another pass."
+                )
+                await ws_manager.send(session_id, {
+                    "type": "response", "text": _none_msg,
+                })
+                append_history_turn(
+                    user_id, context_id, "assistant", _none_msg,
+                )
+                await persist_history(user_id, context_id)
+                return
+
+            _date = str(
+                (_parsed or {}).get("test_date")
+                or datetime.utcnow().strftime("%Y-%m-%d")
+            )
+            for _r in _results:
+                if isinstance(_r, dict) and not _r.get("test_date"):
+                    _r["test_date"] = _date
+            _summary = _format_lab_summary(_date, _results)
+            state.pending_filings[_lab_state_key] = {
+                "kind": "lab",
+                "results": _results,
+                "date": _date,
+                "source_text": _lab_text,
+                "summary": _summary,
+            }
+            await ws_manager.send(session_id, {
+                "type": "response", "text": _summary,
+            })
+            append_history_turn(
+                user_id, context_id, "assistant", _summary,
+            )
+            await persist_history(user_id, context_id)
+            return
 
     # ── Drop-and-File mode (Institute Prime, entity-linked threads) ──
     # Two intercept paths fire before the normal pipeline:
