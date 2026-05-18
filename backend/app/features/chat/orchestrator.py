@@ -102,6 +102,7 @@ from app.db.memory_manager import (
     medbay_add_lab_result,
     medbay_add_followup,
     medbay_list_protocol,
+    medbay_latest_labs,
 )
 from app.features.tools.tool_definitions import (
     TOOL_DEFINITIONS,
@@ -3976,6 +3977,92 @@ async def process_user_message(
     memory_context = format_memory_for_prompt(memories)
     memory_context_chars = len(memory_context) if memory_context else 0
 
+    # ── Med-Bay data injection (health workspace only) ────────────
+    # Always surface the user's stored labs + active protocol so Drift
+    # answers from the record instead of asking the user to re-paste.
+    # Direct (blocking) DB calls, same pattern as get_relevant_memories
+    # above; wrapped so a DB hiccup never breaks the turn.
+    _medbay_context = ""
+    if effective_channel_name == "health":
+        try:
+            _ml = medbay_latest_labs(str(user_id), workspace="health")
+            _mp = medbay_list_protocol(
+                str(user_id), status="active", workspace="health"
+            )
+
+            if _ml:
+                _lab_lines = []
+                for _r in _ml:
+                    _name = str(_r.get("marker_name") or "?").strip()
+                    _val = _r.get("value")
+                    _unit = str(_r.get("unit") or "").strip()
+                    _status = str(_r.get("status") or "").strip()
+                    _lo = _r.get("reference_low")
+                    _hi = _r.get("reference_high")
+                    _td = str(_r.get("test_date") or "").strip()
+                    _ref = ""
+                    if _lo is not None or _hi is not None:
+                        _ref = (
+                            f" (ref "
+                            f"{_lo if _lo is not None else '–'}"
+                            f"–{_hi if _hi is not None else '–'})"
+                        )
+                    _flag = f" [{_status}]" if _status else ""
+                    _when = f" — tested {_td}" if _td else ""
+                    _lab_lines.append(
+                        f"  - {_name}: {_val}"
+                        f"{(' ' + _unit) if _unit else ''}"
+                        f"{_ref}{_flag}{_when}"
+                    )
+                _labs_block = "Latest labs:\n" + "\n".join(_lab_lines)
+            else:
+                _labs_block = "Latest labs: (none on file)"
+
+            if _mp:
+                _proto_lines = []
+                for _p in _mp:
+                    _pn = str(_p.get("supplement_name") or "?").strip()
+                    _dose = str(_p.get("dose") or "").strip()
+                    _freq = str(_p.get("frequency") or "").strip()
+                    _reason = str(_p.get("reason") or "").strip()
+                    _target = str(_p.get("target_marker") or "").strip()
+                    _df = ", ".join(
+                        x for x in (_dose, _freq) if x
+                    )
+                    _extra_bits = []
+                    if _reason:
+                        _extra_bits.append(_reason)
+                    if _target:
+                        _extra_bits.append(f"target: {_target}")
+                    _extra = (
+                        f" ({'; '.join(_extra_bits)})"
+                        if _extra_bits else ""
+                    )
+                    _proto_lines.append(
+                        f"  - {_pn}"
+                        f"{(' — ' + _df) if _df else ''}{_extra}"
+                    )
+                _proto_block = (
+                    "Active protocol:\n" + "\n".join(_proto_lines)
+                )
+            else:
+                _proto_block = "Active protocol: (none on file)"
+
+            _medbay_context = (
+                "[MEDBAY DATA — Your lab results and protocol are "
+                "stored in the sidebar. Here is the current data:]\n"
+                f"{_labs_block}\n"
+                f"{_proto_block}\n"
+                "Use this data when answering health questions. Do "
+                "not tell the user their data isn't available — it "
+                "is.\n\n"
+            )
+        except Exception as _mb_err:
+            logger.warning(
+                f"[medbay context] injection skipped: {_mb_err}"
+            )
+            _medbay_context = ""
+
     # ── Entity profile injection ──────────────────────────────
     # Institute Prime is the canonical home for the roster — entity
     # profiles are matched against the message by name and injected
@@ -4154,6 +4241,7 @@ async def process_user_message(
         f"{channel_ctx}\n"
         f"{_thread_entity_context}"
         f"{_entity_context}"
+        f"{_medbay_context}"
         f"{_search_context}"
         f"{full_message}"
     )
