@@ -3478,6 +3478,16 @@ async def process_user_message(
     _lab_pending = state.pending_filings.get(_lab_state_key)
     _is_health_workspace = effective_channel_name == "health"
 
+    print(
+        f"[Lab debug] _is_health_workspace={_is_health_workspace} "
+        f"(effective_channel_name={effective_channel_name!r}) | "
+        f"lab_state_key={_lab_state_key} | "
+        f"has_pending={_lab_pending is not None} | "
+        f"attached_files keys={list(attached_files.keys())} | "
+        f"this-thread entries="
+        f"{len(attached_files.get((user_id, context_id), []))}"
+    )
+
     if (
         _is_health_workspace
         and _lab_pending
@@ -3576,6 +3586,14 @@ async def process_user_message(
             if f.get("content_type") == "document"
             and f.get("text_content")
         ]
+        print(
+            f"[Lab debug] entering fresh-detect | "
+            f"raw attached entries="
+            f"{len(attached_files.get((user_id, context_id), []))} | "
+            f"content_types="
+            f"{[f.get('content_type') for f in attached_files.get((user_id, context_id), [])]} | "
+            f"qualifying _lab_files={len(_lab_files)}"
+        )
         _lab_parts = []
         if user_message and user_message.strip():
             _lab_parts.append(user_message.strip())
@@ -3585,10 +3603,20 @@ async def process_user_message(
             )
         _lab_text = "\n\n".join(_lab_parts)
 
+        print(
+            f"[Lab debug] _lab_parts count={len(_lab_parts)} | "
+            f"_lab_text length={len(_lab_text)}"
+        )
+
         # Trigger when the combined blob reads like a panel. An
         # attached document still has to look like labs — a random
         # PDF in Med-Bay shouldn't hijack the conversation.
-        if _lab_text and _looks_like_lab_text(_lab_text):
+        _looks_like_lab = bool(_lab_text) and _looks_like_lab_text(_lab_text)
+        print(
+            f"[Lab debug] _looks_like_lab_text result={_looks_like_lab} "
+            f"(_lab_text non-empty={bool(_lab_text)})"
+        )
+        if _looks_like_lab:
             log_conversation_turn(
                 str(user_id), context_id, effective_channel_name,
                 "user", user_message, project_tag=project_tag,
