@@ -7,7 +7,12 @@ import numpy as np
 import chromadb
 from datetime import datetime, timedelta
 from sentence_transformers import SentenceTransformer
-from app.core.config import DB_PATH, CHROMA_PATH, ISOLATED_WORKSPACES
+from app.core.config import (
+    DB_PATH,
+    CHROMA_PATH,
+    ISOLATED_WORKSPACES,
+    WORKSPACES,
+)
 
 # ============================================================
 # CONFIGURATION
@@ -16,6 +21,29 @@ from app.core.config import DB_PATH, CHROMA_PATH, ISOLATED_WORKSPACES
 # Covers both the new workspace slug ("health") and the legacy
 # project_tag value ("health-tracking") still stored in memory rows.
 HEALTH_ISOLATION_SET = ISOLATED_WORKSPACES | {"health-tracking"}
+
+
+def resolve_project_tag(channel_name: str) -> str:
+    """
+    Maps a workspace slug to the project_tag value its memories are
+    actually stored under.
+
+    Memories are saved with project_tag = WORKSPACES[slug]["project_tag"]
+    (e.g. workspace "health" → "health-tracking", "admin" → "admin-prime")
+    because chat.py passes ws_config.get("project_tag") down the save
+    path. ChromaDB isolation queries must key on that same value, not
+    the bare slug, or the where clause matches nothing.
+
+    Falls back to channel_name itself when the workspace has no
+    project_tag in config OR when channel_name is already a raw
+    project_tag (e.g. legacy "health-tracking", "admin-prime" — not
+    workspace slugs, so WORKSPACES.get returns nothing and the value
+    passes through unchanged). Keeps save and retrieval on the same key.
+    """
+    cfg = WORKSPACES.get(channel_name)
+    if cfg and cfg.get("project_tag"):
+        return cfg["project_tag"]
+    return channel_name
 
 MEMORY_TOKEN_BUDGET = {
     "strategic": 150,
@@ -1325,13 +1353,18 @@ def get_relevant_memories(query, max_results=TOP_N_MEMORIES,
 
             if is_isolated:
                 # Isolation enforced at query level — only documents
-                # tagged for this channel are fetched. Post-filter
-                # enforces channel_name match with no global fallback
-                # for restricted channels.
+                # tagged for this channel are fetched. The where clause
+                # keys on the workspace's CONFIGURED project_tag (e.g.
+                # slug "health" → stored project_tag "health-tracking"),
+                # resolved the same way the save path derives it, so
+                # the query actually matches stored rows. Post-filter
+                # below still enforces channel_name match with no
+                # global fallback for restricted channels.
+                _query_tag = resolve_project_tag(channel_name)
                 search_results = collection.query(
                     query_embeddings=[query_embedding],
                     n_results=min(max_results, count),
-                    where={"project_tag": {"$eq": channel_name}},
+                    where={"project_tag": {"$eq": _query_tag}},
                     include=include_fields,
                 )
                 docs = search_results["documents"][0]
