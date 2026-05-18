@@ -19,7 +19,6 @@ colorama==0.4.6
 ctranslate2==4.7.1
 davey==0.1.5
 ddgs==9.14.1
-discord.py==2.7.1
 distro==1.9.0
 docopt==0.6.2
 docstring_parser==0.18.0

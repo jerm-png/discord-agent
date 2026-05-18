@@ -680,7 +680,38 @@ async def _run_haiku_lab_extraction(
         )
     else:
         prompt = base_prompt + f"DOCUMENT:\n{lab_text[:10000]}"
-    parsed = await call_background_model_json(prompt)
+
+    # Diagnostic: surface the raw Haiku response + the input it saw so
+    # malformed-JSON cases are debuggable. Parsing is done inline here
+    # (mirroring call_background_model_json's fence-strip) rather than
+    # via the json helper so the raw text is visible pre-parse.
+    print(
+        f"[Lab extraction] Input text length: {len(lab_text)}, "
+        f"first 200 chars: {lab_text[:200]}"
+    )
+    try:
+        raw_text = await call_background_model(prompt)
+    except Exception as e:
+        print(f"[Lab extraction] Haiku call failed: {e}")
+        return None
+
+    print(f"[Lab extraction] Raw Haiku response: {raw_text[:500]}")
+
+    try:
+        cleaned = raw_text.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("```")[1]
+            if cleaned.startswith("json"):
+                cleaned = cleaned[4:]
+        cleaned = cleaned.strip()
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        print(f"[Lab extraction] JSON parse failed: {e}")
+        return None
+    except Exception as e:
+        print(f"[Lab extraction] Unexpected parse error: {e}")
+        return None
+
     if not isinstance(parsed, dict):
         return None
     return parsed

@@ -36,7 +36,10 @@
       "Bash(git -C \"/c/Users/Jerm/.claude\" status)",
       "Bash(git push *)",
       "mcp__cocoindex-code__search",
-      "Bash(python -m py_compile backend/app/main.py)"
+      "Bash(python -m py_compile backend/app/main.py)",
+      "Bash(grep -rnE \"^\\(from|import\\) agents\\(\\\\.|\\\\s|$\\)|from \\\\.\\\\.\\\\.\\\\.agents|import agents\\\\b\" backend/)",
+      "Bash(python -m py_compile backend/app/main.py backend/app/features/chat/orchestrator.py backend/app/api/v1/endpoints/chat.py)",
+      "Bash(python -m py_compile backend/app/features/chat/orchestrator.py)"
     ],
     "additionalDirectories": [
       "C:\\Users\\Jerm\\.claude\\agents"
