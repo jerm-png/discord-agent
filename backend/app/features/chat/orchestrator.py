@@ -1649,7 +1649,8 @@ Return empty arrays if nothing meaningful to store."""
                     content=content,
                     category="conversation",
                     source="auto_extraction",
-                    project_tag=project_tag
+                    project_tag=project_tag,
+                    channel_name=channel_name,
                 )
                 strategic_count += 1
 
@@ -1710,7 +1711,8 @@ Return empty arrays if nothing meaningful to store."""
                 save_operational_memory(
                     content=content,
                     project_name="general",
-                    project_tag=project_tag
+                    project_tag=project_tag,
+                    channel_name=channel_name,
                 )
                 operational_count += 1
 
@@ -1801,6 +1803,11 @@ async def _consolidate_layer(
 
         _new_id = None
         try:
+            # channel_name is None on the scheduled all-channel pass;
+            # coerce to "global" so we never bind NULL into the
+            # NOT NULL channel_name column. Channel-scoped consolidation
+            # (manual / per-workspace) keeps its real channel.
+            _consolidated_channel = channel_name or "global"
             if layer == "strategic":
                 _new_id = await loop.run_in_executor(
                     None,
@@ -1810,6 +1817,7 @@ async def _consolidate_layer(
                         confidence=avg_conf,
                         source="consolidation",
                         project_tag=consolidated_tag,
+                        channel_name=_consolidated_channel,
                     )
                 )
             elif layer == "operational":
@@ -1819,6 +1827,7 @@ async def _consolidate_layer(
                         content=consolidated_text,
                         project_name="consolidation",
                         project_tag=consolidated_tag,
+                        channel_name=_consolidated_channel,
                     )
                 )
             elif layer == "analytical":
@@ -1829,6 +1838,7 @@ async def _consolidate_layer(
                         confidence=avg_conf,
                         pattern_type="consolidation",
                         project_tag=consolidated_tag,
+                        channel_name=_consolidated_channel,
                     )
                 )
         except Exception as e:
