@@ -3551,6 +3551,10 @@ async def process_user_message(
                 "type": "response", "text": _msg,
             })
             append_history_turn(user_id, context_id, "assistant", _msg)
+            log_conversation_turn(
+                str(user_id), context_id, effective_channel_name,
+                "assistant", _msg, project_tag=project_tag,
+            )
             await persist_history(user_id, context_id)
             return
 
@@ -3571,6 +3575,10 @@ async def process_user_message(
                 "type": "response", "text": _ok,
             })
             append_history_turn(user_id, context_id, "assistant", _ok)
+            log_conversation_turn(
+                str(user_id), context_id, effective_channel_name,
+                "assistant", _ok, project_tag=project_tag,
+            )
             await persist_history(user_id, context_id)
             return
 
@@ -3592,6 +3600,10 @@ async def process_user_message(
                 "type": "response", "text": _fail,
             })
             append_history_turn(user_id, context_id, "assistant", _fail)
+            log_conversation_turn(
+                str(user_id), context_id, effective_channel_name,
+                "assistant", _fail, project_tag=project_tag,
+            )
             await persist_history(user_id, context_id)
             return
 
@@ -3619,6 +3631,10 @@ async def process_user_message(
         })
         append_history_turn(
             user_id, context_id, "assistant", _new_summary,
+        )
+        log_conversation_turn(
+            str(user_id), context_id, effective_channel_name,
+            "assistant", _new_summary, project_tag=project_tag,
         )
         await persist_history(user_id, context_id)
         return
@@ -3675,6 +3691,10 @@ async def process_user_message(
                 append_history_turn(
                     user_id, context_id, "assistant", _none_msg,
                 )
+                log_conversation_turn(
+                    str(user_id), context_id, effective_channel_name,
+                    "assistant", _none_msg, project_tag=project_tag,
+                )
                 await persist_history(user_id, context_id)
                 return
 
@@ -3698,6 +3718,10 @@ async def process_user_message(
             })
             append_history_turn(
                 user_id, context_id, "assistant", _summary,
+            )
+            log_conversation_turn(
+                str(user_id), context_id, effective_channel_name,
+                "assistant", _summary, project_tag=project_tag,
             )
             await persist_history(user_id, context_id)
             return
@@ -3761,6 +3785,10 @@ async def process_user_message(
             append_history_turn(
                 user_id, context_id, "assistant", _abandon_msg,
             )
+            log_conversation_turn(
+                str(user_id), context_id, effective_channel_name,
+                "assistant", _abandon_msg, project_tag=project_tag,
+            )
             await persist_history(user_id, context_id)
             return
 
@@ -3783,6 +3811,10 @@ async def process_user_message(
             })
             append_history_turn(
                 user_id, context_id, "assistant", _ok_msg,
+            )
+            log_conversation_turn(
+                str(user_id), context_id, effective_channel_name,
+                "assistant", _ok_msg, project_tag=project_tag,
             )
             await persist_history(user_id, context_id)
             return
@@ -3807,6 +3839,10 @@ async def process_user_message(
             })
             append_history_turn(
                 user_id, context_id, "assistant", _fail_msg,
+            )
+            log_conversation_turn(
+                str(user_id), context_id, effective_channel_name,
+                "assistant", _fail_msg, project_tag=project_tag,
             )
             await persist_history(user_id, context_id)
             return
@@ -3835,6 +3871,10 @@ async def process_user_message(
         })
         append_history_turn(
             user_id, context_id, "assistant", _new_summary,
+        )
+        log_conversation_turn(
+            str(user_id), context_id, effective_channel_name,
+            "assistant", _new_summary, project_tag=project_tag,
         )
         await persist_history(user_id, context_id)
         return
@@ -3888,6 +3928,10 @@ async def process_user_message(
                 append_history_turn(
                     user_id, context_id, "assistant", _parse_fail,
                 )
+                log_conversation_turn(
+                    str(user_id), context_id, effective_channel_name,
+                    "assistant", _parse_fail, project_tag=project_tag,
+                )
                 await persist_history(user_id, context_id)
                 return
 
@@ -3915,6 +3959,10 @@ async def process_user_message(
             })
             append_history_turn(
                 user_id, context_id, "assistant", _summary,
+            )
+            log_conversation_turn(
+                str(user_id), context_id, effective_channel_name,
+                "assistant", _summary, project_tag=project_tag,
             )
             await persist_history(user_id, context_id)
             return
