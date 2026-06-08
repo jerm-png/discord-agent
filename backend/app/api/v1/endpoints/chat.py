@@ -149,9 +149,13 @@ async def get_thread_messages(
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
 
-    from app.core.state import conversation_history
-    key = (user["user_id"], thread_id)
-    history = conversation_history.get(key, [])
+    from app.db.memory_manager import get_thread_log
+    history = get_thread_log(thread_id, user["user_id"])
+    # Fallback to the live in-memory dict only if the archive has nothing
+    # for this thread (e.g. a brand-new thread mid-first-turn).
+    if not history:
+        from app.core.state import conversation_history
+        history = conversation_history.get((user["user_id"], thread_id), [])
 
     messages = []
     for i, msg in enumerate(history):

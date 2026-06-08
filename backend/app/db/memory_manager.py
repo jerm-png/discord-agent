@@ -864,6 +864,28 @@ def log_conversation_turn(user_id: str, context_id: int, channel_name: str,
     conn.close()
 
 
+def get_thread_log(context_id: str, user_id: str) -> list:
+    """Complete, ordered, uncapped conversation for one thread, read
+    straight from the permanent conversation_log archive. Powers the
+    /messages endpoint so UI scrollback is independent of the in-memory
+    compaction window."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute("""
+            SELECT role, content, timestamp
+            FROM conversation_log
+            WHERE context_id = ? AND user_id = ?
+              AND role IN ('user', 'assistant')
+            ORDER BY timestamp ASC, rowid ASC
+        """, (str(context_id), str(user_id)))
+        rows = c.fetchall()
+    except Exception:
+        rows = []
+    conn.close()
+    return [{"role": r[0], "content": r[1], "timestamp": r[2]} for r in rows]
+
+
 def search_conversations(query: str, channel_name: str, user_id: str,
                          limit: int = 5) -> list:
     """
