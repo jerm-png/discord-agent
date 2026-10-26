@@ -1670,7 +1670,9 @@ async def _summarize_history_tail(
         )
 
 
-async def run_reflection_loop(experiences):
+async def run_reflection_loop(experiences,
+                              project_tag=None,
+                              channel_name="global"):
     """
     Runs when a task completion is detected.
     Extracts structured six part analytical insights
@@ -1715,7 +1717,9 @@ async def run_reflection_loop(experiences):
                     trigger_conditions=insight.get(
                         "trigger_conditions", ""
                     ),
-                    pattern_type="task_reflection"
+                    pattern_type="task_reflection",
+                    project_tag=project_tag,
+                    channel_name=channel_name,
                 )
                 stored_analytical += 1
 
@@ -1725,7 +1729,9 @@ async def run_reflection_loop(experiences):
                     content=insight,
                     category="reflection",
                     confidence=0.7,
-                    source="reflection_loop"
+                    source="reflection_loop",
+                    project_tag=project_tag,
+                    channel_name=channel_name,
                 )
                 stored_strategic += 1
 
@@ -4730,9 +4736,14 @@ async def process_user_message(
             if task_completed:
                 experiences = get_recent_experiences(
                     limit=5,
-                    task_completed_only=True
+                    task_completed_only=True,
+                    channel_name=effective_channel_name,
                 )
-                await run_reflection_loop(experiences)
+                await run_reflection_loop(
+                    experiences,
+                    project_tag=project_tag,
+                    channel_name=effective_channel_name,
+                )
 
             # Fire auto-consolidation in background if thresholds exceeded
             current_stats = memory_stats()

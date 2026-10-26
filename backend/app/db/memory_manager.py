@@ -1785,29 +1785,49 @@ def increment_interaction_count():
 
 
 def get_recent_experiences(limit=10,
-                           task_completed_only=False):
+                           task_completed_only=False,
+                           channel_name=None):
+    """
+    Fetches recent experiences with workspace isolation.
+    Isolated workspaces (health, parker, admin) only see their own
+    experiences; non-isolated workspaces exclude isolated-workspace rows.
+    """
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
 
-    if task_completed_only:
-        c.execute("""
-            SELECT request_summary, approach_used,
-                   outcome, lesson
-            FROM experiences
-            WHERE task_completed = 1
-            ORDER BY timestamp DESC
-            LIMIT ?
-        """, (limit,))
-    else:
-        c.execute("""
-            SELECT request_summary, approach_used,
-                   outcome, lesson
-            FROM experiences
-            ORDER BY timestamp DESC
-            LIMIT ?
-        """, (limit,))
+    is_isolated = channel_name in HEALTH_ISOLATION_SET
+    base = "task_completed = 1" if task_completed_only else "1=1"
 
-    rows = c.fetchall()
+    if is_isolated:
+        tag = resolve_project_tag(channel_name)
+        query = f"""
+            SELECT request_summary, approach_used, outcome, lesson
+            FROM experiences
+            WHERE {base}
+              AND project_tag = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+        """
+        params = (tag, limit)
+    else:
+        excluded = list(HEALTH_ISOLATION_SET)
+        placeholders = ",".join("?" * len(excluded))
+        query = f"""
+            SELECT request_summary, approach_used, outcome, lesson
+            FROM experiences
+            WHERE {base}
+              AND (project_tag IS NULL
+                   OR project_tag NOT IN ({placeholders}))
+            ORDER BY timestamp DESC
+            LIMIT ?
+        """
+        params = tuple(excluded) + (limit,)
+
+    try:
+        c.execute(query, params)
+        rows = c.fetchall()
+    except Exception:
+        rows = []
     conn.close()
 
     return [
