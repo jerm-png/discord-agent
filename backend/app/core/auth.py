@@ -60,11 +60,6 @@ def decode_token(token: str) -> Optional[CurrentUser]:
         return None
 
 
-def verify_token(token: str) -> bool:
-    """Legacy boolean check kept for WS handlers that only need yes/no."""
-    return decode_token(token) is not None
-
-
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Security(security),
     drift_token: str = Cookie(default=None),

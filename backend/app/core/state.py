@@ -45,9 +45,6 @@ pending_goals: dict = {}
 execution_context: dict = {}
 gate_pending: dict = {}
 
-# ── Agent routing state ──────────────────────────────────────
-thread_agent_pins: dict = {}
-
 # ── Memory and consolidation state ──────────────────────────
 _consolidation_cooldown: set = set()
 stale_warned_this_session: bool = False
