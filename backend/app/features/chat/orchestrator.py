@@ -2279,7 +2279,7 @@ async def run_goal_modification(
     )
 
     try:
-        response = client.messages.create(
+        response = await client.messages.create(
             model=MAIN_MODEL,
             max_tokens=1024,
             system=GOAL_PLANNER_SYSTEM_PROMPT,
@@ -2353,7 +2353,7 @@ async def _replan_remaining_steps(
     )
 
     try:
-        response = client.messages.create(
+        response = await client.messages.create(
             model=MAIN_MODEL,
             max_tokens=1024,
             system=GOAL_PLANNER_SYSTEM_PROMPT,
@@ -2439,7 +2439,7 @@ async def run_goal_planning(
     execution_context.pop(user_id, None)
 
     try:
-        response = client.messages.create(
+        response = await client.messages.create(
             model=MAIN_MODEL,
             max_tokens=1024,
             system=planner_prompt or GOAL_PLANNER_SYSTEM_PROMPT,
@@ -2828,7 +2828,7 @@ async def execute_goal(
                     _analyze_kwargs = (
                         {"system": _crew_system} if _crew_system else {}
                     )
-                    r = client.messages.create(
+                    r = await client.messages.create(
                         model=MAIN_MODEL,
                         max_tokens=4096,
                         **_analyze_kwargs,
@@ -2876,7 +2876,7 @@ async def execute_goal(
                                     )
                                 }
                             ]
-                            retry_r = client.messages.create(
+                            retry_r = await client.messages.create(
                                 model=MAIN_MODEL,
                                 max_tokens=4096,
                                 messages=retry_messages
@@ -2947,7 +2947,7 @@ async def execute_goal(
                     _draft_kwargs = (
                         {"system": _crew_system} if _crew_system else {}
                     )
-                    r = client.messages.create(
+                    r = await client.messages.create(
                         model=MAIN_MODEL,
                         max_tokens=4096,
                         **_draft_kwargs,
@@ -3014,7 +3014,7 @@ async def execute_goal(
                                 user_id, {}
                             ).get("key_findings", [])
                         )
-                        r = client.messages.create(
+                        r = await client.messages.create(
                             model=MAIN_MODEL,
                             max_tokens=2048,
                             messages=[{"role": "user", "content": (
@@ -3049,7 +3049,7 @@ async def execute_goal(
                                 user_id, {}
                             ).get("key_findings", [])
                         )
-                        r = client.messages.create(
+                        r = await client.messages.create(
                             model=MAIN_MODEL,
                             max_tokens=2048,
                             system=agent_system,
@@ -4431,7 +4431,7 @@ async def process_user_message(
                 if _attempt_delay is not None:
                     await asyncio.sleep(_attempt_delay)
                 try:
-                    response = client.messages.create(**api_params)
+                    response = await client.messages.create(**api_params)
                     _overloaded = False
                     _rate_limited = False
                     break
@@ -4442,7 +4442,7 @@ async def process_user_message(
                         _rate_limited = True
                         await asyncio.sleep(60)
                         try:
-                            response = client.messages.create(**api_params)
+                            response = await client.messages.create(**api_params)
                             _rate_limited = False
                             break
                         except APIStatusError as _e2:

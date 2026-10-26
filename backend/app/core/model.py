@@ -1,16 +1,16 @@
 import json
-from anthropic import Anthropic
+from anthropic import AsyncAnthropic
 from app.core.config import MAIN_MODEL, BACKGROUND_MODEL, ANTHROPIC_API_KEY
 
 # ── Anthropic client ─────────────────────────────────────────
-client = Anthropic(api_key=ANTHROPIC_API_KEY)
+client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
 
 # ── Background model functions ───────────────────────────────
 async def call_background_model(
     prompt: str, max_tokens: int = 1500
 ) -> str:
-    response = client.messages.create(
+    response = await client.messages.create(
         model=BACKGROUND_MODEL,
         max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}]
