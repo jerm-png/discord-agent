@@ -136,6 +136,15 @@
 .bg-neon-orange\/10 { background-color: rgba(255, 107, 53, 0.10); }
 .bg-neon-cyan\/5 { background-color: rgba(0, 240, 255, 0.05); }
 .bg-neon-pink\/5 { background-color: rgba(255, 42, 109, 0.05); }
+.bg-neon-green\/5 { background-color: rgba(5, 255, 161, 0.05); }
+.bg-neon-yellow\/5 { background-color: rgba(252, 238, 10, 0.05); }
+.bg-neon-orange\/5 { background-color: rgba(255, 107, 53, 0.05); }
+
+.text-neon-cyan\/60 { color: rgba(0, 240, 255, 0.60); }
+.text-neon-pink\/60 { color: rgba(255, 42, 109, 0.60); }
+.text-neon-green\/60 { color: rgba(5, 255, 161, 0.60); }
+.text-neon-yellow\/60 { color: rgba(252, 238, 10, 0.60); }
+.text-neon-orange\/60 { color: rgba(255, 107, 53, 0.60); }
 
 .border-neon-cyan { border-color: var(--neon-cyan); }
 .border-neon-pink { border-color: var(--neon-pink); }
@@ -152,7 +161,14 @@
 .border-neon-pink\/40 { border-color: rgba(255, 42, 109, 0.40); }
 .border-neon-green\/30 { border-color: rgba(5, 255, 161, 0.30); }
 .border-neon-green\/20 { border-color: rgba(5, 255, 161, 0.20); }
+.border-neon-green\/40 { border-color: rgba(5, 255, 161, 0.40); }
+.border-neon-green\/50 { border-color: rgba(5, 255, 161, 0.50); }
 .border-neon-yellow\/20 { border-color: rgba(252, 238, 10, 0.20); }
+.border-neon-yellow\/40 { border-color: rgba(252, 238, 10, 0.40); }
+.border-neon-yellow\/50 { border-color: rgba(252, 238, 10, 0.50); }
+.border-neon-orange\/20 { border-color: rgba(255, 107, 53, 0.20); }
+.border-neon-orange\/40 { border-color: rgba(255, 107, 53, 0.40); }
+.border-neon-orange\/50 { border-color: rgba(255, 107, 53, 0.50); }
 .border-neon-cyan\/40 { border-color: rgba(0, 240, 255, 0.40); }
 .border-l-neon-cyan { border-left-color: var(--neon-cyan); }
 .border-l-neon-pink { border-left-color: var(--neon-pink); }

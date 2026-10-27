@@ -7,6 +7,7 @@ import { RosterPage } from '../components/RosterPage'
 import { EntityHeader } from '../components/EntityHeader'
 import { MedBayPage, type MedbaySection } from './MedBayPage'
 import { MemoryBrowser } from '../components/MemoryBrowser'
+import { WorkspaceEmptyState } from '../components/WorkspaceEmptyState'
 import { useWebSocket } from '../hooks/useWebSocket'
 import type { WSMessage } from '../hooks/useWebSocket'
 import { useDriftStore } from '../store/driftStore'
@@ -288,13 +289,10 @@ export function DashboardPage() {
             onEntityFocused={setSelectedEntityId}
           />
         ) : (
-          <div className="flex-1 flex items-center justify-center bg-[#080c12] scanlines">
-            <div className="text-center space-y-3">
-              <div className="font-mono text-[10px] text-[#9090a8]/40 uppercase tracking-widest">
-                [ SELECT OR CREATE A THREAD ]
-              </div>
-            </div>
-          </div>
+          <WorkspaceEmptyState
+            workspaceSlug={activeWorkspace}
+            onCreateThread={() => handleCreateThread('New thread')}
+          />
         )}
       </div>
     </div>
