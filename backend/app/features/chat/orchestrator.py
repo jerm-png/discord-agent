@@ -3917,10 +3917,13 @@ async def process_user_message(
     if _hist_key not in conversation_history:
         conversation_history[_hist_key] = []
 
-    log_conversation_turn(
-        str(user_id), context_id, effective_channel_name,
-        "user", user_message, project_tag=project_tag
-    )
+    try:
+        log_conversation_turn(
+            str(user_id), context_id, effective_channel_name,
+            "user", user_message, project_tag=project_tag
+        )
+    except Exception as _log_e:
+        print(f"[orchestrator] log_conversation_turn failed: {_log_e}")
 
     task_completed = is_task_completion(user_message)
 
@@ -4037,38 +4040,41 @@ async def process_user_message(
             _do_entity_lookup = True
 
     if _do_entity_lookup:
-        _known = list_entities(entity_type="person")
-        _known_names = [e["name"].lower() for e in _known]
-        _msg_lower = user_message.lower()
-        _matched = [
-            e["name"] for e in _known
-            if e["name"].lower() in _msg_lower
-        ]
-        # In Admin Prime, the team-query phrases ("my team", "what do
-        # you know about", …) imply the user wants a roster view even
-        # if no specific name was mentioned. Fall back to the top few
-        # entities so the cross-workspace bridge isn't useless on a
-        # bare "pull up team patterns".
-        if not _matched and effective_channel_name == "admin":
-            _matched = [e["name"] for e in _known[:3]]
-        if _matched:
-            _profile_blocks = []
-            for _person_name in _matched[:3]:  # cap at 3 per message
-                _block = format_entity_profile_for_prompt(_person_name)
-                if _block:
-                    _profile_blocks.append(_block)
-            if _profile_blocks:
-                _header = (
-                    "[PEOPLE CONTEXT — cross-pulled from Institute "
-                    "Prime, ephemeral, do not store]\n"
-                    if effective_channel_name == "admin"
-                    else "[PEOPLE CONTEXT — retrieved from entity memory]\n"
-                )
-                _entity_context = (
-                    _header
-                    + "\n\n".join(_profile_blocks)
-                    + "\n"
-                )
+        try:
+            _known = list_entities(entity_type="person")
+            _known_names = [e["name"].lower() for e in _known]
+            _msg_lower = user_message.lower()
+            _matched = [
+                e["name"] for e in _known
+                if e["name"].lower() in _msg_lower
+            ]
+            # In Admin Prime, the team-query phrases ("my team", "what do
+            # you know about", …) imply the user wants a roster view even
+            # if no specific name was mentioned. Fall back to the top few
+            # entities so the cross-workspace bridge isn't useless on a
+            # bare "pull up team patterns".
+            if not _matched and effective_channel_name == "admin":
+                _matched = [e["name"] for e in _known[:3]]
+            if _matched:
+                _profile_blocks = []
+                for _person_name in _matched[:3]:  # cap at 3 per message
+                    _block = format_entity_profile_for_prompt(_person_name)
+                    if _block:
+                        _profile_blocks.append(_block)
+                if _profile_blocks:
+                    _header = (
+                        "[PEOPLE CONTEXT — cross-pulled from Institute "
+                        "Prime, ephemeral, do not store]\n"
+                        if effective_channel_name == "admin"
+                        else "[PEOPLE CONTEXT — retrieved from entity memory]\n"
+                    )
+                    _entity_context = (
+                        _header
+                        + "\n\n".join(_profile_blocks)
+                        + "\n"
+                    )
+        except Exception as _ent_e:
+            print(f"[orchestrator] entity lookup failed: {_ent_e}")
     _mem_count = sum(
         len(memories.get(k, [])) for k in ("strategic", "operational", "analytical")
     )
